@@ -32,6 +32,18 @@ _Avoid_: Resource, workload
 The single authoritative environment-specific way to realize a component while preserving its declared intent.
 _Avoid_: Provider, driver, renderer
 
+**Store Generation**:
+A separately addressable physical realization of one logical database, cache, or object-store component. A store transition may temporarily maintain active and candidate generations, but finishes with one authoritative generation.
+_Avoid_: Second database component, store revision
+
+**Store Transition**:
+The verified replacement of a store's active generation with a synchronized candidate generation, commonly for an engine upgrade, capacity change, storage-class change, or implementation migration.
+_Avoid_: Schema migration, in-place resize
+
+**Schema Migration**:
+Application-defined work that changes the data contract understood by application revisions, independently of whether the underlying store generation changes.
+_Avoid_: Store upgrade, database replacement
+
 **Queue**:
 A first-class component that carries asynchronous messages from producers to workers with declared delivery semantics.
 _Avoid_: Worker queue, channel
@@ -141,7 +153,7 @@ The one revision currently selected for an environment's application traffic and
 _Avoid_: Latest build, deployed components
 
 **Blue-Green Deployment**:
-A deployment that keeps the existing revision available while a candidate is prepared and verified, followed by a reversible handoff where the selected implementation supports it.
+A deployment that keeps an active application revision or store generation available while a candidate is prepared, synchronized when necessary, and verified, followed by a reversible handoff where the selected implementation supports it.
 _Avoid_: Zero-downtime deployment
 
 **Audit Record**:

@@ -5,7 +5,9 @@ Nothing in this document is decided. These questions should be resolved before s
 ## Deployment semantics
 
 - What migration guarantees are expected for databases and durable state?
-- What does blue-green mean for databases, caches, and object stores: isolated copies, replication, shared compatibility, endpoint cutover, or a selectable strategy?
+- How are writes synchronized during a store cutover, and what data-loss guarantee applies to rollback after new writes reach the candidate generation?
+- Which store types may rebuild rather than copy data, and how is that declared safely?
+- How does required store blue-green work for an external component that Provision cannot create or mutate?
 
 ## Technical architecture—not yet discussed
 

@@ -87,6 +87,8 @@ Reusable implementation selections may be packaged as optional configuration fra
 
 Each component has exactly one authoritative implementation in an environment. Blue-green deployment uses two revisions of that implementation rather than two unrelated implementations. A controlled migration may temporarily use source and destination implementations but must finish with one authoritative binding.
 
+Likewise, a database, cache, or object-store component remains one logical component while a store transition temporarily creates active and candidate physical generations. The transition finishes with one authoritative generation; the candidate is not modeled as a second application component.
+
 ### Component ownership
 
 Every stateful or supporting component is either managed or external.
@@ -166,7 +168,9 @@ Blue-green is a product requirement where the selected implementation can provid
 - Realtime services route new connections to the candidate while the old revision drains existing connections until a configured deadline. Remaining clients receive a reconnect signal and are disconnected. Provision does not claim live socket migration or uninterrupted connections.
 - Workers stop the old revision from claiming new work, expose and drain in-flight work, then activate the candidate consumer. Required mode needs acknowledgement or visibility semantics, and application-level idempotency remains necessary. The guarantee is at-least-once processing, not exactly-once execution.
 - Schedules have one active emitting revision and use a fenced handoff from old to new. Tasks must tolerate duplicate invocation around failures at the handoff boundary; Provision does not claim universal exactly-once scheduling.
-- Databases and caches require state-aware migration or endpoint-cutover behavior and cannot be treated like stateless processes.
+- Databases, caches, and object stores may prepare a separately addressable candidate generation, synchronize or rebuild it as appropriate, verify it, switch authority, and retain the previous generation for a declared rollback window. This supports engine upgrades, upsizing, storage-class changes, and implementation migrations without treating the store as permanently shared or replacing it in place.
+
+A store transition is driven by an environment configuration revision and may occur while the application revision remains unchanged. Schema migration is a separate application-defined change to the data contract; a deployment may perform a store transition, a schema migration, or both.
 
 Each component selects an explicit rollout requirement:
 
@@ -175,6 +179,8 @@ Each component selects an explicit rollout requirement:
 - **replace** permits in-place replacement.
 
 There is no silent fallback. Before activation, every verification action required by destination policy must pass and any required manual approval must be recorded. Failed post-activation checks trigger automatic rollback when the implementation supports it; otherwise the failure and required recovery action remain explicit.
+
+For a managed store in required mode, the selected implementation must provide an isolated candidate generation, synchronization or rebuilding appropriate to the store, verification, authority cutover, and retention of the previous generation for the declared rollback window. Provider-managed in-place or rolling changes satisfy required mode only when they expose equivalent isolation, verification, cutover, and rollback guarantees; otherwise they are preferred or replace behavior.
 
 A multi-component deployment is not transactional. Provision orders work, records explicit progress points, and resumes safely where possible. Stateless routing and workloads may be rolled back, while stateful changes may require declared compensating or forward-recovery actions. Partial execution remains visible and is never reported as an atomic success or disappearance.
 
@@ -224,6 +230,8 @@ Useful runtime metadata may include the environment name, lifecycle, application
 - Multi-component deployments are ordered and resumable, not transactional.
 - Actions declare retry safety, and arbitrary custom code is never presented as exactly-once.
 - Lambda is eligible only for component roles whose declared behavior fits event-driven serverless execution.
+- Store blue-green operates on physical generations of one logical component and applies to upgrades, upsizing, storage changes, and implementation migration.
+- Store transitions are environment changes distinct from application-defined schema migrations.
 
 ## Not yet decided
 

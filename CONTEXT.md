@@ -13,7 +13,7 @@ The team that builds and deploys an application and is the primary user of Provi
 _Avoid_: Platform team, operator
 
 **Environment**:
-A named deployment of an application with its own behavior, policy, implementation choices, secrets, domains, sizing, and lifecycle.
+A named deployment of an application with its own behavior, policy, implementation choices, secrets, domains, sizing, lifecycle, and one active revision outside a deployment transition.
 _Avoid_: Stage, namespace
 
 **Persistent Environment**:
@@ -72,6 +72,10 @@ _Avoid_: Deployment profile, environment class
 An identifier that tells an implementation where to obtain a secret without placing the secret value in committed configuration, plans, or history.
 _Avoid_: Secret value, encrypted configuration value
 
+**Resolved Configuration**:
+The complete, inspectable configuration produced from explicitly ordered documents and intentional overrides before validation or execution.
+_Avoid_: Effective files, discovered configuration
+
 **Artifact**:
 An immutable deployable output supplied to Provision or produced by a build.
 _Avoid_: Asset, binary
@@ -103,6 +107,18 @@ _Avoid_: Reconciliation, rollout
 **Promotion**:
 An optional deployment workflow that selects an exact revision already deployed or verified in one environment for deployment to another. Environments may also receive revisions independently and do not form an implicit pipeline.
 _Avoid_: Stage progression, rebuild
+
+**Verification Evidence**:
+An immutable record of checks performed against a revision in an environment. It may accompany a promotion as provenance but does not replace verification required by the destination environment.
+_Avoid_: Global approval, trusted build
+
+**Data Refresh**:
+A named operation that populates an environment from another data source through application-defined extraction, anonymization, and loading actions. Raw production data must be anonymized before crossing into a non-production environment.
+_Avoid_: Database copy, production clone
+
+**Active Revision**:
+The one revision currently selected for an environment's application traffic and work. A deployment may temporarily prepare a candidate revision, but does not create multiple active revisions within that environment.
+_Avoid_: Latest build, deployed components
 
 **Blue-Green Deployment**:
 A deployment that keeps the existing revision available while a candidate is prepared and verified, followed by a reversible handoff where the selected implementation supports it.

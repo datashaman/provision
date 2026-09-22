@@ -40,6 +40,8 @@ Provision supports two environment workflows. A revision may be deployed indepen
 
 A shared testing environment may receive whichever revision a team needs to test and may use anonymized data derived from production. That use does not make it a mandatory pre-production stage. A team may separately choose a pipeline-style workflow in which a revision is promoted through environments.
 
+Promotion preserves the source verification evidence as provenance. Destination policy decides which checks and approvals must run again; evidence from another environment cannot silently authorize activation.
+
 Environment names such as development, preview, staging, and production have no hidden behavior. An environment explicitly declares a persistent or ephemeral lifecycle, and its approval, retention, destruction protection, sizing, and deployment policy remain visible.
 
 ### Component
@@ -108,13 +110,25 @@ Configuration remains declarative, but it may reference application-defined exec
 
 An action declares its phase and execution contract, including inputs, outputs, timing, retry, and failure behavior. The eventual execution mechanism—such as local command, container, remote command, or function—belongs to later technical architecture work.
 
-Configuration is organized as explicitly referenced logical documents. A project may keep them in one physical file or many files, but meaning does not depend on filenames or automatic directory scanning. How included documents and environment overrides merge remains to be decided.
+Configuration is organized as explicitly referenced logical documents. A project may keep them in one physical file or many files, but meaning does not depend on filenames or automatic directory scanning.
+
+Documents are evaluated in explicit include order. Maps merge by key and lists replace rather than concatenate. Repeating a scalar value is an error unless the later document marks it as an intentional override. Before execution, Provision exposes the fully resolved configuration together with each value's source.
+
+Validation is atomic with respect to planning: Provision reports every detectable contradiction with its logical path and source document, then rejects the whole plan before making changes. It must not apply a valid-looking subset of an invalid environment.
 
 Committed configuration contains secret references, never production secret values. Local environments may reference process environment variables, ignored local files, or a local secret provider. Plans, deployment history, and diagnostics must not reveal resolved values.
 
 ### Environment lifecycle
 
 An ephemeral environment has an explicit expiry or destruction condition. Expiry initiates automatic destruction, may be renewed explicitly, and still honors each stateful component's retention policy. Failed cleanup remains visible and retryable rather than being treated as successful destruction.
+
+An environment has one active application revision. A deployment may temporarily run the current and candidate revisions for blue-green handoff, but after the transition only one is active. Deployments to the same environment are serialized. Concurrent isolated testing uses separate environments rather than several active revisions hidden inside one shared environment.
+
+### Production-derived test data
+
+Refreshing a shared testing environment from production-derived data is a named product workflow. Provision coordinates and records the operation, while extraction, anonymization, transformation, and loading are application-defined actions because their correctness depends on the application's schema and policies.
+
+Raw production data must be anonymized within the production security boundary before it crosses into a non-production environment. If that boundary cannot be demonstrated, the refresh fails closed. Data-refresh history remains distinct from application revision history because either may change independently.
 
 ## Required deployment scenarios
 
@@ -135,7 +149,7 @@ Blue-green is a product requirement where the selected implementation can provid
 - Request-serving services switch new traffic between revisions.
 - Realtime services must account for long-lived connections and draining.
 - Workers must hand off new work without losing in-flight jobs.
-- Schedulers must avoid duplicate execution during a transition.
+- Schedules must avoid duplicate execution during a transition.
 - Databases and caches require state-aware migration or endpoint-cutover behavior and cannot be treated like stateless processes.
 
 The product must expose when a requested guarantee is unavailable instead of silently degrading it.
@@ -165,6 +179,10 @@ Useful runtime metadata may include the environment name, lifecycle, application
 - Environments may receive revisions independently; promotion is an optional exact-revision workflow.
 - Configuration documents are included explicitly and do not gain meaning from filenames or directory scanning.
 - Committed configuration contains references to secrets, not secret values.
+- Verification evidence accompanies promotion as provenance, while destination policy remains authoritative.
+- Shared environments have one active revision and serialize deployments.
+- Production-derived data is anonymized before leaving the production boundary and enters non-production only through an explicit data refresh.
+- Invalid resolved configuration is rejected in full before changes begin.
 
 ## Not yet decided
 

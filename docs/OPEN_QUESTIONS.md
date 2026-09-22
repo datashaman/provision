@@ -2,12 +2,6 @@
 
 Nothing in this document is decided. These questions should be resolved before selecting a technical architecture.
 
-## Configuration experience
-
-- How are application defaults and environment overrides merged?
-- How are invalid or contradictory overrides reported?
-- How are reusable configuration fragments included and overridden?
-
 ## Component model
 
 - Is the initial component vocabulary complete?
@@ -25,11 +19,9 @@ Nothing in this document is decided. These questions should be resolved before s
 ## Environment lifecycle
 
 - How are ephemeral environments created, and who may renew their expiry?
-- What test or verification evidence, if any, accompanies a promoted revision?
-- Is refreshing a shared test environment from anonymized production data a first-class workflow, a custom action, or outside Provision's scope?
-- Where must anonymization occur, and what evidence is required before production-derived data may cross into a non-production environment?
-- Who owns extraction, anonymization, loading, rollback, and retention of production-derived test data?
-- Can a shared environment host more than one application revision concurrently, or does it always have one active revision?
+- How is a shared environment reserved or coordinated when several team members want to deploy?
+- How is a data refresh authorized, verified, rolled back, and retained?
+- How is a refreshed dataset identified, and how is its compatibility with an application revision checked?
 - Which values are behavior configuration versus infrastructure configuration?
 - What audit history and approval flow are required?
 

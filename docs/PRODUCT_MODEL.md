@@ -22,6 +22,8 @@ Provision supports both application-defined builds and artifacts built elsewhere
 
 An application describes the logical system being deployed. It is a cohesive deployment and promotion boundary, not a source-repository boundary: its components may be built from multiple repositories but are recorded together as one revision. It owns component relationships and portable behavioral requirements, not provider-specific infrastructure.
 
+Applications, environments, and components have stable logical identities independent of editable display names. Renaming does not imply replacement unless an implementation has an unavoidable physical naming restriction, which must appear as a planned consequence rather than being inferred from the display name.
+
 ### Environment
 
 An environment is a named instance of an application, such as local development, a shared development host, preview, staging, or production.
@@ -61,6 +63,10 @@ A component represents an application role. The initial vocabulary is deliberate
 This list is a product vocabulary, not an extensible resource-definition system.
 
 A queue is independent of its producers and consumers. An object store contains application-addressable objects and is distinct from an implementation's attached filesystem or volume. A worker is a persistent queue consumer. A task runs to completion when invoked. A schedule identifies a target task and declares timing, overlap, retry, and failure policy. Cron, systemd timers, application cron runners, and cloud schedulers are possible implementations of that intent; “scheduler” is not a separate application component.
+
+Queue portable intent includes delivery guarantee, ordering requirement, retention, acknowledgement or visibility behavior, retry limits, dead-letter handling, and deduplication capability. At-least-once delivery is the default; exactly-once behavior is never assumed across arbitrary implementations.
+
+A Schedule declares timezone, daylight-saving behavior, overlap handling, missed-run behavior, retry policy, and bounded catch-up behavior. UTC is the default timezone, but an explicitly local business schedule is never silently reinterpreted. Each Task execution creates an immutable task invocation recording its application and environment configuration revisions, trigger, referenced inputs, attempts, outcome, timing, and produced artifact references without storing secret values.
 
 ### Relationships, bindings, and endpoints
 
@@ -114,6 +120,10 @@ Every managed stateful component has an explicit retention policy, with retentio
 
 A build is application-defined work that produces immutable artifacts. Provision may run the build or accept artifacts from another build system.
 
+Components may be built by different repositories and pipelines. Provision assembles or accepts a revision manifest only after every required component artifact is present and identified by digest; it does not require one source checkout or one build pipeline.
+
+Artifact digests are always required for identity. Environment policy may additionally require referenced provenance, signatures, vulnerability evidence, or other attestations. Provision validates the required evidence but does not become the artifact registry, signing authority, or security scanner.
+
 A revision is an immutable manifest identifying the complete set of component artifacts for one application version. Unchanged components may reuse existing artifacts, but environments deploy and promote the complete revision rather than an unrecorded mixture of component versions.
 
 Creating a new artifact creates a new complete revision. During deployment, unchanged artifacts and components may be skipped safely, and the same revision may be reapplied, but the environment's recorded desired version remains a complete revision rather than a partial deployment.
@@ -153,6 +163,16 @@ External authorization policy decides who may create or renew an ephemeral envir
 An environment has one active application revision. A deployment may temporarily run the current and candidate revisions for blue-green handoff, but after the transition only one is active. Deployments to the same environment are serialized. Concurrent isolated testing uses separate environments rather than several active revisions hidden inside one shared environment.
 
 A shared environment may have an optional expiring lease that identifies who is using it and why. Replacing a deployment protected by another user's lease requires explicit acknowledgement and leaves an audit record. The lease communicates coordination intent; it does not create permanent ownership.
+
+Cloning an environment copies configuration intent into a new environment identity. The clone resolves its own secrets, implementation choices, domains, and policies. Stateful data is never copied implicitly; it moves only through an explicit data refresh or restore operation.
+
+Destroying an environment begins with a destructive plan that classifies every affected resource as retained, snapshotted, deleted, external, or unresolved. Persistent environments require explicit approval. External components are unbound rather than deleted; adopted components follow their current managed ownership and retention policies. Failed cleanup remains visible and retryable.
+
+### Backup and recovery
+
+Every authoritative managed store has a recovery policy declaring backup frequency, retention, acceptable data loss, acceptable recovery time, and restore-verification requirements. Implementations expose their capabilities, and an environment fails validation when they cannot satisfy its policy.
+
+A restore creates a candidate store generation or separate recovery environment by default. The restored data is verified before any explicit cutover makes it authoritative. Destructive in-place restore is exceptional and requires a clearly declared and approved policy.
 
 ### Production-derived test data
 
@@ -279,6 +299,14 @@ Useful runtime metadata may include the environment name, lifecycle, application
 - Plans are immutable and become stale when their revisions, observed state, capabilities, or artifacts change.
 - Drift is reported before any explicit reconciliation and is never silently overwritten.
 - Provision exposes deployment and health state but does not become a general telemetry or incident-management platform.
+- Multi-repository builds converge on one complete digest-addressed application revision.
+- Environments may require artifact attestations without making Provision a registry, signer, or scanner.
+- Logical identities survive display-name changes; implementation naming restrictions remain visible.
+- Environment cloning copies intent, never state or resolved secrets implicitly.
+- Environment destruction plans classify every resource and never delete external components.
+- Authoritative managed stores have explicit recovery policies, and restores use verified candidates by default.
+- Queue and Schedule contracts expose delivery and timing edge cases instead of relying on implementation defaults.
+- Every Task execution has an immutable invocation record tied to exact revisions and referenced inputs.
 
 ## Not yet decided
 

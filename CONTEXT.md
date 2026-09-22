@@ -12,6 +12,10 @@ _Avoid_: Project, stack
 The team that builds and deploys an application and is the primary user of Provision.
 _Avoid_: Platform team, operator
 
+**Logical Identity**:
+A stable identity for an application, environment, component, or other durable domain object that remains unchanged when its display name changes.
+_Avoid_: Display name, provider resource name
+
 **Environment**:
 A named deployment of an application with its own behavior, policy, implementation choices, secrets, domains, sizing, lifecycle, and one active revision outside a deployment transition.
 _Avoid_: Stage, namespace
@@ -73,7 +77,7 @@ Application-defined work that changes the data contract understood by applicatio
 _Avoid_: Store upgrade, database replacement
 
 **Queue**:
-A first-class component that carries asynchronous messages from producers to workers with declared delivery semantics.
+A first-class component that carries asynchronous messages from producers to workers with declared delivery, ordering, retention, acknowledgement, retry, dead-letter, and deduplication semantics.
 _Avoid_: Worker queue, channel
 
 **Object Store**:
@@ -88,8 +92,12 @@ _Avoid_: Job, task
 A run-to-completion component that succeeds or fails when invoked manually, by a schedule, or by another component.
 _Avoid_: One-shot worker, job
 
+**Task Invocation**:
+An immutable record of one Task execution, including its application and environment configuration revisions, trigger, referenced inputs, attempts, result, timing, and produced artifacts.
+_Avoid_: Worker, process
+
 **Schedule**:
-A first-class component that defines when a task is invoked and its overlap, retry, and failure policy. A scheduler is an environment-specific implementation of schedules rather than an application component.
+A first-class component that defines when a task is invoked, including timezone, daylight-saving, overlap, missed-run, retry, failure, and bounded catch-up policy. A scheduler is an environment-specific implementation of schedules rather than an application component.
 _Avoid_: Scheduler, cron job, scheduled worker
 
 **Execution Target**:
@@ -136,6 +144,10 @@ _Avoid_: Configuration edit, secret value change
 An immutable deployable output supplied to Provision or produced by a build.
 _Avoid_: Asset, binary
 
+**Artifact Attestation**:
+Referenced evidence about an artifact's provenance, signature, security assessment, or other policy-relevant property, validated by Provision but produced elsewhere.
+_Avoid_: Artifact, scanner result embedded in configuration
+
 **Build**:
 Application-defined work that converts source inputs into one or more artifacts for a revision.
 _Avoid_: Deployment, release
@@ -151,6 +163,14 @@ _Avoid_: Release, artifact
 **Retention Policy**:
 An explicit rule that determines whether a managed stateful component is retained or deleted when its environment is destroyed; retention is the default.
 _Avoid_: Delete flag
+
+**Recovery Policy**:
+The required backup frequency, retention, acceptable data loss, acceptable recovery time, and restore-verification behavior for an authoritative managed store.
+_Avoid_: Retention policy, provider backup switch
+
+**Restore**:
+An operation that materializes retained data into a candidate store generation or recovery environment for verification before any explicit authority cutover.
+_Avoid_: In-place overwrite, rollback
 
 **Adoption**:
 An explicit operation that transfers an external component into Provision's managed lifecycle after identity and consequences are verified.

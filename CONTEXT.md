@@ -101,8 +101,20 @@ A first-class component that defines when a task is invoked, including timezone,
 _Avoid_: Scheduler, cron job, scheduled worker
 
 **Execution Target**:
-The place where executable components run, such as the current machine, a remote host, EC2, ECS, or Lambda.
+An external foundational place or service in which a component implementation runs, such as the current machine, a remote host, EC2, ECS, or Lambda. Referencing it does not transfer ownership to Provision.
 _Avoid_: Cluster, platform
+
+**Availability Intent**:
+A component's portable requirement for single-instance operation, redundancy, and separation across failure domains, independent of provider topology names.
+_Avoid_: Availability zone count, replica setting
+
+**Operation Capability**:
+An externally assigned authorization to view, plan, deploy, approve, destroy, adopt, refresh data, rotate secrets, or manage policy without requiring fixed human roles.
+_Avoid_: User role, environment name convention
+
+**Break-Glass Access**:
+External emergency interactive access to an execution target that deliberately sits outside Provision's normal planned operations and must not be disguised as a routine Action.
+_Avoid_: Task, remote shell feature
 
 **Managed Component**:
 A component whose underlying service lifecycle Provision is permitted to create, update, and delete within documented limits.

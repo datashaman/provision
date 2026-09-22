@@ -76,6 +76,10 @@ Public and private exposure is modeled as an endpoint attached to an HTTP or rea
 
 Executable components declare separate liveness, readiness, and candidate-verification semantics. Implementations map that portable health contract to their available mechanisms. If a selected implementation cannot provide a check required by environment policy, validation fails rather than weakening the policy.
 
+Connectivity requirements derive from component relationships and endpoint visibility. Provision may manage application-scoped firewall or security rules, while foundational networks, subnets, route strategy, VPNs, and peering remain external. Plans expose required connectivity and any failed validation rather than silently modifying broader network topology.
+
+DNS zones remain external. Provision may manage authorized application DNS records and certificates or bind records and certificates managed elsewhere. A stable endpoint preserves the application-visible domain while blue-green traffic switches between revisions or implementations.
+
 ### Implementation choice
 
 The same logical component may have different implementations in different environments.
@@ -92,6 +96,12 @@ Examples:
 The product must validate whether a selected implementation can satisfy the component's declared requirements.
 
 Executable components express portable capacity intent as either fixed capacity or minimum and maximum capacity with a concurrency target. An implementation interprets capacity according to its execution model: a host or container implementation may use process or replica counts, while Lambda-style execution uses concurrency bounds. Provider-specific metrics, triggers, and scaling algorithms remain visible in namespaced options.
+
+An environment may use multiple named execution targets and select one per component. A hybrid environment may combine systemd services on a host, a managed database, a cloud queue, and Lambda-backed tasks without pretending they form one homogeneous cluster.
+
+Hosts, cloud accounts, clusters, and serverless services are foundational external targets. Provision validates authority and capabilities, then manages only the application-scoped resources placed there. Referencing a target does not transfer its ownership, and destroying one environment never destroys a shared foundational target.
+
+Components declare availability intent independently of provider topology: single-instance operation, redundancy, and required separation across failure domains. Implementations map that intent to hosts, zones, tasks, replicas, or managed-service controls and fail validation when they cannot satisfy it.
 
 The portability promise is **portable intent**, not identical behavior. Meaningful differences in scaling, availability, rollout safety, operational limits, and cost must remain visible. An environment that cannot satisfy a declared requirement must fail validation rather than silently weaken the requirement.
 
@@ -153,6 +163,18 @@ When the value behind a secret reference changes, Provision treats it as an expl
 A plan is immutable and bound to exact application and environment configuration revisions, observed environment state, selected capabilities, and artifact digests. A relevant change makes the plan stale and requires replanning. Destructive work, lease overrides, and safety-guarantee fallbacks require explicit approval on the current plan.
 
 Provision detects and reports differences between recorded and observed state with component ownership and safety context. It never silently overwrites drift. A managed component may opt into an explicit reconciliation policy; an external component is revalidated and reported but is not repaired by Provision.
+
+Identity and group membership come from an external identity system. Provision authorizes operation-level capabilities for viewing, planning, deploying, approving, destroying, adopting, refreshing data, rotating secrets, and managing policy rather than requiring fixed human roles. Small teams may grant one actor every capability; stricter environments may separate them.
+
+Environment policy selects which operations and risk conditions require approval, including destructive work, production-data refresh, adoption, lease override, guarantee fallback, store cutover, or deployment generally. Approval applies only to the exact current plan and expires when that plan becomes stale.
+
+Plans expose resource changes, known price estimates, and relevant provider quotas when those facts are available. Estimates remain estimates. Provision enforces declared resource limits and revalidates quotas before execution but does not claim a guaranteed bill or capacity reservation the provider has not made.
+
+### Day-two operations
+
+Provision applies the same planning, authorization, audit, and recovery model to restart, scale, failover, Task invocation, secret rotation, backup, restore, drift reconciliation, expiry renewal, and store transition. The product is not limited to first-time provisioning or application deployment.
+
+General-purpose interactive remote command execution is not a core operation. Repeatable work belongs in Tasks or bounded Actions. Emergency interactive access remains an external break-glass mechanism rather than bypassing Provision's plans, permissions, and audit records.
 
 ### Environment lifecycle
 
@@ -307,6 +329,14 @@ Useful runtime metadata may include the environment name, lifecycle, application
 - Authoritative managed stores have explicit recovery policies, and restores use verified candidates by default.
 - Queue and Schedule contracts expose delivery and timing edge cases instead of relying on implementation defaults.
 - Every Task execution has an immutable invocation record tied to exact revisions and referenced inputs.
+- Environments may place components across several explicit execution targets without owning the foundational targets.
+- Portable availability intent declares redundancy and failure-domain requirements independently of provider topology.
+- Application relationships and endpoints drive app-scoped connectivity, while foundational network strategy remains external.
+- DNS zones remain external; authorized application records and certificates may be managed or bound.
+- Authorization uses externally assigned operation capabilities, and approvals apply only to an exact current plan.
+- Day-two operations use the same plan, permission, audit, and recovery model as deployment.
+- Cost and quota information is exposed when available without claiming guaranteed bills or unreserved capacity.
+- Interactive shell access remains an external break-glass mechanism rather than a core product bypass.
 
 ## Not yet decided
 

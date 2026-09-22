@@ -62,6 +62,14 @@ This list is a product vocabulary, not an extensible resource-definition system.
 
 A queue is independent of its producers and consumers. An object store contains application-addressable objects and is distinct from an implementation's attached filesystem or volume. A worker is a persistent queue consumer. A task runs to completion when invoked. A schedule identifies a target task and declares timing, overlap, retry, and failure policy. Cron, systemd timers, application cron runners, and cloud schedulers are possible implementations of that intent; “scheduler” is not a separate application component.
 
+### Relationships, bindings, and endpoints
+
+Components refer to one another by logical identity rather than hostnames, credentials, or provider resource names. A **requires** relationship blocks activation until the referenced component is available; a **uses** relationship creates a runtime binding without implying startup order. Provision validates missing references and impossible activation cycles, then resolves environment-specific connection bindings and secret references.
+
+Public and private exposure is modeled as an endpoint attached to an HTTP or realtime component, not as a separate ingress component. An endpoint declares visibility, protocol, domain, TLS, routing, and traffic-handoff requirements while its implementation remains environment-specific.
+
+Executable components declare separate liveness, readiness, and candidate-verification semantics. Implementations map that portable health contract to their available mechanisms. If a selected implementation cannot provide a check required by environment policy, validation fails rather than weakening the policy.
+
 ### Implementation choice
 
 The same logical component may have different implementations in different environments.
@@ -112,6 +120,8 @@ Creating a new artifact creates a new complete revision. During deployment, unch
 
 Environment-specific behavior and operational choices are versioned independently as an immutable environment configuration revision. A deployment records both the application revision and the resolved environment configuration revision, so changing a feature flag, implementation selection, or policy is attributable without pretending the application artifact changed.
 
+Every resolved environment change creates a new environment configuration revision and an auditable plan. A component may explicitly declare that a particular behavior value is safe to reload live; otherwise the change follows the component's normal rollout policy, including blue-green when required.
+
 ### Declarative configuration and custom actions
 
 Configuration remains declarative, but it may reference application-defined executable actions for builds, migrations, verification, and lifecycle work. Custom code is not executed merely by loading configuration.
@@ -125,6 +135,14 @@ Documents are evaluated in explicit include order. Maps merge by key and lists r
 Validation is atomic with respect to planning: Provision reports every detectable contradiction with its logical path and source document, then rejects the whole plan before making changes. It must not apply a valid-looking subset of an invalid environment.
 
 Committed configuration contains secret references, never production secret values. Local environments may reference process environment variables, ignored local files, or a local secret provider. Plans, deployment history, and diagnostics must not reveal resolved values.
+
+When the value behind a secret reference changes, Provision treats it as an explicit secret-rotation event. Each consumer declares whether it reads the value dynamically, supports a verified reload, or requires a rollout. Provision coordinates and audits the selected behavior without recording the secret value or assuming that an unchanged reference means no operational change occurred.
+
+### Planning and drift
+
+A plan is immutable and bound to exact application and environment configuration revisions, observed environment state, selected capabilities, and artifact digests. A relevant change makes the plan stale and requires replanning. Destructive work, lease overrides, and safety-guarantee fallbacks require explicit approval on the current plan.
+
+Provision detects and reports differences between recorded and observed state with component ownership and safety context. It never silently overwrites drift. A managed component may opt into an explicit reconciliation policy; an external component is revalidated and reported but is not repaired by Provision.
 
 ### Environment lifecycle
 
@@ -200,6 +218,10 @@ A multi-component deployment is not transactional. Provision orders work, record
 
 Provision records resolved configuration, plans, approvals, deployments, promotions, verification results, custom actions, data refreshes, adoption, destruction, expiry, rollback, lease overrides, and safety overrides. Each record identifies the actor, time, referenced inputs, outcome, and failure details without disclosing resolved secrets or sensitive dataset contents.
 
+## Operational visibility
+
+Provision owns visibility into plans, deployment progress, component status, health evidence, transition state, drift, and recovery actions. It may configure application-scoped integrations and expose links or bindings to external logging, metrics, tracing, and alerting systems. Long-term telemetry storage and general incident management remain outside the product boundary.
+
 ## Environment-aware behavior
 
 Applications should receive explicit environment configuration and feature flags. Environment-specific business behavior should not depend on detecting an infrastructure provider or execution implementation.
@@ -249,6 +271,14 @@ Useful runtime metadata may include the environment name, lifecycle, application
 - Schema migration compatibility spans the application and store rollback window before destructive contraction.
 - External stores must expose verifiable transition capabilities to satisfy required blue-green.
 - Previous store generations follow an explicit transition cleanup policy after the rollback window.
+- Components use logical relationships that resolve to environment-specific bindings.
+- Endpoints attach exposure and traffic requirements to HTTP or realtime components without becoming components themselves.
+- Liveness, readiness, and candidate verification are distinct portable health semantics.
+- Every resolved behavior change is versioned; live reload is allowed only when explicitly declared safe.
+- Secret rotation is an explicit audited event with per-consumer dynamic-read, reload, or rollout behavior.
+- Plans are immutable and become stale when their revisions, observed state, capabilities, or artifacts change.
+- Drift is reported before any explicit reconciliation and is never silently overwritten.
+- Provision exposes deployment and health state but does not become a general telemetry or incident-management platform.
 
 ## Not yet decided
 

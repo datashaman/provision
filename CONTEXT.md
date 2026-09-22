@@ -28,6 +28,22 @@ _Avoid_: Preview environment
 A logical application role drawn from Provision's fixed vocabulary, such as HTTP service, database, cache, object store, realtime server, queue, worker, task, or schedule.
 _Avoid_: Resource, workload
 
+**Component Relationship**:
+A logical reference from one component to another, classified as requires when activation depends on availability or uses when it is only a runtime association.
+_Avoid_: Hostname, startup script
+
+**Binding**:
+The environment-specific connection information and secret references produced from a component relationship without exposing infrastructure details in the application model.
+_Avoid_: Hard-coded endpoint, connection string value
+
+**Endpoint**:
+An exposure attached to an HTTP or realtime component that declares visibility, protocol, domain, TLS, routing, and traffic-handoff requirements.
+_Avoid_: Ingress component, load balancer
+
+**Health Contract**:
+A component's declared liveness, readiness, and candidate-verification semantics, independent of how its implementation performs the checks.
+_Avoid_: Health URL, provider check
+
 **Implementation**:
 The single authoritative environment-specific way to realize a component while preserving its declared intent.
 _Avoid_: Provider, driver, renderer
@@ -112,6 +128,10 @@ _Avoid_: Effective files, discovered configuration
 An immutable version of an environment's resolved behavior values, feature flags, implementation selections, and policy references, recorded independently of the application revision.
 _Avoid_: Environment version, mutable settings
 
+**Secret Rotation**:
+An explicit, auditable environment event in which a secret reference resolves to a new value and each consumer follows its declared dynamic-read, reload, or rollout behavior.
+_Avoid_: Configuration edit, secret value change
+
 **Artifact**:
 An immutable deployable output supplied to Provision or produced by a build.
 _Avoid_: Asset, binary
@@ -139,6 +159,14 @@ _Avoid_: Import, automatic discovery
 **Deployment**:
 An ordered, resumable attempt to place an application revision and environment configuration revision into an environment according to its selected implementations and policy. It records partial progress and recovery rather than claiming transactionality across components.
 _Avoid_: Reconciliation, rollout
+
+**Plan**:
+An immutable proposed operation bound to exact application and environment configuration revisions, observed state, capabilities, and artifact digests. A relevant change makes it stale and requires replanning.
+_Avoid_: Preview text, reusable script
+
+**Drift**:
+A difference between an environment's recorded state and its observed state that must be reported with ownership and safety context before any authorized reconciliation.
+_Avoid_: Automatic repair, configuration change
 
 **Promotion**:
 An optional deployment workflow that selects an exact revision already deployed or verified in one environment for deployment to another. Environments may also receive revisions independently and do not form an implicit pipeline.

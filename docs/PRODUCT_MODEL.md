@@ -14,6 +14,8 @@ The intended scope runs from development through small and medium production dep
 
 Provisioning supporting services is in scope when necessary to deploy the application. Provision is not intended to become a general infrastructure-management product.
 
+Provision supports both application-defined builds and artifacts built elsewhere. Deployment always consumes an immutable revision manifest so the same revision can be promoted between environments without rebuilding.
+
 ## Core concepts
 
 ### Application
@@ -35,6 +37,8 @@ Environment is first-class because application behavior may differ between envir
 - an implementation selection for each component.
 
 The same built application revision should be promotable between environments without rebuilding it.
+
+Environment names such as development, preview, staging, and production have no hidden behavior. An environment explicitly declares a persistent or ephemeral lifecycle, and its approval, retention, destruction protection, sizing, and deployment policy remain visible.
 
 ### Component
 
@@ -66,6 +70,10 @@ The product must validate whether a selected implementation can satisfy the comp
 
 The portability promise is **portable intent**, not identical behavior. Meaningful differences in scaling, availability, rollout safety, operational limits, and cost must remain visible. An environment that cannot satisfy a declared requirement must fail validation rather than silently weaken the requirement.
 
+Portable component fields form the common model. Provider- or implementation-specific configuration remains available through explicit namespaced options rather than being hidden or silently inferred.
+
+Reusable implementation selections may be packaged as optional configuration fragments. They are not a separate domain entity, and the resolved environment remains authoritative.
+
 ### Component ownership
 
 Every stateful or supporting component is either managed or external.
@@ -74,6 +82,14 @@ Every stateful or supporting component is either managed or external.
 - An external component exists outside Provision's lifecycle. Provision may validate it and bind the application to it but must not mutate or delete it.
 
 Ownership is explicit per component so one environment can mix managed and external services safely.
+
+Managed scope is limited to application-scoped resources: workloads, application databases, caches, queues, ingress, certificates, application DNS records, and application-level backup policy. Foundational infrastructure—including cloud accounts, network strategy, DNS zones, organizational identity, and secret stores—is initially external.
+
+### Builds, artifacts, and revisions
+
+A build is application-defined work that produces immutable artifacts. Provision may run the build or accept artifacts from another build system.
+
+A revision is an immutable manifest of the artifacts that make up an application version. Environments deploy revisions; they do not rebuild them. A revision may contain multiple component artifacts.
 
 ## Required deployment scenarios
 
@@ -113,6 +129,9 @@ Useful runtime metadata may include the environment name, stage, application rev
 - Workers and schedulers are first-class and may use different execution implementations.
 - The product must describe scaling intent without assuming one provider's vocabulary.
 - Unsupported combinations must be identified before an unsafe deployment begins.
+- Provider-specific options must be explicit and namespaced.
+- Environment names must not imply hidden behavior or safety policy.
+- Reusable configuration fragments must not displace the environment as the authoritative resolved configuration.
 
 ## Not yet decided
 

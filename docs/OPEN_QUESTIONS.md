@@ -2,20 +2,14 @@
 
 Nothing in this document is decided. These questions should be resolved before selecting a technical architecture.
 
-## Product scope
-
-- Does the product build artifacts, deploy prebuilt artifacts, or support both?
-- Does it own DNS, certificates, secrets, networking, and backups, or only reference existing facilities?
-- How much provider-specific configuration should remain visible?
-- Should deployment profiles be explicit user-facing objects or merely reusable configuration fragments?
-
 ## Configuration experience
 
 - One file, multiple files, or a directory convention?
 - How are application defaults and environment overrides merged?
 - How are invalid or contradictory overrides reported?
-- What is the escape hatch for provider-specific requirements?
-- Should configuration be declarative only, or may users include code?
+- How are reusable configuration fragments included and overridden?
+- How does declarative configuration reference custom build, migration, verification, and lifecycle code?
+- What contracts must custom actions declare for inputs, outputs, timing, retries, and failure?
 - How should secrets be referenced without leaking into plans or history?
 
 ## Component model
@@ -37,7 +31,6 @@ Nothing in this document is decided. These questions should be resolved before s
 
 ## Environment lifecycle
 
-- Which environment categories are built in, if any?
 - How are preview environments created, expired, and destroyed?
 - What does promotion preserve between environments?
 - Which values are behavior configuration versus infrastructure configuration?

@@ -16,6 +16,14 @@ _Avoid_: Platform team, operator
 A named deployment of an application with its own behavior, policy, implementation choices, secrets, domains, sizing, and lifecycle.
 _Avoid_: Stage, namespace
 
+**Persistent Environment**:
+An environment intended to remain until explicitly destroyed, independent of conventional names such as development or production.
+_Avoid_: Production environment
+
+**Ephemeral Environment**:
+An environment with an explicit expiry or destruction condition.
+_Avoid_: Preview environment
+
 **Component**:
 A logical application role drawn from Provision's fixed vocabulary, such as HTTP service, database, cache, realtime server, worker, scheduler, or queue.
 _Avoid_: Resource, workload
@@ -40,9 +48,21 @@ _Avoid_: Unmanaged component
 The stable meaning and requirements of a component across environments, despite explicit differences between implementations.
 _Avoid_: Identical behavior, provider neutrality
 
+**Configuration Fragment**:
+An optional reusable group of implementation choices that an environment may include without creating another domain entity.
+_Avoid_: Deployment profile, environment class
+
+**Artifact**:
+An immutable deployable output supplied to Provision or produced by a build.
+_Avoid_: Asset, binary
+
+**Build**:
+Application-defined work that converts source inputs into one or more artifacts for a revision.
+_Avoid_: Deployment, release
+
 **Revision**:
-An immutable built version of an application intended for deployment or promotion between environments.
-_Avoid_: Release, build
+An immutable manifest of application artifacts intended for deployment or promotion between environments.
+_Avoid_: Release, artifact
 
 **Deployment**:
 An attempt to place a revision into an environment according to that environment's selected implementations and policy.
@@ -51,4 +71,3 @@ _Avoid_: Reconciliation, rollout
 **Blue-Green Deployment**:
 A deployment that keeps the existing revision available while a candidate is prepared and verified, followed by a reversible handoff where the selected implementation supports it.
 _Avoid_: Zero-downtime deployment
-

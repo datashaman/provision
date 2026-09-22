@@ -17,7 +17,7 @@ The product should let a user describe:
 - an application and its components;
 - multiple environments with different behavior and policy;
 - where each component should run;
-- alternative implementations for databases, caches, realtime services, queues, workers, tasks, and schedules;
+- alternative implementations for databases, caches, object stores, realtime services, queues, workers, tasks, and schedules;
 - local, remote-host, EC2, ECS, Lambda, and managed-service deployment combinations;
 - blue-green behavior wherever the selected implementation can safely provide it.
 

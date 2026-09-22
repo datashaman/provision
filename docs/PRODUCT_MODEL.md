@@ -51,6 +51,7 @@ A component represents an application role. The initial vocabulary is deliberate
 - HTTP service;
 - database;
 - cache;
+- object store;
 - realtime server;
 - queue;
 - worker;
@@ -59,7 +60,7 @@ A component represents an application role. The initial vocabulary is deliberate
 
 This list is a product vocabulary, not an extensible resource-definition system.
 
-A queue is independent of its producers and consumers. A worker is a persistent queue consumer. A task runs to completion when invoked. A schedule identifies a target task and declares timing, overlap, retry, and failure policy. Cron, systemd timers, application cron runners, and cloud schedulers are possible implementations of that intent; “scheduler” is not a separate application component.
+A queue is independent of its producers and consumers. An object store contains application-addressable objects and is distinct from an implementation's attached filesystem or volume. A worker is a persistent queue consumer. A task runs to completion when invoked. A schedule identifies a target task and declares timing, overlap, retry, and failure policy. Cron, systemd timers, application cron runners, and cloud schedulers are possible implementations of that intent; “scheduler” is not a separate application component.
 
 ### Implementation choice
 
@@ -69,6 +70,7 @@ Examples:
 
 - PostgreSQL managed locally or provided by RDS;
 - Redis managed locally or provided by ElastiCache;
+- an object store using local or S3-compatible storage, or an external managed service;
 - a realtime server run by systemd, ECS, or an AWS WebSocket service;
 - a worker run as a systemd process, an ECS service consuming SQS, a per-job container, or a Lambda function;
 - a schedule emitted by cron, a systemd timer, an application scheduler, or EventBridge Scheduler.
@@ -92,7 +94,7 @@ Every stateful or supporting component is either managed or external.
 
 Ownership is explicit per component so one environment can mix managed and external services safely.
 
-Managed scope is limited to application-scoped resources: workloads, application databases, caches, queues, ingress, certificates, application DNS records, and application-level backup policy. Foundational infrastructure—including cloud accounts, network strategy, DNS zones, organizational identity, and secret stores—is initially external.
+Managed scope is limited to application-scoped resources: workloads, application databases, caches, object stores, queues, ingress, certificates, application DNS records, and application-level backup policy. Foundational infrastructure—including cloud accounts, network strategy, DNS zones, organizational identity, and secret stores—is initially external.
 
 Every managed stateful component has an explicit retention policy, with retention as the safe default. Ephemeral environments may explicitly select automatic deletion. An external component can become managed only through an explicit adoption operation that verifies its identity, records provenance, and presents the lifecycle responsibility being assumed.
 
@@ -103,6 +105,8 @@ A build is application-defined work that produces immutable artifacts. Provision
 A revision is an immutable manifest identifying the complete set of component artifacts for one application version. Unchanged components may reuse existing artifacts, but environments deploy and promote the complete revision rather than an unrecorded mixture of component versions.
 
 Creating a new artifact creates a new complete revision. During deployment, unchanged artifacts and components may be skipped safely, and the same revision may be reapplied, but the environment's recorded desired version remains a complete revision rather than a partial deployment.
+
+Environment-specific behavior and operational choices are versioned independently as an immutable environment configuration revision. A deployment records both the application revision and the resolved environment configuration revision, so changing a feature flag, implementation selection, or policy is attributable without pretending the application artifact changed.
 
 ### Declarative configuration and custom actions
 
@@ -122,13 +126,21 @@ Committed configuration contains secret references, never production secret valu
 
 An ephemeral environment has an explicit expiry or destruction condition. Expiry initiates automatic destruction, may be renewed explicitly, and still honors each stateful component's retention policy. Failed cleanup remains visible and retryable rather than being treated as successful destruction.
 
+External authorization policy decides who may create or renew an ephemeral environment. Provision enforces its declared maximum lifetime and resource limits. Creation and renewal are explicit and audited; activity alone never extends expiry.
+
 An environment has one active application revision. A deployment may temporarily run the current and candidate revisions for blue-green handoff, but after the transition only one is active. Deployments to the same environment are serialized. Concurrent isolated testing uses separate environments rather than several active revisions hidden inside one shared environment.
+
+A shared environment may have an optional expiring lease that identifies who is using it and why. Replacing a deployment protected by another user's lease requires explicit acknowledgement and leaves an audit record. The lease communicates coordination intent; it does not create permanent ownership.
 
 ### Production-derived test data
 
 Refreshing a shared testing environment from production-derived data is a named product workflow. Provision coordinates and records the operation, while extraction, anonymization, transformation, and loading are application-defined actions because their correctness depends on the application's schema and policies.
 
 Raw production data must be anonymized within the production security boundary before it crosses into a non-production environment. If that boundary cannot be demonstrated, the refresh fails closed. Data-refresh history remains distinct from application revision history because either may change independently.
+
+Each successful refresh produces a data snapshot record containing source reference, creation time, anonymization-action version, compatibility identifier, digest, and retention status without storing sensitive contents. Compatibility with an application revision must be checked explicitly rather than inferred from recency.
+
+Refreshes prefer staged loading followed by a switch. If an implementation cannot provide that behavior, the operation requires either a recoverable backup or explicit approval of a destructive mode. A partial load is a failed refresh and must never be presented as the active successful snapshot.
 
 ## Required deployment scenarios
 
@@ -152,7 +164,17 @@ Blue-green is a product requirement where the selected implementation can provid
 - Schedules must avoid duplicate execution during a transition.
 - Databases and caches require state-aware migration or endpoint-cutover behavior and cannot be treated like stateless processes.
 
-The product must expose when a requested guarantee is unavailable instead of silently degrading it.
+Each component selects an explicit rollout requirement:
+
+- **required** fails validation when blue-green behavior is unavailable;
+- **preferred** uses blue-green when available and requires explicit approval before an in-place fallback;
+- **replace** permits in-place replacement.
+
+There is no silent fallback. Before activation, every verification action required by destination policy must pass and any required manual approval must be recorded. Failed post-activation checks trigger automatic rollback when the implementation supports it; otherwise the failure and required recovery action remain explicit.
+
+## Audit history
+
+Provision records resolved configuration, plans, approvals, deployments, promotions, verification results, custom actions, data refreshes, adoption, destruction, expiry, rollback, lease overrides, and safety overrides. Each record identifies the actor, time, referenced inputs, outcome, and failure details without disclosing resolved secrets or sensitive dataset contents.
 
 ## Environment-aware behavior
 
@@ -183,6 +205,14 @@ Useful runtime metadata may include the environment name, lifecycle, application
 - Shared environments have one active revision and serialize deployments.
 - Production-derived data is anonymized before leaving the production boundary and enters non-production only through an explicit data refresh.
 - Invalid resolved configuration is rejected in full before changes begin.
+- Object stores are first-class components; implementation-local volumes are not.
+- Each deployment identifies both an application revision and an environment configuration revision.
+- Blue-green requirements and fallback behavior are explicit per component, with no silent degradation.
+- Candidate activation is gated by destination verification and approval policy.
+- Ephemeral creation and renewal are explicit, bounded, authorized, and audited.
+- Shared environments may use expiring coordination leases without creating permanent ownership.
+- Data snapshots are identifiable independently of application revisions, and partial refreshes never become successful snapshots.
+- Product operations produce attributable audit records without exposing secrets or sensitive data.
 
 ## Not yet decided
 

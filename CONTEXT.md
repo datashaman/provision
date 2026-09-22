@@ -25,7 +25,7 @@ An environment with an explicit expiry or destruction condition.
 _Avoid_: Preview environment
 
 **Component**:
-A logical application role drawn from Provision's fixed vocabulary, such as HTTP service, database, cache, realtime server, queue, worker, task, or schedule.
+A logical application role drawn from Provision's fixed vocabulary, such as HTTP service, database, cache, object store, realtime server, queue, worker, task, or schedule.
 _Avoid_: Resource, workload
 
 **Implementation**:
@@ -35,6 +35,10 @@ _Avoid_: Provider, driver, renderer
 **Queue**:
 A first-class component that carries asynchronous messages from producers to workers with declared delivery semantics.
 _Avoid_: Worker queue, channel
+
+**Object Store**:
+A first-class component that stores application-addressable objects independently of the machines or processes using them.
+_Avoid_: Volume, filesystem
 
 **Worker**:
 A persistent component that consumes work from a queue.
@@ -76,6 +80,10 @@ _Avoid_: Secret value, encrypted configuration value
 The complete, inspectable configuration produced from explicitly ordered documents and intentional overrides before validation or execution.
 _Avoid_: Effective files, discovered configuration
 
+**Environment Configuration Revision**:
+An immutable version of an environment's resolved behavior values, feature flags, implementation selections, and policy references, recorded independently of the application revision.
+_Avoid_: Environment version, mutable settings
+
 **Artifact**:
 An immutable deployable output supplied to Provision or produced by a build.
 _Avoid_: Asset, binary
@@ -116,6 +124,14 @@ _Avoid_: Global approval, trusted build
 A named operation that populates an environment from another data source through application-defined extraction, anonymization, and loading actions. Raw production data must be anonymized before crossing into a non-production environment.
 _Avoid_: Database copy, production clone
 
+**Data Snapshot**:
+An immutable record identifying the output of a successful data refresh by source reference, creation time, anonymization action version, compatibility identifier, digest, and retention status, without containing sensitive source data.
+_Avoid_: Database dump, backup
+
+**Environment Lease**:
+An optional, expiring declaration that an application team member is using a shared environment and why. It prevents accidental replacement but can be explicitly overridden with an audit record.
+_Avoid_: Deployment lock, ownership
+
 **Active Revision**:
 The one revision currently selected for an environment's application traffic and work. A deployment may temporarily prepare a candidate revision, but does not create multiple active revisions within that environment.
 _Avoid_: Latest build, deployed components
@@ -123,3 +139,7 @@ _Avoid_: Latest build, deployed components
 **Blue-Green Deployment**:
 A deployment that keeps the existing revision available while a candidate is prepared and verified, followed by a reversible handoff where the selected implementation supports it.
 _Avoid_: Zero-downtime deployment
+
+**Audit Record**:
+An attributable, immutable account of a product operation, its referenced inputs, approvals, outcome, and failure details, without resolved secret values or sensitive dataset contents.
+_Avoid_: Log line, mutable history

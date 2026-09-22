@@ -2,16 +2,10 @@
 
 Nothing in this document is decided. These questions should be resolved before selecting a technical architecture.
 
-## Component model
-
-- What portable scaling semantics are useful without becoming misleading?
-
 ## Deployment semantics
 
-- How are WebSocket connections drained or reconnected?
-- How are worker jobs made idempotent and in-flight work observed?
-- How are duplicate scheduled executions prevented?
 - What migration guarantees are expected for databases and durable state?
+- What does blue-green mean for databases, caches, and object stores: isolated copies, replication, shared compatibility, endpoint cutover, or a selectable strategy?
 
 ## Technical architecture—not yet discussed
 

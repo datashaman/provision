@@ -68,6 +68,10 @@ _Avoid_: Unmanaged component
 The stable meaning and requirements of a component across environments, despite explicit differences between implementations.
 _Avoid_: Identical behavior, provider neutrality
 
+**Capacity Intent**:
+A component's portable fixed capacity or bounded scaling and concurrency requirements, interpreted according to its selected implementation without hiding implementation-specific scaling behavior.
+_Avoid_: Instance count, autoscaling algorithm
+
 **Configuration Fragment**:
 An optional reusable group of implementation choices that an environment may include without creating another domain entity.
 _Avoid_: Deployment profile, environment class
@@ -93,7 +97,7 @@ Application-defined work that converts source inputs into one or more artifacts 
 _Avoid_: Deployment, release
 
 **Action**:
-Application-defined executable work referenced by declarative configuration with an explicit phase and execution contract.
+Application-defined executable work referenced by declarative configuration with an explicit phase, execution contract, and retry classification. An action may be idempotent, checkpoint-resumable, or explicitly single-attempt.
 _Avoid_: Configuration code, hook
 
 **Revision**:
@@ -109,7 +113,7 @@ An explicit operation that transfers an external component into Provision's mana
 _Avoid_: Import, automatic discovery
 
 **Deployment**:
-An attempt to place a revision into an environment according to that environment's selected implementations and policy.
+An ordered, resumable attempt to place an application revision and environment configuration revision into an environment according to its selected implementations and policy. It records partial progress and recovery rather than claiming transactionality across components.
 _Avoid_: Reconciliation, rollout
 
 **Promotion**:

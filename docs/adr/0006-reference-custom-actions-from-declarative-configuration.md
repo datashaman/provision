@@ -1,4 +1,3 @@
 # Reference custom actions from declarative configuration
 
-Builds, migrations, verification, and lifecycle work may contain unrestricted application code, but configuration references that code as bounded actions rather than executing general-purpose code while configuration is loaded. Each action declares its phase and execution contract, preserving inspectable plans without pretending application-specific work can be reduced to built-in primitives.
-
+Builds, migrations, verification, and lifecycle work may contain unrestricted application code, but configuration references that code as bounded actions rather than executing general-purpose code while configuration is loaded. Each action declares its phase and execution contract, including whether retry is safe because it is idempotent, resumable from a checkpoint, or prohibited after the first attempt. Every attempt is recorded, and Provision does not promise exactly-once execution of arbitrary code. This preserves inspectable plans without pretending application-specific work can be reduced to built-in primitives.

@@ -77,6 +77,8 @@ Examples:
 
 The product must validate whether a selected implementation can satisfy the component's declared requirements.
 
+Executable components express portable capacity intent as either fixed capacity or minimum and maximum capacity with a concurrency target. An implementation interprets capacity according to its execution model: a host or container implementation may use process or replica counts, while Lambda-style execution uses concurrency bounds. Provider-specific metrics, triggers, and scaling algorithms remain visible in namespaced options.
+
 The portability promise is **portable intent**, not identical behavior. Meaningful differences in scaling, availability, rollout safety, operational limits, and cost must remain visible. An environment that cannot satisfy a declared requirement must fail validation rather than silently weaken the requirement.
 
 Portable component fields form the common model. Provider- or implementation-specific configuration remains available through explicit namespaced options rather than being hidden or silently inferred.
@@ -112,7 +114,7 @@ Environment-specific behavior and operational choices are versioned independentl
 
 Configuration remains declarative, but it may reference application-defined executable actions for builds, migrations, verification, and lifecycle work. Custom code is not executed merely by loading configuration.
 
-An action declares its phase and execution contract, including inputs, outputs, timing, retry, and failure behavior. The eventual execution mechanism—such as local command, container, remote command, or function—belongs to later technical architecture work.
+An action declares its phase and execution contract, including inputs, outputs, timing, retry, and failure behavior. It also declares whether it is idempotent, resumable from an explicit checkpoint, or restricted to a single attempt. Provision records every attempt and never claims exactly-once execution of arbitrary application code. The eventual execution mechanism—such as local command, container, remote command, or function—belongs to later technical architecture work.
 
 Configuration is organized as explicitly referenced logical documents. A project may keep them in one physical file or many files, but meaning does not depend on filenames or automatic directory scanning.
 
@@ -154,14 +156,16 @@ At minimum, the product model must be able to express:
 6. Lambda for workloads compatible with event-driven serverless execution.
 7. Hybrid environments where different components use different execution options.
 
+Lambda may implement HTTP handlers, event-driven tasks, and queue consumers when their declared duration, concurrency, payload, and state requirements fit its capabilities. A schedule may invoke a Lambda-backed task. A persistent worker or realtime server does not map directly to Lambda, although a managed event or WebSocket frontend may invoke Lambda handlers. Incompatible selections fail validation.
+
 ## Blue-green expectation
 
 Blue-green is a product requirement where the selected implementation can provide it safely. The meaning differs by component role:
 
-- Request-serving services switch new traffic between revisions.
-- Realtime services must account for long-lived connections and draining.
-- Workers must hand off new work without losing in-flight jobs.
-- Schedules must avoid duplicate execution during a transition.
+- HTTP services prepare the candidate at a separate endpoint, pass required gates, switch new traffic through a stable entry point, drain old requests, and retain the previous revision for the declared rollback window. Required mode fails when stable routing and reversible handoff are unavailable.
+- Realtime services route new connections to the candidate while the old revision drains existing connections until a configured deadline. Remaining clients receive a reconnect signal and are disconnected. Provision does not claim live socket migration or uninterrupted connections.
+- Workers stop the old revision from claiming new work, expose and drain in-flight work, then activate the candidate consumer. Required mode needs acknowledgement or visibility semantics, and application-level idempotency remains necessary. The guarantee is at-least-once processing, not exactly-once execution.
+- Schedules have one active emitting revision and use a fenced handoff from old to new. Tasks must tolerate duplicate invocation around failures at the handoff boundary; Provision does not claim universal exactly-once scheduling.
 - Databases and caches require state-aware migration or endpoint-cutover behavior and cannot be treated like stateless processes.
 
 Each component selects an explicit rollout requirement:
@@ -171,6 +175,8 @@ Each component selects an explicit rollout requirement:
 - **replace** permits in-place replacement.
 
 There is no silent fallback. Before activation, every verification action required by destination policy must pass and any required manual approval must be recorded. Failed post-activation checks trigger automatic rollback when the implementation supports it; otherwise the failure and required recovery action remain explicit.
+
+A multi-component deployment is not transactional. Provision orders work, records explicit progress points, and resumes safely where possible. Stateless routing and workloads may be rolled back, while stateful changes may require declared compensating or forward-recovery actions. Partial execution remains visible and is never reported as an atomic success or disappearance.
 
 ## Audit history
 
@@ -213,6 +219,11 @@ Useful runtime metadata may include the environment name, lifecycle, application
 - Shared environments may use expiring coordination leases without creating permanent ownership.
 - Data snapshots are identifiable independently of application revisions, and partial refreshes never become successful snapshots.
 - Product operations produce attributable audit records without exposing secrets or sensitive data.
+- Portable executable scaling supports fixed capacity or bounded capacity with concurrency intent; provider algorithms remain explicit.
+- HTTP, realtime, worker, and schedule handoffs have role-specific blue-green guarantees rather than one generic promise.
+- Multi-component deployments are ordered and resumable, not transactional.
+- Actions declare retry safety, and arbitrary custom code is never presented as exactly-once.
+- Lambda is eligible only for component roles whose declared behavior fits event-driven serverless execution.
 
 ## Not yet decided
 

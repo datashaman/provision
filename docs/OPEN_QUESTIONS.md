@@ -4,10 +4,8 @@ Nothing in this document is decided. These questions should be resolved before s
 
 ## Product scope
 
-- Is the primary user an individual developer, an application team, or a platform team?
 - Does the product build artifacts, deploy prebuilt artifacts, or support both?
 - Does it own DNS, certificates, secrets, networking, and backups, or only reference existing facilities?
-- Is it intended for production operations or primarily for consistent development and small deployments?
 - How much provider-specific configuration should remain visible?
 - Should deployment profiles be explicit user-facing objects or merely reusable configuration fragments?
 

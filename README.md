@@ -2,6 +2,8 @@
 
 Provision is a working product concept for describing and deploying web applications across local machines, remote development hosts, and cloud execution environments.
 
+Its primary users are application teams without dedicated platform teams. The intended scope runs from development through small and medium production deployments.
+
 ## Status
 
 This repository is in **product discovery**. It records the product model and requirements discussed so far. It does not contain an agreed implementation or technical architecture.
@@ -22,8 +24,9 @@ The product should let a user describe:
 ## Documentation
 
 - [Product model](docs/PRODUCT_MODEL.md)
-- [Glossary](docs/GLOSSARY.md)
+- [Domain language](CONTEXT.md)
 - [Open questions](docs/OPEN_QUESTIONS.md)
+- [Decision records](docs/adr/)
 - [Exploratory material](docs/explorations/README.md)
 
 ## Important boundary

@@ -2,9 +2,17 @@
 
 ## Problem statement
 
-Developers need a consistent way to describe a web application and deploy it into materially different environments without maintaining unrelated deployment definitions for each target.
+Application teams without dedicated platform teams need a consistent way to describe a web application and deploy it into materially different environments without maintaining unrelated deployment definitions for each target.
 
 The product should preserve the application's intent while allowing each environment to choose appropriate implementations.
+
+## Product promise
+
+Provision's core job is to let an application team describe an application once and safely deploy it across local hosts and selected cloud targets.
+
+The intended scope runs from development through small and medium production deployments. Production safety must be genuine, but the initial product does not promise the governance, disaster recovery, organizational policy, or operational support expected of a mission-critical enterprise platform.
+
+Provisioning supporting services is in scope when necessary to deploy the application. Provision is not intended to become a general infrastructure-management product.
 
 ## Core concepts
 
@@ -55,6 +63,17 @@ Examples:
 - a schedule emitted by cron, a systemd timer, an application scheduler, or EventBridge Scheduler.
 
 The product must validate whether a selected implementation can satisfy the component's declared requirements.
+
+The portability promise is **portable intent**, not identical behavior. Meaningful differences in scaling, availability, rollout safety, operational limits, and cost must remain visible. An environment that cannot satisfy a declared requirement must fail validation rather than silently weaken the requirement.
+
+### Component ownership
+
+Every stateful or supporting component is either managed or external.
+
+- A managed component may be created, updated, and deleted by Provision within documented limits.
+- An external component exists outside Provision's lifecycle. Provision may validate it and bind the application to it but must not mutate or delete it.
+
+Ownership is explicit per component so one environment can mix managed and external services safely.
 
 ## Required deployment scenarios
 

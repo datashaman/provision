@@ -40,6 +40,18 @@ _Avoid_: Second database component, store revision
 The verified replacement of a store's active generation with a synchronized candidate generation, commonly for an engine upgrade, capacity change, storage-class change, or implementation migration.
 _Avoid_: Schema migration, in-place resize
 
+**Store Data Role**:
+Whether a store's contents are authoritative and must be synchronized, derived and may be rebuilt from an authoritative source, or ephemeral and may be discarded.
+_Avoid_: Durability setting, backup class
+
+**Store Rollback Guarantee**:
+The declared data-safety outcome if authority returns to a previous store generation after cutover: zero-loss, bounded-loss, or forward-only with no safe return to the old generation.
+_Avoid_: Retention window, backup policy
+
+**Transition Cleanup Policy**:
+The rule for retaining, snapshotting, or destroying a previous store generation after its rollback window and verification requirements have completed.
+_Avoid_: Component retention policy, automatic deletion
+
 **Schema Migration**:
 Application-defined work that changes the data contract understood by application revisions, independently of whether the underlying store generation changes.
 _Avoid_: Store upgrade, database replacement

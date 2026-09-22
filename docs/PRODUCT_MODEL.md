@@ -182,6 +182,18 @@ There is no silent fallback. Before activation, every verification action requir
 
 For a managed store in required mode, the selected implementation must provide an isolated candidate generation, synchronization or rebuilding appropriate to the store, verification, authority cutover, and retention of the previous generation for the declared rollback window. Provider-managed in-place or rolling changes satisfy required mode only when they expose equivalent isolation, verification, cutover, and rollback guarantees; otherwise they are preferred or replace behavior.
 
+Required store blue-green guarantees that no acknowledged write is lost during the forward cutover. The implementation may continuously replicate or use a declared, bounded write pause for final synchronization. The plan exposes the maximum expected write interruption, and validation fails when the environment's requirement is stricter than the implementation can satisfy.
+
+Rollback after the candidate accepts writes is a separate guarantee because the previous generation immediately becomes stale. An environment selects **zero-loss** rollback, **bounded-loss** rollback with an explicit maximum, or **forward-only** recovery. Zero-loss requires reverse synchronization or an equivalent mechanism; retaining the previous generation alone does not qualify. Blue-green therefore always guarantees a lossless forward cutover but does not disguise a weaker rollback guarantee.
+
+Each store declares whether its data is **authoritative**, **derived**, or **ephemeral**. Authoritative data must be synchronized. Derived data may be rebuilt from a declared authoritative source, and ephemeral data may be discarded. Databases and object stores default to authoritative; caches default to derived, with an explicit override when a cache contains authoritative state. Rebuilding and verification can satisfy blue-green for a derived or ephemeral candidate without copying the old generation.
+
+Schema migration Actions declare the application revisions compatible with the resulting data contract. The default pattern is expand-and-contract: expansion happens before candidate activation, both application revisions remain compatible throughout the rollback window, and destructive contraction waits until neither the old application revision nor old store generation remains a rollback target.
+
+An external store can satisfy required blue-green only when its owner supplies verifiable candidate addressing, synchronization or rebuilding, health evidence, cutover, and rollback semantics. Provision may coordinate declared bindings and Actions within its granted authority but does not gain lifecycle control over the external component. Missing capabilities fail validation.
+
+After the rollback window, a transition cleanup policy governs the previous generation separately from the surviving component's retention policy. Cleanup requires successful verification, expiry of the rollback window, and an auditable decision. The safe default replaces the running previous generation with a verified retained backup or snapshot rather than silently destroying all recovery material.
+
 A multi-component deployment is not transactional. Provision orders work, records explicit progress points, and resumes safely where possible. Stateless routing and workloads may be rolled back, while stateful changes may require declared compensating or forward-recovery actions. Partial execution remains visible and is never reported as an atomic success or disappearance.
 
 ## Audit history
@@ -232,6 +244,11 @@ Useful runtime metadata may include the environment name, lifecycle, application
 - Lambda is eligible only for component roles whose declared behavior fits event-driven serverless execution.
 - Store blue-green operates on physical generations of one logical component and applies to upgrades, upsizing, storage changes, and implementation migration.
 - Store transitions are environment changes distinct from application-defined schema migrations.
+- Required store blue-green loses no acknowledged writes during forward cutover; rollback loss is declared separately.
+- Store data is authoritative, derived, or ephemeral, determining whether a candidate must synchronize, rebuild, or may start empty.
+- Schema migration compatibility spans the application and store rollback window before destructive contraction.
+- External stores must expose verifiable transition capabilities to satisfy required blue-green.
+- Previous store generations follow an explicit transition cleanup policy after the rollback window.
 
 ## Not yet decided
 

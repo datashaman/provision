@@ -20,7 +20,7 @@ Provision supports both application-defined builds and artifacts built elsewhere
 
 ### Application
 
-An application describes the logical system being deployed. It owns component relationships and portable behavioral requirements, not provider-specific infrastructure.
+An application describes the logical system being deployed. It is a cohesive deployment and promotion boundary, not a source-repository boundary: its components may be built from multiple repositories but are recorded together as one revision. It owns component relationships and portable behavioral requirements, not provider-specific infrastructure.
 
 ### Environment
 
@@ -36,7 +36,9 @@ Environment is first-class because application behavior may differ between envir
 - persistent or ephemeral lifecycle;
 - an implementation selection for each component.
 
-The same built application revision should be promotable between environments without rebuilding it.
+Provision supports two environment workflows. A revision may be deployed independently to any environment, or the exact same revision may be promoted from one environment to another without rebuilding it. Environment names do not create an implicit promotion pipeline.
+
+A shared testing environment may receive whichever revision a team needs to test and may use anonymized data derived from production. That use does not make it a mandatory pre-production stage. A team may separately choose a pipeline-style workflow in which a revision is promoted through environments.
 
 Environment names such as development, preview, staging, and production have no hidden behavior. An environment explicitly declares a persistent or ephemeral lifecycle, and its approval, retention, destruction protection, sizing, and deployment policy remain visible.
 
@@ -51,11 +53,11 @@ A component represents an application role. The initial vocabulary is deliberate
 - queue;
 - worker;
 - task;
-- scheduler;
+- schedule;
 
 This list is a product vocabulary, not an extensible resource-definition system.
 
-A queue is independent of its producers and consumers. A worker is a persistent queue consumer. A task runs to completion when invoked. A scheduler initiates tasks according to recurring or one-time schedules.
+A queue is independent of its producers and consumers. A worker is a persistent queue consumer. A task runs to completion when invoked. A schedule identifies a target task and declares timing, overlap, retry, and failure policy. Cron, systemd timers, application cron runners, and cloud schedulers are possible implementations of that intent; “scheduler” is not a separate application component.
 
 ### Implementation choice
 
@@ -98,11 +100,21 @@ A build is application-defined work that produces immutable artifacts. Provision
 
 A revision is an immutable manifest identifying the complete set of component artifacts for one application version. Unchanged components may reuse existing artifacts, but environments deploy and promote the complete revision rather than an unrecorded mixture of component versions.
 
+Creating a new artifact creates a new complete revision. During deployment, unchanged artifacts and components may be skipped safely, and the same revision may be reapplied, but the environment's recorded desired version remains a complete revision rather than a partial deployment.
+
 ### Declarative configuration and custom actions
 
 Configuration remains declarative, but it may reference application-defined executable actions for builds, migrations, verification, and lifecycle work. Custom code is not executed merely by loading configuration.
 
 An action declares its phase and execution contract, including inputs, outputs, timing, retry, and failure behavior. The eventual execution mechanism—such as local command, container, remote command, or function—belongs to later technical architecture work.
+
+Configuration is organized as explicitly referenced logical documents. A project may keep them in one physical file or many files, but meaning does not depend on filenames or automatic directory scanning. How included documents and environment overrides merge remains to be decided.
+
+Committed configuration contains secret references, never production secret values. Local environments may reference process environment variables, ignored local files, or a local secret provider. Plans, deployment history, and diagnostics must not reveal resolved values.
+
+### Environment lifecycle
+
+An ephemeral environment has an explicit expiry or destruction condition. Expiry initiates automatic destruction, may be renewed explicitly, and still honors each stateful component's retention policy. Failed cleanup remains visible and retryable rather than being treated as successful destruction.
 
 ## Required deployment scenarios
 
@@ -132,16 +144,16 @@ The product must expose when a requested guarantee is unavailable instead of sil
 
 Applications should receive explicit environment configuration and feature flags. Environment-specific business behavior should not depend on detecting an infrastructure provider or execution implementation.
 
-Useful runtime metadata may include the environment name, stage, application revision, and active deployment color. The exact delivery mechanism is not yet decided.
+Useful runtime metadata may include the environment name, lifecycle, application revision, and active deployment color. The exact delivery mechanism is not yet decided.
 
 ## Product constraints established so far
 
 - Component implementation is selectable per environment and per component.
 - A remote development host is distinct from the machine running the deployment command.
 - Persistent services are first-class, not incidental attachments to an HTTP service.
-- Workers and schedulers are first-class and may use different execution implementations.
+- Workers and schedules are first-class and may use different execution implementations.
 - Queues are first-class; workers consume them rather than own them implicitly.
-- Workers are persistent consumers, while tasks run to completion and may be triggered by schedulers.
+- Workers are persistent consumers, while tasks run to completion and may be triggered by schedules.
 - Each component has one authoritative implementation per environment.
 - The product must describe scaling intent without assuming one provider's vocabulary.
 - Unsupported combinations must be identified before an unsafe deployment begins.
@@ -149,6 +161,10 @@ Useful runtime metadata may include the environment name, stage, application rev
 - Environment names must not imply hidden behavior or safety policy.
 - Reusable configuration fragments must not displace the environment as the authoritative resolved configuration.
 - Stateful retention defaults to safe preservation, and adoption into managed lifecycle is always explicit.
+- Applications may span repositories but form one revision boundary.
+- Environments may receive revisions independently; promotion is an optional exact-revision workflow.
+- Configuration documents are included explicitly and do not gain meaning from filenames or directory scanning.
+- Committed configuration contains references to secrets, not secret values.
 
 ## Not yet decided
 

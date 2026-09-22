@@ -5,7 +5,7 @@ Provision helps application teams without dedicated platform teams describe an a
 ## Language
 
 **Application**:
-A logical deployable system composed of related components, independent of any particular environment or execution target.
+A cohesive deployment and promotion boundary composed of related components, independent of any particular repository, environment, or execution target. Its components may be built from more than one source repository.
 _Avoid_: Project, stack
 
 **Application Team**:
@@ -25,7 +25,7 @@ An environment with an explicit expiry or destruction condition.
 _Avoid_: Preview environment
 
 **Component**:
-A logical application role drawn from Provision's fixed vocabulary, such as HTTP service, database, cache, realtime server, queue, worker, task, or scheduler.
+A logical application role drawn from Provision's fixed vocabulary, such as HTTP service, database, cache, realtime server, queue, worker, task, or schedule.
 _Avoid_: Resource, workload
 
 **Implementation**:
@@ -41,12 +41,12 @@ A persistent component that consumes work from a queue.
 _Avoid_: Job, task
 
 **Task**:
-A run-to-completion component that succeeds or fails when invoked manually, by a scheduler, or by another component.
+A run-to-completion component that succeeds or fails when invoked manually, by a schedule, or by another component.
 _Avoid_: One-shot worker, job
 
-**Scheduler**:
-A component that invokes tasks according to recurring or one-time schedules.
-_Avoid_: Cron job, scheduled worker
+**Schedule**:
+A first-class component that defines when a task is invoked and its overlap, retry, and failure policy. A scheduler is an environment-specific implementation of schedules rather than an application component.
+_Avoid_: Scheduler, cron job, scheduled worker
 
 **Execution Target**:
 The place where executable components run, such as the current machine, a remote host, EC2, ECS, or Lambda.
@@ -67,6 +67,10 @@ _Avoid_: Identical behavior, provider neutrality
 **Configuration Fragment**:
 An optional reusable group of implementation choices that an environment may include without creating another domain entity.
 _Avoid_: Deployment profile, environment class
+
+**Secret Reference**:
+An identifier that tells an implementation where to obtain a secret without placing the secret value in committed configuration, plans, or history.
+_Avoid_: Secret value, encrypted configuration value
 
 **Artifact**:
 An immutable deployable output supplied to Provision or produced by a build.
@@ -95,6 +99,10 @@ _Avoid_: Import, automatic discovery
 **Deployment**:
 An attempt to place a revision into an environment according to that environment's selected implementations and policy.
 _Avoid_: Reconciliation, rollout
+
+**Promotion**:
+An optional deployment workflow that selects an exact revision already deployed or verified in one environment for deployment to another. Environments may also receive revisions independently and do not form an implicit pipeline.
+_Avoid_: Stage progression, rebuild
 
 **Blue-Green Deployment**:
 A deployment that keeps the existing revision available while a candidate is prepared and verified, followed by a reversible handoff where the selected implementation supports it.

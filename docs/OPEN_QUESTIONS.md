@@ -4,11 +4,9 @@ Nothing in this document is decided. These questions should be resolved before s
 
 ## Configuration experience
 
-- One file, multiple files, or a directory convention?
 - How are application defaults and environment overrides merged?
 - How are invalid or contradictory overrides reported?
 - How are reusable configuration fragments included and overridden?
-- How should secrets be referenced without leaking into plans or history?
 
 ## Component model
 
@@ -26,8 +24,12 @@ Nothing in this document is decided. These questions should be resolved before s
 
 ## Environment lifecycle
 
-- How are preview environments created, expired, and destroyed?
-- What does promotion preserve between environments?
+- How are ephemeral environments created, and who may renew their expiry?
+- What test or verification evidence, if any, accompanies a promoted revision?
+- Is refreshing a shared test environment from anonymized production data a first-class workflow, a custom action, or outside Provision's scope?
+- Where must anonymization occur, and what evidence is required before production-derived data may cross into a non-production environment?
+- Who owns extraction, anonymization, loading, rollback, and retention of production-derived test data?
+- Can a shared environment host more than one application revision concurrently, or does it always have one active revision?
 - Which values are behavior configuration versus infrastructure configuration?
 - What audit history and approval flow are required?
 

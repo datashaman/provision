@@ -48,11 +48,14 @@ A component represents an application role. The initial vocabulary is deliberate
 - database;
 - cache;
 - realtime server;
+- queue;
 - worker;
+- task;
 - scheduler;
-- queue or event channel.
 
 This list is a product vocabulary, not an extensible resource-definition system.
+
+A queue is independent of its producers and consumers. A worker is a persistent queue consumer. A task runs to completion when invoked. A scheduler initiates tasks according to recurring or one-time schedules.
 
 ### Implementation choice
 
@@ -74,6 +77,8 @@ Portable component fields form the common model. Provider- or implementation-spe
 
 Reusable implementation selections may be packaged as optional configuration fragments. They are not a separate domain entity, and the resolved environment remains authoritative.
 
+Each component has exactly one authoritative implementation in an environment. Blue-green deployment uses two revisions of that implementation rather than two unrelated implementations. A controlled migration may temporarily use source and destination implementations but must finish with one authoritative binding.
+
 ### Component ownership
 
 Every stateful or supporting component is either managed or external.
@@ -85,11 +90,19 @@ Ownership is explicit per component so one environment can mix managed and exter
 
 Managed scope is limited to application-scoped resources: workloads, application databases, caches, queues, ingress, certificates, application DNS records, and application-level backup policy. Foundational infrastructure—including cloud accounts, network strategy, DNS zones, organizational identity, and secret stores—is initially external.
 
+Every managed stateful component has an explicit retention policy, with retention as the safe default. Ephemeral environments may explicitly select automatic deletion. An external component can become managed only through an explicit adoption operation that verifies its identity, records provenance, and presents the lifecycle responsibility being assumed.
+
 ### Builds, artifacts, and revisions
 
 A build is application-defined work that produces immutable artifacts. Provision may run the build or accept artifacts from another build system.
 
-A revision is an immutable manifest of the artifacts that make up an application version. Environments deploy revisions; they do not rebuild them. A revision may contain multiple component artifacts.
+A revision is an immutable manifest identifying the complete set of component artifacts for one application version. Unchanged components may reuse existing artifacts, but environments deploy and promote the complete revision rather than an unrecorded mixture of component versions.
+
+### Declarative configuration and custom actions
+
+Configuration remains declarative, but it may reference application-defined executable actions for builds, migrations, verification, and lifecycle work. Custom code is not executed merely by loading configuration.
+
+An action declares its phase and execution contract, including inputs, outputs, timing, retry, and failure behavior. The eventual execution mechanism—such as local command, container, remote command, or function—belongs to later technical architecture work.
 
 ## Required deployment scenarios
 
@@ -127,11 +140,15 @@ Useful runtime metadata may include the environment name, stage, application rev
 - A remote development host is distinct from the machine running the deployment command.
 - Persistent services are first-class, not incidental attachments to an HTTP service.
 - Workers and schedulers are first-class and may use different execution implementations.
+- Queues are first-class; workers consume them rather than own them implicitly.
+- Workers are persistent consumers, while tasks run to completion and may be triggered by schedulers.
+- Each component has one authoritative implementation per environment.
 - The product must describe scaling intent without assuming one provider's vocabulary.
 - Unsupported combinations must be identified before an unsafe deployment begins.
 - Provider-specific options must be explicit and namespaced.
 - Environment names must not imply hidden behavior or safety policy.
 - Reusable configuration fragments must not displace the environment as the authoritative resolved configuration.
+- Stateful retention defaults to safe preservation, and adoption into managed lifecycle is always explicit.
 
 ## Not yet decided
 

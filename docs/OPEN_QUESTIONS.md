@@ -8,16 +8,11 @@ Nothing in this document is decided. These questions should be resolved before s
 - How are application defaults and environment overrides merged?
 - How are invalid or contradictory overrides reported?
 - How are reusable configuration fragments included and overridden?
-- How does declarative configuration reference custom build, migration, verification, and lifecycle code?
-- What contracts must custom actions declare for inputs, outputs, timing, retries, and failure?
 - How should secrets be referenced without leaking into plans or history?
 
 ## Component model
 
 - Is the initial component vocabulary complete?
-- Are queues first-class components or bindings used by workers?
-- Is a run-to-completion task a worker mode or a separate component type?
-- Can one logical component have multiple implementations in the same environment?
 - What portable scaling semantics are useful without becoming misleading?
 
 ## Deployment semantics

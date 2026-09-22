@@ -25,12 +25,28 @@ An environment with an explicit expiry or destruction condition.
 _Avoid_: Preview environment
 
 **Component**:
-A logical application role drawn from Provision's fixed vocabulary, such as HTTP service, database, cache, realtime server, worker, scheduler, or queue.
+A logical application role drawn from Provision's fixed vocabulary, such as HTTP service, database, cache, realtime server, queue, worker, task, or scheduler.
 _Avoid_: Resource, workload
 
 **Implementation**:
-An environment-specific way to realize a component while preserving its declared intent.
+The single authoritative environment-specific way to realize a component while preserving its declared intent.
 _Avoid_: Provider, driver, renderer
+
+**Queue**:
+A first-class component that carries asynchronous messages from producers to workers with declared delivery semantics.
+_Avoid_: Worker queue, channel
+
+**Worker**:
+A persistent component that consumes work from a queue.
+_Avoid_: Job, task
+
+**Task**:
+A run-to-completion component that succeeds or fails when invoked manually, by a scheduler, or by another component.
+_Avoid_: One-shot worker, job
+
+**Scheduler**:
+A component that invokes tasks according to recurring or one-time schedules.
+_Avoid_: Cron job, scheduled worker
 
 **Execution Target**:
 The place where executable components run, such as the current machine, a remote host, EC2, ECS, or Lambda.
@@ -60,9 +76,21 @@ _Avoid_: Asset, binary
 Application-defined work that converts source inputs into one or more artifacts for a revision.
 _Avoid_: Deployment, release
 
+**Action**:
+Application-defined executable work referenced by declarative configuration with an explicit phase and execution contract.
+_Avoid_: Configuration code, hook
+
 **Revision**:
-An immutable manifest of application artifacts intended for deployment or promotion between environments.
+An immutable manifest that identifies the complete set of component artifacts for an application version.
 _Avoid_: Release, artifact
+
+**Retention Policy**:
+An explicit rule that determines whether a managed stateful component is retained or deleted when its environment is destroyed; retention is the default.
+_Avoid_: Delete flag
+
+**Adoption**:
+An explicit operation that transfers an external component into Provision's managed lifecycle after identity and consequences are verified.
+_Avoid_: Import, automatic discovery
 
 **Deployment**:
 An attempt to place a revision into an environment according to that environment's selected implementations and policy.

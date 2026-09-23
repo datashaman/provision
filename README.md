@@ -23,7 +23,7 @@ go run ./cmd/provision config validate --file examples/host-http/root.yaml
 go run ./cmd/provision host inspect --address base.local --user marlinf
 ```
 
-Build the fixture bundle with `examples/host-http/build.sh amd64`, then pass its output to `config validate --artifact-file examples/host-http/dist/hello-linux-amd64.tar.gz` to verify its actual bytes. The bundle source in the Revision must be an external HTTPS or OCI location; the local file is a read-only verification input, not a deployment-source override. The fixture's external source is the `host-http-fixture-v1` GitHub release asset. See the [host bootstrap guide](docs/host-bootstrap.md) before preparing a disposable machine. Never apply the bootstrap to the Gimme-managed `base.local` until the user has completed its separate reset.
+Build the fixture bundle with `examples/host-http/build.sh amd64`, then pass its output to `config validate --artifact-file examples/host-http/dist/hello-linux-amd64.tar.gz` to verify its actual bytes. The bundle source in the Revision must be an external HTTPS or OCI location; the local file is a read-only verification input, not a deployment-source override. The declared `host-http-fixture-v1` GitHub release asset is a publication target and is not yet available; external-source verification remains pending publication. See the [host bootstrap guide](docs/host-bootstrap.md) before preparing a disposable machine. Never apply the bootstrap to the Gimme-managed `base.local` until the user has completed its separate reset.
 
 Development uses an optional exact Go tool pin in `mise.toml`; mise is not a runtime dependency of Provision or deployed applications.
 

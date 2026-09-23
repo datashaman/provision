@@ -65,6 +65,23 @@ done
 for path in "$executor_path" "$record_path" "$sudoers_path" "$environment_home"; do
   [[ ! -L "$path" ]] || { echo "symlink at $path; refusing bootstrap" >&2; exit 1; }
 done
+expect_existing_path() {
+  local path="$1" kind="$2" expected="$3" actual
+  [[ -e "$path" ]] || return 0
+  if [[ "$kind" == directory ]]; then
+    [[ -d "$path" ]] || { echo "expected directory at $path; refusing bootstrap" >&2; exit 1; }
+  else
+    [[ -f "$path" ]] || { echo "expected regular file at $path; refusing bootstrap" >&2; exit 1; }
+  fi
+  actual="$(stat -c '%u:%g:%a' "$path")"
+  [[ "$actual" == "$expected" ]] || { echo "ownership or mode drift at $path ($actual, expected $expected); refusing bootstrap" >&2; exit 1; }
+}
+for path in /usr/local/libexec /etc/provision /etc/provision/bootstrap /var/lib/provision /var/lib/provision/environments; do
+  expect_existing_path "$path" directory 0:0:755
+done
+expect_existing_path "$executor_path" file 0:0:755
+expect_existing_path "$record_path" file 0:0:644
+expect_existing_path "$sudoers_path" file 0:0:440
 if [[ -e "$executor_path" && "sha256:$(sha256_file "$executor_path")" != "$digest" ]]; then
   echo "an existing executor has different bytes; refusing bootstrap" >&2
   exit 1
@@ -75,6 +92,10 @@ if getent passwd "$account" >/dev/null; then
   [[ "$existing_uid" =~ ^[0-9]+$ && "$existing_uid" -gt 0 && "$existing_uid" -lt 1000 && "$existing_home" == "$environment_home" && "$existing_shell" == /usr/sbin/nologin ]] || {
     echo "Environment account differs from requested identity" >&2; exit 1;
   }
+  expect_existing_path "$environment_home" directory "$(id -u "$account"):$(id -g "$account"):750"
+elif [[ -e "$environment_home" ]]; then
+  echo "Environment home exists without its account; refusing bootstrap" >&2
+  exit 1
 fi
 
 record_tmp="$(mktemp)"
@@ -110,4 +131,9 @@ fi
 install -o root -g root -m 0644 "$record_tmp" "$record_path"
 install -o root -g root -m 0440 "$sudoers_tmp" "$sudoers_path"
 visudo -cf "$sudoers_path" >/dev/null
-sudo -n -u "$operator" -- sudo -n "$executor_path" inspect --environment "$environment" --operator "$operator"
+inspection="$(sudo -n -u "$operator" -- sudo -n "$executor_path" inspect --environment "$environment" --operator "$operator")"
+printf '%s\n' "$inspection"
+if ! grep -Eq '"ready":[[:space:]]*true' <<< "$inspection"; then
+  echo "bootstrap inspection reported not ready; see findings above" >&2
+  exit 1
+fi

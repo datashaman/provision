@@ -16,6 +16,8 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
+
+	"provision/internal/host"
 )
 
 const executorPath = "/usr/local/libexec/provision-host-executor"
@@ -29,25 +31,6 @@ type bootstrapRecord struct {
 	Operator       string `json:"operator"`
 	Account        string `json:"account"`
 	ExecutorDigest string `json:"executorDigest"`
-}
-
-type status struct {
-	Environment       string   `json:"environment"`
-	Operator          string   `json:"operator"`
-	Account           string   `json:"account"`
-	OS                string   `json:"os"`
-	OSVersion         string   `json:"osVersion"`
-	Architecture      string   `json:"architecture"`
-	SystemdVersion    string   `json:"systemdVersion,omitempty"`
-	SSHServerVersion  string   `json:"sshServerVersion,omitempty"`
-	CaddyVersion      string   `json:"caddyVersion,omitempty"`
-	CaddyActive       bool     `json:"caddyActive"`
-	JournaldActive    bool     `json:"journaldActive"`
-	CgroupV2          bool     `json:"cgroupV2"`
-	ExecutorDigest    string   `json:"executorDigest,omitempty"`
-	AllowedOperations []string `json:"allowedOperations"`
-	Ready             bool     `json:"ready"`
-	Findings          []string `json:"findings"`
 }
 
 func main() {
@@ -76,9 +59,9 @@ func run(args []string) error {
 	return encoder.Encode(result)
 }
 
-func inspect(environment, operator string) status {
+func inspect(environment, operator string) host.BootstrapStatus {
 	account := "provision-" + environment
-	result := status{Environment: environment, Operator: operator, Account: account, AllowedOperations: []string{"inspect"}, Findings: []string{}}
+	result := host.BootstrapStatus{Environment: environment, Operator: operator, Account: account, AllowedOperations: []string{"inspect"}, Findings: []string{}}
 	result.Architecture = strings.TrimSpace(command("uname", "-m"))
 	if data, err := os.ReadFile("/etc/os-release"); err == nil {
 		for _, line := range strings.Split(string(data), "\n") {

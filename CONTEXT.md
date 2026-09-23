@@ -89,7 +89,7 @@ A separately addressable physical realization of one logical Queue during replac
 _Avoid_: Second Queue component, worker revision
 
 **Object Store**:
-A first-class component that stores application-addressable objects independently of the machines or processes using them.
+A first-class component that stores application-addressable objects independently of the machines or processes using them. Its access method is an explicit compatibility requirement rather than an implicit translation between filesystem and S3 APIs.
 _Avoid_: Volume, filesystem
 
 **Worker**:

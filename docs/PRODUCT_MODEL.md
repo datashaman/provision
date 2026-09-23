@@ -103,6 +103,8 @@ Examples:
 
 The product must validate whether a selected implementation can satisfy the component's declared requirements.
 
+An application declares which object-store access methods it supports: filesystem, S3 API, or both. An environment may select only an implementation compatible with that declaration. Provision does not translate filesystem operations into S3 operations or promise that an unchanged application artifact works with both APIs. A host application requiring S3 may bind an external S3-compatible service.
+
 Executable components express portable capacity intent as either fixed capacity or minimum and maximum capacity with a concurrency target. An implementation interprets capacity according to its execution model: a host or container implementation may use process or replica counts, while Lambda-style execution uses concurrency bounds. Provider-specific metrics, triggers, and scaling algorithms remain visible in namespaced options.
 
 An environment may use multiple named execution targets and select one per component. A hybrid environment may combine systemd services on a host, a managed database, a cloud queue, and Lambda-backed tasks without pretending they form one homogeneous cluster.
@@ -148,6 +150,8 @@ Components may be built by different repositories and pipelines. Provision assem
 
 Artifact digests are always required for identity. Environment policy may additionally require referenced provenance, signatures, vulnerability evidence, or other attestations. Provision validates the required evidence but does not become the artifact registry, signing authority, or security scanner.
 
+Each artifact has an explicitly declared publication destination and a digest verified after publication. There is no implicit registry, bucket, or artifact destination. Provision may stage a verified artifact into a target-specific location without making that staging location its authoritative publication destination.
+
 A revision is an immutable manifest identifying the complete set of component artifacts for one application version. Unchanged components may reuse existing artifacts, but environments deploy and promote the complete revision rather than an unrecorded mixture of component versions.
 
 Creating a new artifact creates a new complete revision. During deployment, unchanged artifacts and components may be skipped safely, and the same revision may be reapplied, but the environment's recorded desired version remains a complete revision rather than a partial deployment.
@@ -171,6 +175,8 @@ Validation is atomic with respect to planning: Provision reports every detectabl
 Committed configuration contains secret references, never production secret values. Local environments may reference process environment variables, ignored local files, or a local secret provider. Plans, deployment history, and diagnostics must not reveal resolved values.
 
 When the value behind a secret reference changes, Provision treats it as an explicit secret-rotation event. Each consumer declares whether it reads the value dynamically, supports a verified reload, or requires a rollout. Provision coordinates and audits the selected behavior without recording the secret value or assuming that an unchanged reference means no operational change occurred.
+
+A Plan records an observed, non-disclosing change identity for every secret reference it depends on. If the secret changes after planning, that Plan becomes stale and execution requires replanning; this applies even though the Plan never contains the secret value.
 
 ### Planning and drift
 
@@ -216,6 +222,8 @@ Destroying an environment begins with a destructive plan that classifies every a
 
 Every authoritative managed store has a recovery policy declaring backup frequency, retention, acceptable data loss, acceptable recovery time, and restore-verification requirements. Implementations expose their capabilities, and an environment fails validation when they cannot satisfy its policy.
 
+Each managed-store implementation owns the backup and isolated restore-verification capability it advertises. Application-defined Actions may provide additional consistency steps, but cannot stand in for an implementation's missing baseline recovery capability when policy requires it.
+
 A restore creates a candidate store generation or separate recovery environment by default. The restored data is verified before any explicit cutover makes it authoritative. Destructive in-place restore is exceptional and requires a clearly declared and approved policy.
 
 ### Production-derived test data
@@ -255,9 +263,9 @@ Realtime applications are supported across host, ECS, and Lambda-oriented enviro
 Blue-green is a product requirement where the selected implementation can provide it safely. The meaning differs by component role:
 
 - HTTP services prepare the candidate at a separate endpoint, pass required gates, switch new traffic through a stable entry point, drain old requests, and retain the previous revision for the declared rollback window. Required mode fails when stable routing and reversible handoff are unavailable.
-- Realtime services route new connections to the candidate while the old revision drains existing connections until a configured deadline. Remaining clients receive a reconnect signal and are disconnected. Provision does not claim live socket migration or uninterrupted connections.
+- Realtime services route new connections to the candidate while the old revision drains existing connections for a declared maximum period. At the deadline, remaining clients receive a reconnect signal when the protocol permits it, are disconnected, and reconnect to the active generation. Provision does not claim live socket migration or zero disconnections.
 - Workers stop the old revision from claiming new work, expose and drain in-flight work, then activate the candidate consumer. Required mode needs acknowledgement or visibility semantics, and application-level idempotency remains necessary. The guarantee is at-least-once processing, not exactly-once execution.
-- A Queue remains one logical component while current and candidate physical Queue Generations may coexist. Replacing a Queue requires control of producer admission, draining or releasing in-flight work, destination-confirmed transfer of remaining messages, verification, and a switch of producers and consumers. Required mode fails if messages accepted from producers cannot be preserved; at-least-once delivery may still duplicate work.
+- A Queue remains one logical component while current and candidate physical Queue Generations may coexist. Replacing a Queue requires control of producer admission, draining or releasing in-flight work, destination-confirmed transfer of remaining messages, verification, and a switch of producers and consumers. Required mode fails if messages accepted from producers or the declared ordering guarantee cannot be preserved; at-least-once delivery may still duplicate work.
 - Schedules have one active emitting revision and use a fenced handoff from old to new. Tasks must tolerate duplicate invocation around failures at the handoff boundary; Provision does not claim universal exactly-once scheduling.
 - Databases, key-value stores, and object stores may prepare a separately addressable candidate generation, synchronize or rebuild it as appropriate, verify it, switch authority, and retain the previous generation for a declared rollback window. This supports engine upgrades, upsizing, storage-class changes, and implementation migrations without treating the store as permanently shared or replacing it in place.
 

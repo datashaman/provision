@@ -5,10 +5,8 @@ The product model is agreed. The following technical-architecture questions rema
 ## Technical architecture
 
 - Internal Go package structure beyond the three core modules?
-- Exact AWS-backed shared-state services and schema?
-- Provisioning implementation: SDKs, Terraform/OpenTofu, CloudFormation, Pulumi, or another mechanism?
+- Detailed DynamoDB keys, S3 object layout, retention, and migrations?
+- Detailed interfaces for implementation adapters and typed operations?
 - Plugin model, if any?
-- Credential and secret handling?
-- Failure recovery and resumability?
-- Coordinator and remote-runner protocol for collaboration and delegated execution?
+- Optional coordinator authentication, dispatch, and collaboration protocol?
 - Testing, simulation, and local development strategy?

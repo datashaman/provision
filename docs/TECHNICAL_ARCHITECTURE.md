@@ -69,3 +69,27 @@ Environment changes follow an explicit observe, plan, approve, execute flow. Pro
 ### Agentless host transport
 
 One host interface has a direct local adapter for the current Linux machine and an agentless SSH adapter for remote Linux hosts. The remote adapter transfers digest-addressed artifacts, installs versioned releases, manages systemd and supporting services, and observes health. It does not require a resident Provision agent; reconnect and resume use recorded checkpoints and observed host state.
+
+### AWS shared-state adapter
+
+The shared State Backend uses DynamoDB for environment heads, ordered journal metadata, leases, fencing tokens, and conditional state transitions. S3 stores content-addressed Plans, snapshots, evidence, and larger immutable records. Both use KMS encryption. Journal commits use DynamoDB transactions conditioned on the current fencing token and state version, while DynamoDB heads reference immutable S3 object digests.
+
+### Direct AWS provisioning
+
+AWS implementation adapters call provider APIs through the AWS SDK for Go. Provision's canonical Plan, Recorded State, identities, and recovery journal remain authoritative. An adapter may use CloudFormation internally when a stack provides genuine leverage, but CloudFormation does not become the universal planning or state engine. Terraform and Pulumi are not embedded initially.
+
+### Execution-time credentials
+
+Credentials are resolved only by the executing engine or runner. AWS adapters use SDK credential configuration such as profiles, IAM Identity Center, assumed roles, and workload roles. Configuration and Plans store role or profile references rather than credentials. SSH uses the operating-system agent or referenced key material with strict host-key verification. Actions receive narrowly scoped temporary credentials and resolved secrets only for their execution lifetime. Resolved values never enter Plans, journals, or evidence.
+
+### One binary for human and automated execution
+
+The Go binary exposes stable human-facing CLI commands, structured JSON input and output, a streaming machine-readable event format, deterministic exit codes, and non-interactive approval inputs. A remote runner is a one-shot invocation of the same engine: it receives a Plan digest and State Backend location, resolves credentials locally, acquires the fenced lease, executes or resumes, records the result, and exits. A future coordinator dispatches these jobs rather than hosting another Executor.
+
+### Structured custom Actions
+
+An Action references either a container image by digest or an immutable executable artifact with an argument vector. Shell command strings are not an Action contract. Inputs and outputs are typed; secrets are injected ephemerally; and timeouts, retry classification, checkpoints, network requirements, and produced artifacts are declared. Execution adapters may run compatible Actions locally, over SSH, in ECS or Fargate, or in Lambda.
+
+### Observable operation recovery
+
+Every Plan operation has deterministic identity, preconditions, an idempotency or single-attempt classification, an observation method, execution and verification behavior, retry classification, and optional compensation or forward-recovery instructions. The Executor journals intent before causing side effects and records the outcome afterward. On uncertain resumption it observes the provider before retrying and derives provider idempotency tokens from operation identity where supported. An uncertain single-attempt operation pauses for explicit recovery.

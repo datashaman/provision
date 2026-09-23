@@ -4,12 +4,11 @@ The product model is agreed. The following technical-architecture questions rema
 
 ## Technical architecture
 
-- Push-based deployment, pull-based deployment, or reconciliation?
-- Programming language and internal package structure?
-- State and locking model?
+- Internal Go package structure beyond the three core modules?
+- Exact AWS-backed shared-state services and schema?
 - Provisioning implementation: SDKs, Terraform/OpenTofu, CloudFormation, Pulumi, or another mechanism?
 - Plugin model, if any?
 - Credential and secret handling?
 - Failure recovery and resumability?
-- Concurrency and multi-user behavior?
+- Coordinator and remote-runner protocol for collaboration and delegated execution?
 - Testing, simulation, and local development strategy?

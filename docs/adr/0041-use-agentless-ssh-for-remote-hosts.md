@@ -1,0 +1,3 @@
+# Use agentless SSH for remote hosts
+
+The host interface has a direct local adapter and an agentless SSH adapter for remote Linux systemd targets. The remote adapter transfers digest-addressed artifacts, manages versioned releases and systemd services, and observes health without installing a resident Provision agent. Resumption relies on journal checkpoints and observed host state, reducing target bootstrap and lifecycle complexity while preserving local-first operation.

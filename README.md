@@ -6,9 +6,9 @@ Its primary users are application teams without dedicated platform teams. The in
 
 ## Status
 
-This repository is in **product discovery**. It records the product model and requirements discussed so far. It does not contain an agreed implementation or technical architecture.
+The **product model is agreed** and is now the fixed input to technical-architecture discovery. The repository does not yet contain an agreed implementation architecture.
 
-The current goal is to understand what users need to express before choosing configuration syntax, internal architecture, provisioning technology, or runtime behavior.
+The current goal is to choose configuration syntax, system shape, state model, provisioning approach, and runtime mechanisms without weakening the agreed product guarantees.
 
 ## Product direction
 
@@ -24,6 +24,7 @@ The product should let a user describe:
 ## Documentation
 
 - [Product model](docs/PRODUCT_MODEL.md)
+- [Technical architecture](docs/TECHNICAL_ARCHITECTURE.md)
 - [Domain language](CONTEXT.md)
 - [Open questions](docs/OPEN_QUESTIONS.md)
 - [Decision records](docs/adr/)
@@ -32,3 +33,5 @@ The product should let a user describe:
 ## Important boundary
 
 The material under `docs/explorations/` contains configuration and diagram sketches created to test the product model. Those sketches are not architecture decisions or normative specifications.
+
+Technical architecture must conform to the agreed product model and decision records. A product constraint may be changed only through an explicit product decision, not as an incidental implementation compromise.

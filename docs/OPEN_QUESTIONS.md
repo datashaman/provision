@@ -1,8 +1,8 @@
 # Open questions
 
-Nothing in this document is decided. These questions should be resolved before selecting a technical architecture.
+The product model is agreed. The following technical-architecture questions remain undecided.
 
-## Technical architecture—not yet discussed
+## Technical architecture
 
 - CLI, local service, hosted service, daemon, library, or hybrid?
 - Push-based deployment, pull-based deployment, or reconciliation?

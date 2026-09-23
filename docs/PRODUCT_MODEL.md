@@ -1,5 +1,7 @@
 # Product model
 
+**Status: Agreed.** This document is the fixed input to technical-architecture discovery. Changes require an explicit product decision.
+
 ## Problem statement
 
 Application teams without dedicated platform teams need a consistent way to describe a web application and deploy it into materially different environments without maintaining unrelated deployment definitions for each target.

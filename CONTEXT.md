@@ -144,6 +144,10 @@ _Avoid_: Secret value, encrypted configuration value
 The complete, inspectable configuration produced from explicitly ordered documents and intentional overrides before validation or execution.
 _Avoid_: Effective files, discovered configuration
 
+**Recorded State**:
+Provision's authoritative record of observed identities, ownership, active revisions, operation history, and recovery progress. It does not replace declarative configuration as the source of intended behavior.
+_Avoid_: Desired configuration, hidden source of truth
+
 **Environment Configuration Revision**:
 An immutable version of an environment's resolved behavior values, feature flags, implementation selections, and policy references, recorded independently of the application revision.
 _Avoid_: Environment version, mutable settings

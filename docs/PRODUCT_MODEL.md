@@ -16,6 +16,10 @@ Provisioning supporting services is in scope when necessary to deploy the applic
 
 Provision supports both application-defined builds and artifacts built elsewhere. Deployment always consumes an immutable revision manifest so the same revision can be promoted between environments without rebuilding.
 
+The initial target set is local and remote Linux hosts plus AWS. The common product model remains independent of AWS terminology, but Provision claims portability only for implementations that exist and satisfy the declared capability contract rather than promising immediate multi-cloud parity.
+
+The intended organizational scale is one application team managing tens of components and environments. The domain model does not encode arbitrary numeric limits, but the initial product does not claim hyperscale cluster governance or enterprise-wide multi-tenant control-plane behavior.
+
 ## Core concepts
 
 ### Application
@@ -107,6 +111,8 @@ The portability promise is **portable intent**, not identical behavior. Meaningf
 
 Portable component fields form the common model. Provider- or implementation-specific configuration remains available through explicit namespaced options rather than being hidden or silently inferred.
 
+The initial product ships a curated set of implementations with explicit capabilities. It does not promise a public third-party implementation interface. Application-specific executable behavior belongs in bounded Actions, while an internal implementation boundary preserves the option to add providers later without changing portable intent.
+
 Reusable implementation selections may be packaged as optional configuration fragments. They are not a separate domain entity, and the resolved environment remains authoritative.
 
 Each component has exactly one authoritative implementation in an environment. Blue-green deployment uses two revisions of that implementation rather than two unrelated implementations. A controlled migration may temporarily use source and destination implementations but must finish with one authoritative binding.
@@ -164,6 +170,8 @@ A plan is immutable and bound to exact application and environment configuration
 
 Provision detects and reports differences between recorded and observed state with component ownership and safety context. It never silently overwrites drift. A managed component may opt into an explicit reconciliation policy; an external component is revalidated and reported but is not repaired by Provision.
 
+Declarative configuration is authoritative for intended application and environment behavior. Recorded state is authoritative for observed identities, ownership, active revisions, operation history, and recovery progress. Neither silently overwrites the other; any difference is surfaced as drift and requires a current plan.
+
 Identity and group membership come from an external identity system. Provision authorizes operation-level capabilities for viewing, planning, deploying, approving, destroying, adopting, refreshing data, rotating secrets, and managing policy rather than requiring fixed human roles. Small teams may grant one actor every capability; stricter environments may separate them.
 
 Environment policy selects which operations and risk conditions require approval, including destructive work, production-data refresh, adoption, lease override, guarantee fallback, store cutover, or deployment generally. Approval applies only to the exact current plan and expires when that plan becomes stale.
@@ -175,6 +183,12 @@ Plans expose resource changes, known price estimates, and relevant provider quot
 Provision applies the same planning, authorization, audit, and recovery model to restart, scale, failover, Task invocation, secret rotation, backup, restore, drift reconciliation, expiry renewal, and store transition. The product is not limited to first-time provisioning or application deployment.
 
 General-purpose interactive remote command execution is not a core operation. Repeatable work belongs in Tasks or bounded Actions. Emergency interactive access remains an external break-glass mechanism rather than bypassing Provision's plans, permissions, and audit records.
+
+### Runtime independence
+
+Deployed applications continue operating when Provision is unavailable. Provision is not placed in the request, queue-processing, secret-reading, or schedule-execution path unless a selected implementation explicitly declares such a dependency. Management unavailability pauses new management operations rather than stopping deployed workloads.
+
+Core planning and operation for the current machine or a remote Linux host does not require a mandatory vendor-hosted account or always-online hosted control plane. Optional hosted coordination may later add shared history, approvals, and automation without redefining the application or environment model.
 
 ### Environment lifecycle
 
@@ -337,7 +351,16 @@ Useful runtime metadata may include the environment name, lifecycle, application
 - Day-two operations use the same plan, permission, audit, and recovery model as deployment.
 - Cost and quota information is exposed when available without claiming guaranteed bills or unreserved capacity.
 - Interactive shell access remains an external break-glass mechanism rather than a core product bypass.
+- Initial implementations target local and remote Linux hosts plus AWS without claiming multi-cloud parity.
+- Provision remains application-oriented: fixed component vocabulary, application-scoped resources, external foundations, and no silent reconciliation by default.
+- The initial implementation set is curated rather than a public third-party extension contract.
+- Deployed workloads continue operating when Provision's management capability is unavailable.
+- Local and remote-host workflows do not require a mandatory hosted account or always-online vendor control plane.
+- The initial scale promise is an application team with tens of components and environments, not hyperscale platform governance.
+- Declarative configuration owns intended behavior; recorded state owns observed identity and operational history.
 
 ## Not yet decided
 
 No implementation or technical architecture has been selected. In particular, the repository does not yet decide whether the product is a CLI, service, library, daemon, or combination of these; how it provisions resources; how configuration is represented; or how deployment state is stored.
+
+The product boundary is deliberately not Kubernetes-shaped: Provision does not expose a generic resource API, arbitrary custom resources, foundational cluster ownership, or automatic reconciliation as universal behavior.

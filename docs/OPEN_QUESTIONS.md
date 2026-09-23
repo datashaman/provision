@@ -13,3 +13,4 @@ The product model is agreed. The following technical-architecture questions rema
 - Build execution environment, reproducibility evidence, and artifact publication mechanics?
 - Exact certified product-version policy and automated compatibility-test matrix?
 - Host-local backup destinations and restore-verification mechanics without AWS dependencies?
+- Should the first-class `cache` role be named `key-value store`, and should its Store Data Role always be explicit instead of defaulting to `derived`?

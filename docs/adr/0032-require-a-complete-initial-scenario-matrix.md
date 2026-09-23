@@ -1,0 +1,3 @@
+# Require a complete initial scenario matrix
+
+The initial useful release must execute and verify the seven agreed local, remote-host, EC2, AWS-managed, ECS or Fargate, Lambda, and hybrid scenarios. Host targets are current or remote Linux systemd machines and include curated local supporting-service paths so they do not require AWS. AWS coverage spans the managed service categories needed by the component model. Every implementation publishes a capability contract, and each component role has at least one initial path capable of satisfying required blue-green behavior. This chooses a coherent end-to-end product slice over shipping a configuration vocabulary whose promised combinations do not yet work.

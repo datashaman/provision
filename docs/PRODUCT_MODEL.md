@@ -113,6 +113,8 @@ Portable component fields form the common model. Provider- or implementation-spe
 
 The initial product ships a curated set of implementations with explicit capabilities. It does not promise a public third-party implementation interface. Application-specific executable behavior belongs in bounded Actions, while an internal implementation boundary preserves the option to add providers later without changing portable intent.
 
+Every implementation publishes a capability contract covering the portable requirements and operational guarantees it can satisfy. Unsupported required behavior fails validation. The initial release includes at least one required-blue-green-capable implementation path for every first-class component role, while implementations with unavoidable limitations expose preferred or replace behavior rather than silently degrading.
+
 Reusable implementation selections may be packaged as optional configuration fragments. They are not a separate domain entity, and the resolved environment remains authoritative.
 
 Each component has exactly one authoritative implementation in an environment. Blue-green deployment uses two revisions of that implementation rather than two unrelated implementations. A controlled migration may temporarily use source and destination implementations but must finish with one authoritative binding.
@@ -131,6 +133,8 @@ Ownership is explicit per component so one environment can mix managed and exter
 Managed scope is limited to application-scoped resources: workloads, application databases, caches, object stores, queues, ingress, certificates, application DNS records, and application-level backup policy. Foundational infrastructure—including cloud accounts, network strategy, DNS zones, organizational identity, and secret stores—is initially external.
 
 Every managed stateful component has an explicit retention policy, with retention as the safe default. Ephemeral environments may explicitly select automatic deletion. An external component can become managed only through an explicit adoption operation that verifies its identity, records provenance, and presents the lifecycle responsibility being assumed.
+
+External ownership is available for every component role as the universal escape hatch when Provision lacks a managed implementation. The external component must still supply bindings, verification evidence, declared capabilities, and any transition hooks required by environment policy; Provision coordinates those contracts without assuming lifecycle authority.
 
 ### Builds, artifacts, and revisions
 
@@ -222,17 +226,25 @@ Refreshes prefer staged loading followed by a switch. If an implementation canno
 
 ## Required deployment scenarios
 
-At minimum, the product model must be able to express:
+The initial useful release must execute and verify all of these scenarios, not merely express them:
 
-1. The current machine using systemd with a local database and cache.
-2. Another machine on the local network or VPN, accessed remotely, using systemd with local data services.
+1. The current Linux machine using systemd with a local database and cache.
+2. Another Linux machine on the local network or VPN, accessed remotely, using systemd with local data services.
 3. An EC2 instance using systemd with host-local database and cache services.
 4. An EC2 instance using systemd with AWS-managed database and cache services.
 5. ECS or Fargate services with AWS-managed supporting services.
 6. Lambda for workloads compatible with event-driven serverless execution.
 7. Hybrid environments where different components use different execution options.
 
+A host target is any user-controlled Linux systemd machine, whether local to the Provision process or reached remotely. The machine running Provision may use another operating system and control a remote host, but it is itself a host target only when it satisfies the Linux systemd capability contract.
+
+A host-only environment must be able to operate without AWS-managed dependencies. The initial implementation set therefore includes at least one curated host-local path for database, cache, queue, object store, schedule execution, and endpoint routing in addition to systemd execution for HTTP, realtime, Worker, and Task components. Exact products and supported versions remain technical-architecture decisions.
+
+The AWS baseline covers managed relational database, managed cache, queue, object store, scheduling, certificates, application DNS records, container execution, and event-driven functions. Exact AWS service selections and supported versions remain technical-architecture decisions.
+
 Lambda may implement HTTP handlers, event-driven tasks, and queue consumers when their declared duration, concurrency, payload, and state requirements fit its capabilities. A schedule may invoke a Lambda-backed task. A persistent worker or realtime server does not map directly to Lambda, although a managed event or WebSocket frontend may invoke Lambda handlers. Incompatible selections fail validation.
+
+Realtime applications are supported across host, ECS, and Lambda-oriented environments. Hosts and ECS may run persistent realtime servers; a Lambda-oriented implementation uses a managed WebSocket or event frontend that invokes handlers. Connection duration, draining, reconnect behavior, and other capability differences remain explicit.
 
 ## Blue-green expectation
 
@@ -358,6 +370,13 @@ Useful runtime metadata may include the environment name, lifecycle, application
 - Local and remote-host workflows do not require a mandatory hosted account or always-online vendor control plane.
 - The initial scale promise is an application team with tens of components and environments, not hyperscale platform governance.
 - Declarative configuration owns intended behavior; recorded state owns observed identity and operational history.
+- All seven local, remote-host, EC2, managed-AWS, ECS/Fargate, Lambda, and hybrid scenarios are initial-release acceptance requirements.
+- A host target means a current or remote Linux systemd machine; the controlling machine may use another operating system.
+- Host-only environments have curated local supporting-service paths and do not require AWS-managed dependencies.
+- The AWS baseline covers the managed service categories required by the first-class component model.
+- Realtime supports persistent host or ECS servers and managed-fronted Lambda handlers with explicit capability differences.
+- Every implementation exposes a capability contract, and every component role has at least one required-blue-green-capable initial path.
+- External ownership is available for every component role but must still satisfy environment binding and evidence requirements.
 
 ## Not yet decided
 

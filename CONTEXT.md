@@ -104,6 +104,14 @@ _Avoid_: Scheduler, cron job, scheduled worker
 An external foundational place or service in which a component implementation runs, such as the current machine, a remote host, EC2, ECS, or Lambda. Referencing it does not transfer ownership to Provision.
 _Avoid_: Cluster, platform
 
+**Host Target**:
+A user-controlled Linux systemd machine used as an execution target, whether it is the machine running Provision or another reachable physical or virtual machine.
+_Avoid_: Localhost, development machine
+
+**Capability Contract**:
+An implementation's explicit, validated declaration of the portable requirements and operational guarantees it can satisfy, including rollout, health, scaling, availability, and transition behavior.
+_Avoid_: Provider assumption, silent fallback
+
 **Availability Intent**:
 A component's portable requirement for single-instance operation, redundancy, and separation across failure domains, independent of provider topology names.
 _Avoid_: Availability zone count, replica setting

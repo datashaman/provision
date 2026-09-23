@@ -84,6 +84,10 @@ _Avoid_: Store upgrade, database replacement
 A first-class component that carries asynchronous messages from producers to workers with declared delivery, ordering, retention, acknowledgement, retry, dead-letter, and deduplication semantics.
 _Avoid_: Worker queue, channel
 
+**Queue Generation**:
+A separately addressable physical realization of one logical Queue during replacement. Current and candidate generations may coexist while producers, consumers, and outstanding messages are handed over.
+_Avoid_: Second Queue component, worker revision
+
 **Object Store**:
 A first-class component that stores application-addressable objects independently of the machines or processes using them.
 _Avoid_: Volume, filesystem

@@ -201,3 +201,53 @@ Every Provision binary declares the configuration, Plan, snapshot, journal-event
 ### Capability proof at plan time
 
 Each adapter publishes a versioned tested capability catalog and refines it using observations of the exact product version, host, AWS region, account features, resource configuration, quotas, and workload requirements. The resulting capability evidence is embedded in the immutable Plan. Unknown or unverified capability cannot satisfy a required guarantee.
+
+### Host workload generations
+
+Native and Podman workloads install each revision in a separate release directory and systemd unit. A candidate HTTP or realtime workload starts on a private generation-specific port and passes its readiness and verification gates before Caddy switches new traffic. The previous unit stays available through its rollback window. Caddy and the runtime apply role-specific draining to old HTTP requests and WebSocket connections. Workers use a different handoff: stop old consumers from claiming new work, observe and drain or release in-flight jobs, then admit candidate consumers. Required mode validates that the selected queue and workload can expose and control that sequence.
+
+### Host PostgreSQL and Valkey transitions
+
+A managed PostgreSQL transition prepares a separate candidate cluster and replicates while the active cluster serves traffic. Physical replication handles compatible changes; logical replication is eligible only after schema, DDL, sequence, and workload restrictions pass validation. A bounded write fence permits final synchronization and verification before bindings switch. Once new writes reach the candidate, return to the old generation is forward-only unless a separately proven reverse-synchronization path meets the selected rollback guarantee.
+
+For a Valkey-backed key-value store, the declared Store Data Role selects the transition. Derived data is rebuilt from its declared authoritative source and verified. Authoritative data uses replication, a bounded write fence, and matching replication evidence before rebinding. Asynchronous replication alone cannot establish lossless forward cutover. Each transition must also satisfy the store's separate failure-durability and recovery policies.
+
+### Queue generation transitions
+
+Changing only workers leaves their Queue generation intact. Replacing a managed Queue creates a candidate physical generation while preserving one logical Queue. The operation fences new producer admission to the old generation, drains or releases in-flight messages, transfers the remainder with destination confirmation, verifies the old generation, then rebinds producers and consumers. RabbitMQ may use a Shovel that acknowledges the source only after destination confirmation. SQS requires an explicit application-aware mover; there is no assumed atomic queue transfer. The resulting guarantee is at-least-once, and required mode fails if producer fencing or message preservation cannot be shown.
+
+### Object store transitions
+
+A filesystem-backed or S3-backed object store transition creates a separate candidate generation, inventories object versions and deletions, stages and verifies an initial copy, controls all writers, performs final synchronization within a declared write pause, switches application bindings, and retains the old generation. S3 live replication and Batch Replication may accelerate copying, but asynchronous replication status does not alone prove an exact cutover. Required mode needs verified writer control and final parity for the workload's object semantics.
+
+### RDS transition orchestration
+
+Provision uses RDS Blue/Green switchover when the observed PostgreSQL resource is eligible. The adapter validates prerequisites, records the exact provider transition, observes guardrails and completion, and verifies application connectivity afterward. It does not perform a competing database traffic switch. The previous RDS generation remains recovery material, but once the candidate accepts writes it does not alone provide zero-loss rollback.
+
+### ECS and Lambda workload handoff
+
+Routed ECS HTTP workloads use native ECS blue-green deployment with candidate verification and the declared bake window. Headless ECS workers require Provision's explicit consumer gate because ECS cannot shift their work intake through a load balancer. Lambda versions and aliases serve as stable handoff points for eligible HTTP and Task handlers; SQS event-source mappings require pause, drain, and resumption checks. The initial Lambda-oriented WebSocket implementation advertises a narrower rollout guarantee unless it can pin an established connection to its prior handler revision and drain that revision; it cannot claim the persistent-server connection handoff by default.
+
+### Fenced schedule handoff
+
+One stable trigger serves each logical Schedule. Its occurrence ledger records the active generation and fencing token. A handoff changes that generation through one recorded operation, and each due occurrence is recorded before invocation with a stable invocation identity reused across retries. Tasks remain idempotent because a crash at the delivery boundary can cause a duplicate.
+
+### Plan-bound host authority
+
+The deployment principal may invoke only the root-owned host executor entrypoint. The executor validates the operation schema, Plan digest, target environment, allowed paths, and operation-specific privileges before applying a typed operation bundle. SSH principals are constrained to the same entrypoint where the host permits it. Initial bootstrap is a separate explicit operation with elevated privilege. The concrete allowed operation set and transport hardening remain implementation work.
+
+### Secret version changes
+
+Provision records a secret's reference and observed version, never its resolved value. Rotation verifies a consumer's dynamic refresh behavior or creates a new environment configuration revision and rollout for affected workloads. Revocation invalidates pending Plans tied to the old version. Unrelated components are not restarted simply because one reference rotated.
+
+### Host-only backups and restore proof
+
+Authoritative host-local stores back up outside the active physical generation. When the recovery policy requires protection from host loss, the destination is off-host. The initial destination types are authenticated filesystem and SSH-accessible locations, so host-only environments do not need AWS. Scheduled restore verification creates an isolated candidate generation and records the achieved recovery point and recovery time against policy.
+
+### Curated build execution
+
+The curated build Action path uses an ephemeral, unprivileged OCI environment with declared inputs, network access, secrets, and named digest-addressed outputs. Existing CI may publish equivalent artifacts and evidence for revision assembly. A native executable build is available only when the selected target and policy explicitly accept its weaker isolation.
+
+### Published compatibility matrix
+
+Every Provision release publishes a versioned support matrix covering certified host distributions, systemd and Podman capabilities, database, key-value-store and queue versions, AWS features, and runtime-asset compatibility. A version enters managed support after its adapter contract tests pass. Planning combines this matrix with current observations; an unsupported version may still be bound externally but cannot inherit a managed guarantee.

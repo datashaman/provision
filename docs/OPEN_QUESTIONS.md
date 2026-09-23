@@ -4,12 +4,12 @@ The product model is agreed. The following technical-architecture questions rema
 
 ## Technical architecture
 
-- Curated host-local database, cache, queue, object-store, endpoint-router, container-runtime, and schedule implementations and supported versions?
-- Host bootstrap, privilege, operating-system, filesystem, and isolation requirements?
-- Concrete blue-green preparation, synchronization, routing, drain, rollback, and cleanup mechanics for each component role and target?
-- Detailed AWS capability checks and unsupported combinations?
-- Action sandboxing and credential-delegation mechanics on each execution target?
-- Build execution, revision assembly, and multi-repository artifact-discovery mechanics?
-- Configuration file organization, reference resolution, and generated-schema tooling?
-- Concrete secret-store adapters and secret delivery mechanics?
-- Upgrade compatibility and release-support policy for the Provision binary and installed runtime assets?
+- Exact host executor operation allowlist, privilege isolation, filesystem layout, and SSH transport details?
+- Concrete host blue-green preparation, synchronization, routing, drain, rollback, and cleanup mechanics for each component role?
+- Concrete AWS blue-green preparation, synchronization, routing, drain, rollback, and cleanup mechanics for each component role?
+- Detailed AWS capability checks and unsupported combinations, including regional service features and quotas?
+- Action isolation and credential-delegation mechanics on each execution target?
+- Secret rotation, revocation, and refresh behavior during runtime and rollout?
+- Build execution environment, reproducibility evidence, and artifact publication mechanics?
+- Exact certified product-version policy and automated compatibility-test matrix?
+- Host-local backup destinations and restore-verification mechanics without AWS dependencies?

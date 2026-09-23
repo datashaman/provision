@@ -159,3 +159,45 @@ Native ECS blue-green deployments are preferred for container services, and Lamb
 ### Provider-native workload observability
 
 Provision emits structured management events and records references to verification evidence, but it is not a monitoring backend. Host workloads use journald and AWS workloads use CloudWatch by default. Health gates consume explicit probes and selected metrics. OpenTelemetry export may be supported, but deployed workloads never require a Provision-hosted telemetry service to continue operating.
+
+### Curated systemd host runtime
+
+The curated OCI runtime on Linux hosts is rootless Podman with Quadlet, managed by systemd user units under a dedicated environment account. Bootstrap enables lingering and prepares storage, networking, and permissions. Native executable bundles use hardened systemd units. Other container runtimes require distinct implementations and capability contracts.
+
+### Host-local supporting services
+
+The managed host-local database is PostgreSQL and the managed cache is Valkey, each packaged as a digest-pinned OCI image with a distinct data directory per physical generation. Host-installed instances can be bound as external components. Supported product versions follow a tested moving compatibility window, not an unbounded promise. PostgreSQL side-by-side transitions use replication where compatible and explicitly verify schema, DDL, and sequence constraints. Valkey defaults to a derived cache that can be rebuilt. An authoritative Valkey transition uses replication and a bounded write pause only when validation proves the required lossless forward cutover.
+
+The managed host-local queue uses RabbitMQ quorum queues. Its capability contract covers acknowledgements, publisher confirms, retry, dead-letter handling, retention, and at-least-once delivery. A generation transition may use Shovel with destination confirmation before source acknowledgement, followed by a fenced producer and consumer handoff. Ordering and deduplication are advertised only when the selected queue topology can prove them.
+
+The initial host-local object store exposes an application-visible filesystem directory rather than the S3 protocol. Each physical generation has a separate directory. Transition work stages and verifies a copy, pauses writers within a declared bound for final synchronization, then rebinds application workloads and retains the old generation. Applications needing an S3-compatible protocol may bind an external service. Capability validation must reject required mode when the filesystem, writer control, or rebinding path cannot prove lossless forward cutover.
+
+### Host endpoint routing and scheduled execution
+
+Caddy is the curated host router for HTTP, HTTPS, and WebSocket endpoints. Provision owns its generated JSON configuration and atomically loads a complete new configuration. Candidate workloads listen on private generation-specific ports. Caddy switches new traffic, while role-specific drain policy governs old requests and WebSocket connections; socket migration is not claimed.
+
+Stable systemd timers invoke a pinned, nonresident `provision runtime schedule` applet. A local SQLite occurrence ledger lets the applet enforce timezone, daylight-saving, overlap, retry, missed-run, and bounded catch-up behavior before launching a generation-specific task unit. The timer and applet keep schedules active when the management CLI is absent; only the applet version changes through an auditable Plan.
+
+### Host qualification and privilege
+
+A host is qualified through observed capabilities: systemd, cgroup v2 for the curated OCI path, rootless Podman and Quadlet, journald, suitable filesystem semantics, and required networking tools. Ubuntu LTS and Amazon Linux 2023 are the first certified distributions on amd64 and arm64. Bootstrap requires root or sudo, installs a root-owned nonresident host executor, and creates dedicated environment accounts. Later operations pass typed operation bundles to that restricted entrypoint rather than granting arbitrary shell or sudo access. The exact allowlist, transport, and filesystem rules remain to be specified and tested.
+
+### Explicit builds and revision assembly
+
+Application-defined builds are Actions with declared inputs and named digest-addressed artifact and evidence outputs. A deterministic `revision assemble` operation accepts those outputs, including outputs from separate repositories or existing pipelines, and creates a complete immutable application revision manifest. Deployment consumes that manifest; it does not infer artifacts from the invoking process's current checkout or run a build implicitly.
+
+### Explicit configuration references
+
+One root configuration document refers to typed application, environment, implementation, policy, and revision documents by explicit local relative paths. The first release has no implicit directory merge, remote include, template language, or environment-variable substitution. The compiler's versioned schema generates JSON Schema and reference documentation.
+
+### Curated secret delivery
+
+Local automation may reference environment variables or protected files. AWS adapters resolve AWS Secrets Manager and SSM Parameter Store references. Host workloads receive systemd credential files; ECS workloads receive provider-native secret references. Lambda workloads normally fetch secrets at runtime with scoped IAM. Materializing a secret into a Lambda environment variable or ordinary process environment is an explicit weaker-capability mode. Resolved values remain outside Plans, journals, and evidence.
+
+### Binary and runtime compatibility
+
+Every Provision binary declares the configuration, Plan, snapshot, journal-event, operation-kind, and installed-runtime-asset versions it can handle. It reads the previous major persisted format during a documented migration window. Runtime applets are pinned per environment and update only through an auditable Plan. Upgrading an operator CLI never implicitly changes installed runtime assets.
+
+### Capability proof at plan time
+
+Each adapter publishes a versioned tested capability catalog and refines it using observations of the exact product version, host, AWS region, account features, resource configuration, quotas, and workload requirements. The resulting capability evidence is embedded in the immutable Plan. Unknown or unverified capability cannot satisfy a required guarantee.

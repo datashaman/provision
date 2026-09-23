@@ -1,0 +1,8 @@
+schemaVersion: provision.dev/v1alpha1
+kind: Revision
+name: hello-v1
+application: hello
+artifacts:
+  web:
+    source: https://example.invalid/hello.tar.zst
+    digest: sha256:0000000000000000000000000000000000000000000000000000000000000000

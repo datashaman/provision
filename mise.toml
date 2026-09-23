@@ -1,0 +1,8 @@
+[tools]
+go = "1.26.6"
+
+[tasks.test]
+run = "go test ./..."
+
+[tasks.vet]
+run = "go vet ./..."

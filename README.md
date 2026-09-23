@@ -12,6 +12,15 @@ The **product model is agreed**, with explicit later amendments recorded in deci
 
 The current goal is to turn the agreed model into executable acceptance cases and an end-to-end host deployment slice without weakening its guarantees.
 
+The first Go increment is deliberately read-only: it validates an explicit, single-HTTP configuration subset and inspects an existing local or SSH host. It does **not** create an executable Plan, bootstrap a host, deploy a workload, or change Gimme-managed state. The example artifact URL and digest are placeholders.
+
+```sh
+go run ./cmd/provision config validate --file examples/host-http/root.yaml
+go run ./cmd/provision host inspect --address base.local --user marlinf
+```
+
+Development uses an optional exact Go tool pin in `mise.toml`; mise is not a runtime dependency of Provision or deployed applications.
+
 ## Product direction
 
 The product should let a user describe:

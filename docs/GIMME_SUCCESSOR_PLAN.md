@@ -32,6 +32,8 @@ Gimme source was inspected at commit `f3b98f9163e40d1b666eb1837498969aabec9c38`.
 
 ## Implementation sequence
 
+The first increment now implements strict configuration validation for one HTTP component and read-only current/remote-host inspection. It does not yet create an executable Plan or apply changes. The remaining steps below are release work, not implied by this increment.
+
 1. **Transfer acceptance evidence, not operational ownership.** Convert Gimme's host bootstrap, plan-staleness, secret-redaction, runtime-pin, and rollout failure cases into Provision-facing specifications. Create a small application fixture that exercises each first-class role. Do not point Provision at a Gimme-managed Caddy site, service unit, or store yet.
 2. **Prove the local and remote host tracer.** Compile one configuration into a Plan, approve it, journal execution, deploy an HTTP candidate through systemd and Caddy, verify the switch, inject failure, and resume or roll back. Run the same Provision interfaces directly on Linux and over SSH.
 3. **Prove stateful host transitions.** Add PostgreSQL, authoritative and derived Valkey, Queue, filesystem Object Store, backup, and isolated restore. Inject failure before and after each side effect. A `required` guarantee fails closed if the evidence cannot support it.

@@ -1,0 +1,8 @@
+schemaVersion: provision.dev/v1alpha1
+kind: Application
+name: hello
+components:
+  web:
+    role: http
+    health:
+      path: /health

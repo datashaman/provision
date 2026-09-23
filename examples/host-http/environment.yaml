@@ -1,0 +1,16 @@
+schemaVersion: provision.dev/v1alpha1
+kind: Environment
+name: lab
+application: hello
+targets:
+  base:
+    kind: host
+    address: base.local
+    user: marlinf
+implementations:
+  web:
+    kind: systemd
+    target: base
+    rollout: required
+    endpoint:
+      port: 18080

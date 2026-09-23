@@ -5,7 +5,7 @@ The product model is agreed. The following technical-architecture questions rema
 ## Technical architecture
 
 - Exact host executor operation allowlist, Plan-authorization proof encoding and key management, replay protection, privilege isolation, filesystem layout, and SSH transport hardening?
-- Whether a bounded Ansible host-stack adapter provides enough leverage to justify a second host-preparation implementation, or whether the curated host executor should own the initial path?
+- What is the smallest safe, repeatable way to prepare a supplied host? Ansible is an unproven candidate, not a dependency or committed implementation. Compare it against direct typed host operations on a disposable target; adopt it only if it demonstrably improves the workflow without weakening Plan authorization, idempotence, recovery, or auditability. It may be discarded entirely.
 - Whether mise is supported as an optional exact-version native-host runtime, in addition to developer and isolated-build tooling, and how its versions enter Plan evidence?
 - Detailed host router behavior for HTTP and WebSocket draining, rollback, reconnect signalling, and deadline enforcement?
 - Detailed store cutover algorithms for PostgreSQL, Valkey, filesystem objects, RDS, ElastiCache, and S3, including failure injection?

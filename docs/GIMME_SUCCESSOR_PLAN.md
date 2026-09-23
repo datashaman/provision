@@ -28,7 +28,7 @@ Gimme source was inspected at commit `f3b98f9163e40d1b666eb1837498969aabec9c38`.
 | Laravel worker and scheduler process management | Adapt | Keep tested ownership and handoff behavior while representing Worker, Task, Queue, and Schedule as independent logical roles instead of Laravel process settings. |
 | Artifact and recovery storage | Adapt | Preserve digest identity and recovery evidence. Provision requires complete application revisions, declared publication destinations, adapter-owned backup capability, and isolated restore verification. |
 | First-class Queue, application Object Store, general realtime roles, ECS/Fargate, and Lambda | Build | These are Provision release requirements or curated implementations, not capabilities inherited merely because Gimme discusses them. Each needs a capability contract and an end-to-end test. |
-| Ansible Target-stack renderer | Do not count as live behavior | Gimme's renderer is pure and non-mutating. Provision may later evaluate Ansible for bounded host preparation, but no design or release claim may assume that Gimme has an Ansible apply path. |
+| Ansible Target-stack renderer | Do not count as live behavior | Gimme's renderer is pure and non-mutating. Ansible is only a possible host-preparation experiment for Provision, not a required dependency or selected path. Keep it only if testing proves useful; otherwise discard it. No design or release claim may assume that Gimme has an Ansible apply path. |
 
 ## Implementation sequence
 

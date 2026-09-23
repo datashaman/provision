@@ -1,6 +1,6 @@
 # Exploratory configuration sketch
 
-> Status: non-normative product-discovery material. This file does not define an accepted configuration format or technical architecture.
+> Status: non-normative product-discovery material. This file does not define an accepted configuration format or technical architecture. Its `cache` examples and disposable-data assumption predate the agreed `key-value store` role and required Store Data Role; do not use them as current configuration guidance.
 
 # Deployment configuration model
 
@@ -446,9 +446,9 @@ Renderers advertise capabilities and emit native provider artifacts. The compile
 
 Databases are shared between application colors by default. Application schema changes must follow expand/migrate/contract compatibility. A renderer may additionally advertise replicated blue-green database cutover, but the platform must not claim reversible data rollback unless the provider and migration plan genuinely support it.
 
-### Cache
+### Cache (superseded sketch)
 
-Caches may be shared, recreated, or warmed as green infrastructure. A cache must never be treated as the source of truth. Endpoint cutover is permitted only after green is ready; rollback may reuse blue or rebuild it.
+This historical sketch assumed every cache could be recreated or warmed. The agreed model instead uses a key-value store with an explicit Store Data Role. Authoritative contents must be preserved, while derived contents may be rebuilt and ephemeral contents may be discarded under their declared policies.
 
 ### Realtime
 

@@ -29,8 +29,12 @@ An environment with an explicit expiry or destruction condition.
 _Avoid_: Preview environment
 
 **Component**:
-A logical application role drawn from Provision's fixed vocabulary, such as HTTP service, database, cache, object store, realtime server, queue, worker, task, or schedule.
+A logical application role drawn from Provision's fixed vocabulary, such as HTTP service, database, key-value store, object store, realtime server, queue, worker, task, or schedule.
 _Avoid_: Resource, workload
+
+**Key-Value Store**:
+A first-class store for key-addressed application data, including derived cache entries, sessions, and other state. Its Store Data Role is always declared explicitly.
+_Avoid_: Cache as the component role, Redis component
 
 **Component Relationship**:
 A logical reference from one component to another, classified as requires when activation depends on availability or uses when it is only a runtime association.
@@ -53,7 +57,7 @@ The single authoritative environment-specific way to realize a component while p
 _Avoid_: Provider, driver, renderer
 
 **Store Generation**:
-A separately addressable physical realization of one logical database, cache, or object-store component. A store transition may temporarily maintain active and candidate generations, but finishes with one authoritative generation.
+A separately addressable physical realization of one logical database, key-value store, or object store. A store transition may temporarily maintain active and candidate generations, but finishes with one authoritative generation.
 _Avoid_: Second database component, store revision
 
 **Store Transition**:
@@ -61,7 +65,7 @@ The verified replacement of a store's active generation with a synchronized cand
 _Avoid_: Schema migration, in-place resize
 
 **Store Data Role**:
-Whether a store's contents are authoritative and must be synchronized, derived and may be rebuilt from an authoritative source, or ephemeral and may be discarded.
+Whether a store's contents are authoritative and must be synchronized, derived and may be rebuilt from an authoritative source, or ephemeral and may be discarded. A key-value store has no default Store Data Role.
 _Avoid_: Durability setting, backup class
 
 **Store Rollback Guarantee**:

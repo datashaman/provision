@@ -58,7 +58,7 @@ A component represents an application role. The initial vocabulary is deliberate
 
 - HTTP service;
 - database;
-- cache;
+- key-value store;
 - object store;
 - realtime server;
 - queue;
@@ -67,6 +67,8 @@ A component represents an application role. The initial vocabulary is deliberate
 - schedule;
 
 This list is a product vocabulary, not an extensible resource-definition system.
+
+A key-value store may hold derived cache entries, sessions, or other application state. Its contents are not assumed to be rebuildable because the selected technology is Valkey, Redis, or ElastiCache. Each key-value store explicitly declares its Store Data Role and the selected implementation must satisfy that role's recovery and transition requirements.
 
 A queue is independent of its producers and consumers. An object store contains application-addressable objects and is distinct from an implementation's attached filesystem or volume. A worker is a persistent queue consumer. A task runs to completion when invoked. A schedule identifies a target task and declares timing, overlap, retry, and failure policy. Cron, systemd timers, application cron runners, and cloud schedulers are possible implementations of that intent; “scheduler” is not a separate application component.
 
@@ -93,7 +95,7 @@ The same logical component may have different implementations in different envir
 Examples:
 
 - PostgreSQL managed locally or provided by RDS;
-- Redis managed locally or provided by ElastiCache;
+- a key-value store implemented with Redis or Valkey locally, or provided by ElastiCache;
 - an object store using local or S3-compatible storage, or an external managed service;
 - a realtime server run by systemd, ECS, or an AWS WebSocket service;
 - a worker run as a systemd process, an ECS service consuming SQS, a per-job container, or a Lambda function;
@@ -121,7 +123,7 @@ Reusable implementation selections may be packaged as optional configuration fra
 
 Each component has exactly one authoritative implementation in an environment. Blue-green deployment uses two revisions of that implementation rather than two unrelated implementations. A controlled migration may temporarily use source and destination implementations but must finish with one authoritative binding.
 
-Likewise, a database, cache, or object-store component remains one logical component while a store transition temporarily creates active and candidate physical generations. The transition finishes with one authoritative generation; the candidate is not modeled as a second application component.
+Likewise, a database, key-value store, or object store remains one logical component while a store transition temporarily creates active and candidate physical generations. The transition finishes with one authoritative generation; the candidate is not modeled as a second application component.
 
 ### Component ownership
 
@@ -132,7 +134,7 @@ Every stateful or supporting component is either managed or external.
 
 Ownership is explicit per component so one environment can mix managed and external services safely.
 
-Managed scope is limited to application-scoped resources: workloads, application databases, caches, object stores, queues, ingress, certificates, application DNS records, and application-level backup policy. Foundational infrastructure—including cloud accounts, network strategy, DNS zones, organizational identity, and secret stores—is initially external.
+Managed scope is limited to application-scoped resources: workloads, application databases, key-value stores, object stores, queues, ingress, certificates, application DNS records, and application-level backup policy. Foundational infrastructure—including cloud accounts, network strategy, DNS zones, organizational identity, and secret stores—is initially external.
 
 Every managed stateful component has an explicit retention policy, with retention as the safe default. Ephemeral environments may explicitly select automatic deletion. An external component can become managed only through an explicit adoption operation that verifies its identity, records provenance, and presents the lifecycle responsibility being assumed.
 
@@ -230,19 +232,19 @@ Refreshes prefer staged loading followed by a switch. If an implementation canno
 
 The initial useful release must execute and verify all of these scenarios, not merely express them:
 
-1. The current Linux machine using systemd with a local database and cache.
+1. The current Linux machine using systemd with a local database and key-value store.
 2. Another Linux machine on the local network or VPN, accessed remotely, using systemd with local data services.
-3. An EC2 instance using systemd with host-local database and cache services.
-4. An EC2 instance using systemd with AWS-managed database and cache services.
+3. An EC2 instance using systemd with host-local database and key-value store services.
+4. An EC2 instance using systemd with AWS-managed database and key-value store services.
 5. ECS or Fargate services with AWS-managed supporting services.
 6. Lambda for workloads compatible with event-driven serverless execution.
 7. Hybrid environments where different components use different execution options.
 
 A host target is any user-controlled Linux systemd machine, whether local to the Provision process or reached remotely. The machine running Provision may use another operating system and control a remote host, but it is itself a host target only when it satisfies the Linux systemd capability contract.
 
-A host-only environment must be able to operate without AWS-managed dependencies. The initial implementation set therefore includes at least one curated host-local path for database, cache, queue, object store, schedule execution, and endpoint routing in addition to systemd execution for HTTP, realtime, Worker, and Task components. Exact products and supported versions remain technical-architecture decisions.
+A host-only environment must be able to operate without AWS-managed dependencies. The initial implementation set therefore includes at least one curated host-local path for database, key-value store, queue, object store, schedule execution, and endpoint routing in addition to systemd execution for HTTP, realtime, Worker, and Task components. Exact products and supported versions are recorded in the technical architecture.
 
-The AWS baseline covers managed relational database, managed cache, queue, object store, scheduling, certificates, application DNS records, container execution, and event-driven functions. Exact AWS service selections and supported versions remain technical-architecture decisions.
+The AWS baseline covers managed relational database, managed key-value store, queue, object store, scheduling, certificates, application DNS records, container execution, and event-driven functions. Exact AWS service selections are recorded in the technical architecture; supported versions follow its tested capability catalog.
 
 Lambda may implement HTTP handlers, event-driven tasks, and queue consumers when their declared duration, concurrency, payload, and state requirements fit its capabilities. A schedule may invoke a Lambda-backed task. A persistent worker or realtime server does not map directly to Lambda, although a managed event or WebSocket frontend may invoke Lambda handlers. Incompatible selections fail validation.
 
@@ -256,7 +258,7 @@ Blue-green is a product requirement where the selected implementation can provid
 - Realtime services route new connections to the candidate while the old revision drains existing connections until a configured deadline. Remaining clients receive a reconnect signal and are disconnected. Provision does not claim live socket migration or uninterrupted connections.
 - Workers stop the old revision from claiming new work, expose and drain in-flight work, then activate the candidate consumer. Required mode needs acknowledgement or visibility semantics, and application-level idempotency remains necessary. The guarantee is at-least-once processing, not exactly-once execution.
 - Schedules have one active emitting revision and use a fenced handoff from old to new. Tasks must tolerate duplicate invocation around failures at the handoff boundary; Provision does not claim universal exactly-once scheduling.
-- Databases, caches, and object stores may prepare a separately addressable candidate generation, synchronize or rebuild it as appropriate, verify it, switch authority, and retain the previous generation for a declared rollback window. This supports engine upgrades, upsizing, storage-class changes, and implementation migrations without treating the store as permanently shared or replacing it in place.
+- Databases, key-value stores, and object stores may prepare a separately addressable candidate generation, synchronize or rebuild it as appropriate, verify it, switch authority, and retain the previous generation for a declared rollback window. This supports engine upgrades, upsizing, storage-class changes, and implementation migrations without treating the store as permanently shared or replacing it in place.
 
 A store transition is driven by an environment configuration revision and may occur while the application revision remains unchanged. Schema migration is a separate application-defined change to the data contract; a deployment may perform a store transition, a schema migration, or both.
 
@@ -274,7 +276,7 @@ Required store blue-green guarantees that no acknowledged write is lost during t
 
 Rollback after the candidate accepts writes is a separate guarantee because the previous generation immediately becomes stale. An environment selects **zero-loss** rollback, **bounded-loss** rollback with an explicit maximum, or **forward-only** recovery. Zero-loss requires reverse synchronization or an equivalent mechanism; retaining the previous generation alone does not qualify. Blue-green therefore always guarantees a lossless forward cutover but does not disguise a weaker rollback guarantee.
 
-Each store declares whether its data is **authoritative**, **derived**, or **ephemeral**. Authoritative data must be synchronized. Derived data may be rebuilt from a declared authoritative source, and ephemeral data may be discarded. Databases and object stores default to authoritative; caches default to derived, with an explicit override when a cache contains authoritative state. Rebuilding and verification can satisfy blue-green for a derived or ephemeral candidate without copying the old generation.
+Each store has a Store Data Role of **authoritative**, **derived**, or **ephemeral**. Authoritative data must be synchronized. Derived data may be rebuilt from a declared authoritative source, and ephemeral data may be discarded. Databases and object stores default to authoritative. Key-value stores have no default: their data role must be declared explicitly. Session data, for example, is authoritative when losing accepted sessions is unacceptable; it may be declared ephemeral only when that loss is an explicit application policy. Rebuilding and verification can satisfy blue-green for a derived or ephemeral candidate without copying the old generation.
 
 Schema migration Actions declare the application revisions compatible with the resulting data contract. The default pattern is expand-and-contract: expansion happens before candidate activation, both application revisions remain compatible throughout the rollback window, and destructive contraction waits until neither the old application revision nor old store generation remains a rollback target.
 
@@ -337,7 +339,7 @@ Useful runtime metadata may include the environment name, lifecycle, application
 - Store blue-green operates on physical generations of one logical component and applies to upgrades, upsizing, storage changes, and implementation migration.
 - Store transitions are environment changes distinct from application-defined schema migrations.
 - Required store blue-green loses no acknowledged writes during forward cutover; rollback loss is declared separately.
-- Store data is authoritative, derived, or ephemeral, determining whether a candidate must synchronize, rebuild, or may start empty.
+- Store data is authoritative, derived, or ephemeral, determining whether a candidate must synchronize, rebuild, or may start empty; key-value stores must declare this role explicitly.
 - Schema migration compatibility spans the application and store rollback window before destructive contraction.
 - External stores must expose verifiable transition capabilities to satisfy required blue-green.
 - Previous store generations follow an explicit transition cleanup policy after the rollback window.
@@ -382,6 +384,6 @@ Useful runtime metadata may include the environment name, lifecycle, application
 
 ## Not yet decided
 
-No implementation or technical architecture has been selected. In particular, the repository does not yet decide whether the product is a CLI, service, library, daemon, or combination of these; how it provisions resources; how configuration is represented; or how deployment state is stored.
+This product model does not prescribe implementation mechanics. Agreed technical decisions, including the engine shape, configuration format, and state storage, are recorded in `docs/TECHNICAL_ARCHITECTURE.md` and its decision records.
 
 The product boundary is deliberately not Kubernetes-shaped: Provision does not expose a generic resource API, arbitrary custom resources, foundational cluster ownership, or automatic reconciliation as universal behavior.

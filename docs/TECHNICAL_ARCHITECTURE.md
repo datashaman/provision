@@ -56,7 +56,7 @@ The local engine, CLI, and future runner are implemented in Go. Go supports the 
 
 Each environment has an append-only execution journal and immutable state snapshots for efficient reads. A deep State Backend module hides persistence and exposes a small interface for loading the current snapshot, conditionally appending journal entries, acquiring or renewing a fenced lease, storing immutable Plans and evidence, and compare-and-swapping the active snapshot.
 
-The initial architecture includes two adapters because this seam has real variation: SQLite for personal or local environments and an AWS-backed remote adapter for shared environments. Exact AWS storage services remain undecided.
+The initial architecture includes two adapters because this seam has real variation: SQLite for personal or local environments and a DynamoDB-and-S3 adapter for shared AWS environments.
 
 ### Fenced environment leases
 
@@ -93,3 +93,31 @@ An Action references either a container image by digest or an immutable executab
 ### Observable operation recovery
 
 Every Plan operation has deterministic identity, preconditions, an idempotency or single-attempt classification, an observation method, execution and verification behavior, retry classification, and optional compensation or forward-recovery instructions. The Executor journals intent before causing side effects and records the outcome afterward. On uncertain resumption it observes the provider before retrying and derives provider idempotency tokens from operation identity where supported. An uncertain single-attempt operation pauses for explicit recovery.
+
+### One repository and Go module
+
+The initial product is maintained in one repository, one Go module, and one primary `provision` binary. The Configuration Compiler, Planner, Executor, State Backend, and implementation adapters are internal packages behind their agreed interfaces. A future coordinator may introduce another command in the same repository, but it does not create a second behavioral core.
+
+### Separate planning and execution adapter seams
+
+Provider-specific variation is divided across two related interfaces. An Implementation Adapter used by the Planner declares capabilities, observes one logical component, and translates a desired transition into typed operations. An Operation Handler used by the Executor observes an operation's current state, applies or resumes it, verifies its result, and describes its recovery behavior. An adapter registers only the operation kinds it can emit and handle. The Planner owns ordering across components; adapters own provider-specific transition knowledge.
+
+### Explicit evolution of persisted formats
+
+Every persisted format has an explicit schema version. Supported configuration versions compile into the current canonical model. Snapshots have deterministic migrations, while journal events remain immutable and readers support a declared compatibility window. Approved Plans are never rewritten: each records its engine compatibility range, and an incompatible Plan must be recreated by planning again.
+
+### Shared AWS state layout
+
+One Provision installation or administrative domain uses one DynamoDB table and one S3 bucket rather than allocating them per environment. DynamoDB partitions state by environment identity and stores the head, fenced lease, journal events, approvals, and compact indexes. S3 stores content-addressed Plans, snapshots, evidence, and large immutable payloads. A DynamoDB transaction appends each event and advances its environment head atomically; every referenced S3 object is accepted only after its digest is verified.
+
+### Verification through module interfaces
+
+Tests exercise the same deep-module interfaces used by production callers. The Configuration Compiler has golden tests for resolution, diagnostics, and provenance. The Planner has golden and property tests for deterministic Plans. The Executor has state-machine tests with failures injected before and after every side effect. Every State Backend passes a shared contract suite against SQLite and real DynamoDB and S3; implementation adapters pass contract tests against disposable real targets; and the seven required scenarios have end-to-end coverage. Fakes satisfy the same interfaces and do not bypass them.
+
+### Deterministic provider simulation
+
+A deterministic simulator satisfies the implementation-adapter and operation-handler interfaces. It exercises planning, dependency ordering, resumability, compensation, and injected failures without real infrastructure. Simulation supplements rather than replaces provider contract tests against disposable real targets.
+
+### Compiled internal adapter registry
+
+The initial curated implementations are compiled into the Go binary and discovered through an internal registry. The first release does not load Go dynamic plugins or third-party provider executables. If external implementations are supported later, they communicate through a versioned out-of-process protocol with capability negotiation rather than sharing Go types or process memory.

@@ -1,5 +1,7 @@
 # Provision
 
+Licensed under the [MIT License](LICENSE).
+
 Provision is a working product concept for describing and deploying web applications across local machines, remote development hosts, and cloud execution environments.
 
 It is the deliberate successor to Gimme, not an automatic upgrade of running Gimme deployments. Proven behavior and acceptance evidence inform Provision; existing deployments remain Gimme-owned until a separately verified migration.

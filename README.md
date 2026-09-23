@@ -2,13 +2,15 @@
 
 Provision is a working product concept for describing and deploying web applications across local machines, remote development hosts, and cloud execution environments.
 
+It is the deliberate successor to Gimme, not an automatic upgrade of running Gimme deployments. Proven behavior and acceptance evidence inform Provision; existing deployments remain Gimme-owned until a separately verified migration.
+
 Its primary users are application teams without dedicated platform teams. The intended scope runs from development through small and medium production deployments.
 
 ## Status
 
-The **product model is agreed**, with explicit later amendments recorded in decision records. Technical-architecture discovery is under way, and foundational architecture decisions are recorded in this repository.
+The **product model is agreed**, with explicit later amendments recorded in decision records. Foundational technical-architecture decisions are recorded, and implementation planning is under way.
 
-The current goal is to choose configuration syntax, system shape, state model, provisioning approach, and runtime mechanisms without weakening the agreed product guarantees.
+The current goal is to turn the agreed model into executable acceptance cases and an end-to-end host deployment slice without weakening its guarantees.
 
 ## Product direction
 
@@ -25,6 +27,7 @@ The product should let a user describe:
 
 - [Product model](docs/PRODUCT_MODEL.md)
 - [Technical architecture](docs/TECHNICAL_ARCHITECTURE.md)
+- [Gimme successor plan](docs/GIMME_SUCCESSOR_PLAN.md)
 - [Domain language](CONTEXT.md)
 - [Open questions](docs/OPEN_QUESTIONS.md)
 - [Decision records](docs/adr/)

@@ -1,0 +1,3 @@
+# Treat Provision as Gimme's successor
+
+Provision is the deliberate product successor to Gimme, not an in-place upgrade of Gimme's Python, MCP, Deployer, or local-state implementation. It carries forward proven host behavior, safety rules, and acceptance evidence while implementing the agreed Go engine and broader environment and component model; forcing Gimme's current implementation to serve every new execution target would entangle the new design with its existing host- and Laravel-specific choices. Existing Gimme deployments remain under Gimme's authority until a separately planned and verified migration; this decision does not authorize an automatic state import or live cutover.

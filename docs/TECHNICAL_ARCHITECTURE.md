@@ -186,6 +186,8 @@ A host is qualified through observed capabilities: systemd, cgroup v2 for the cu
 
 Application-defined builds are Actions with declared inputs and named digest-addressed artifact and evidence outputs. Every artifact has an explicit publication destination; the publishing operation verifies the digest at that destination. Target-specific staging into ECR, S3, or a host cache is distinct from publishing the authoritative artifact. A deterministic `revision assemble` operation accepts those outputs, including outputs from separate repositories or existing pipelines, and creates a complete immutable application revision manifest. Deployment consumes that manifest; it does not infer artifacts from the invoking process's current checkout or run a build implicitly.
 
+The compiler, planner, and executor do not detect a framework or synthesize Laravel- or PHP-specific commands. A framework may supply optional templates or Actions, but the same artifact, health, binding, and rollout contracts apply to applications built without that framework.
+
 ### Explicit configuration references
 
 One root configuration document refers to typed application, environment, implementation, policy, and revision documents by explicit local relative paths. The first release has no implicit directory merge, remote include, template language, or environment-variable substitution. The compiler's versioned schema generates JSON Schema and reference documentation.

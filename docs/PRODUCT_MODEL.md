@@ -12,6 +12,8 @@ The product should preserve the application's intent while allowing each environ
 
 Provision's core job is to let an application team describe an application once and safely deploy it across local hosts and selected cloud targets.
 
+Provision is framework- and language-neutral. Its component roles, deployment guarantees, bindings, and lifecycle do not assume Laravel, PHP, or any other application framework. Framework-specific build, migration, or runtime commands are supplied by application artifacts and declared Actions, not inferred or required by Provision. Optional framework integrations may simplify configuration without changing the portable model.
+
 The intended scope runs from development through small and medium production deployments. Production safety must be genuine, but the initial product does not promise the governance, disaster recovery, organizational policy, or operational support expected of a mission-critical enterprise platform.
 
 Provisioning supporting services is in scope when necessary to deploy the application. Provision is not intended to become a general infrastructure-management product.
@@ -248,6 +250,8 @@ The initial useful release must execute and verify all of these scenarios, not m
 6. Lambda for workloads compatible with event-driven serverless execution.
 7. Hybrid environments where different components use different execution options.
 
+Acceptance must include a non-Laravel application exercising HTTP deployment, a queue-consuming worker, a task, and a schedule through the same core interfaces. A Laravel example may be tested too, but cannot be the sole proof of those roles or a prerequisite for using them.
+
 A host target is any user-controlled Linux systemd machine, whether local to the Provision process or reached remotely. The machine running Provision may use another operating system and control a remote host, but it is itself a host target only when it satisfies the Linux systemd capability contract.
 
 A host-only environment must be able to operate without AWS-managed dependencies. The initial implementation set therefore includes at least one curated host-local path for database, key-value store, queue, object store, schedule execution, and endpoint routing in addition to systemd execution for HTTP, realtime, Worker, and Task components. Exact products and supported versions are recorded in the technical architecture.
@@ -378,6 +382,7 @@ Useful runtime metadata may include the environment name, lifecycle, application
 - Interactive shell access remains an external break-glass mechanism rather than a core product bypass.
 - Initial implementations target local and remote Linux hosts plus AWS without claiming multi-cloud parity.
 - Provision remains application-oriented: fixed component vocabulary, application-scoped resources, external foundations, and no silent reconciliation by default.
+- Provision's core is framework- and language-neutral; no Laravel- or PHP-specific command, file layout, or runtime is required to deploy an application.
 - The initial implementation set is curated rather than a public third-party extension contract.
 - Deployed workloads continue operating when Provision's management capability is unavailable.
 - Local and remote-host workflows do not require a mandatory hosted account or always-online vendor control plane.

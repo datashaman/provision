@@ -4,6 +4,8 @@ Provision is a working product concept for describing and deploying web applicat
 
 It is the deliberate successor to Gimme, not an automatic upgrade of running Gimme deployments. Proven behavior and acceptance evidence inform Provision; existing deployments remain Gimme-owned until a separately verified migration.
 
+Unlike Gimme, Provision's core is not Laravel-oriented. Application artifacts and declared Actions supply framework-specific behavior; the deployment model and required guarantees work without Laravel or PHP.
+
 Its primary users are application teams without dedicated platform teams. The intended scope runs from development through small and medium production deployments.
 
 ## Status

@@ -121,3 +121,41 @@ A deterministic simulator satisfies the implementation-adapter and operation-han
 ### Compiled internal adapter registry
 
 The initial curated implementations are compiled into the Go binary and discovered through an internal registry. The first release does not load Go dynamic plugins or third-party provider executables. If external implementations are supported later, they communicate through a versioned out-of-process protocol with capability negotiation rather than sharing Go types or process memory.
+
+### First release without a coordinator
+
+The first release includes the local engine and CLI, local SQLite state, shared AWS state, and one-shot runners. It does not include the optional coordinator. The agreed interfaces preserve a future place for shared authentication, dispatch, collaboration, and user interfaces, but none of those protocols are designed before the seven required deployment scenarios work end to end.
+
+### Canonical typed-operation envelope
+
+Plans encode operations as canonical JSON under a restricted value profile. Each operation has a small common envelope containing its schema version, deterministic identity, kind and kind version, target, dependencies, preconditions, timeout, retry safety, recovery class, expected observation, and typed payload. The Executor understands the envelope; the registered Operation Handler owns and validates the payload schema. Plans contain neither generated scripts nor opaque executable closures.
+
+### External artifacts with digest-addressed caching
+
+Provision is not an application-artifact registry. Revision manifests reference immutable OCI images or executable bundles in authenticated external registries, HTTPS locations, or object stores and identify them by digest. The engine keeps a local content-addressed cache, transfers only missing digests over SSH, and stages artifacts into ECR or S3 only when an AWS target requires it. Digest and policy evidence are checked again before execution.
+
+### Signed Provision releases
+
+Provision is distributed as signed, versioned archives for supported platforms with checksums and a software bill of materials, plus a matching OCI runner image. Package-manager integrations may wrap those releases later, but they are not the authoritative artifact. The initial release has neither a mandatory installer daemon nor an automatic updater.
+
+### Policy-rooted retention and garbage collection
+
+Retention is explicit. Environment heads, approved Plans, live or resumable operations, retained generations, rollback windows, audit holds, and recovery records are protected roots. Snapshots may compact reads without rewriting journal events. Unreferenced content-addressed objects are collected through mark, quarantine, and delayed deletion. Local state defaults to no automatic deletion; an installation must opt into time-based expiry consistent with its audit and recovery policy.
+
+### Explicit trust boundaries
+
+Authenticated configuration and approved Plans express authorized intent but do not make executable inputs safe. Artifacts, Actions, provider responses, remote hosts, and network inputs are treated as untrusted. The engine verifies digests, isolates Actions where the target permits, grants short-lived least-privilege credentials, redacts secrets structurally, and requires an explicit approved fallback when a requested isolation guarantee is unavailable.
+
+### Native and OCI host workloads
+
+The host execution implementation accepts digest-addressed executable bundles and digest-addressed OCI images. Executable bundles run directly under hardened systemd units. OCI images run through a declared container runtime while systemd remains their lifecycle manager. This supports lightweight native development and container-first applications without turning the host target into a cluster abstraction.
+
+### Curated AWS service portfolio
+
+The initial AWS supporting-service portfolio is RDS for PostgreSQL, ElastiCache for Valkey, SQS Standard and FIFO, S3, and EventBridge Scheduler. Its execution and endpoint portfolio is ECS or Fargate, Lambda versions and aliases, Application Load Balancers for compatible HTTP and realtime workloads, API Gateway HTTP and WebSocket APIs for Lambda-oriented endpoints, and Route 53 plus ACM for authorized application records and certificates.
+
+Native ECS blue-green deployments are preferred for container services, and Lambda aliases are the stable handoff point for functions. Capability contracts remain narrower than service names: RDS Blue/Green eligibility is validated against its PostgreSQL limitations; a derived ElastiCache generation may be rebuilt, while an authoritative cache transition fails required mode unless a synchronization implementation can prove the required guarantee.
+
+### Provider-native workload observability
+
+Provision emits structured management events and records references to verification evidence, but it is not a monitoring backend. Host workloads use journald and AWS workloads use CloudWatch by default. Health gates consume explicit probes and selected metrics. OpenTelemetry export may be supported, but deployed workloads never require a Provision-hosted telemetry service to continue operating.

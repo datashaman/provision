@@ -4,9 +4,8 @@ The product model is agreed. The following technical-architecture questions rema
 
 ## Technical architecture
 
-- CLI, local service, hosted service, daemon, library, or hybrid?
 - Push-based deployment, pull-based deployment, or reconciliation?
-- Programming language and module boundaries?
+- Programming language and internal package structure?
 - State and locking model?
 - Provisioning implementation: SDKs, Terraform/OpenTofu, CloudFormation, Pulumi, or another mechanism?
 - Plugin model, if any?

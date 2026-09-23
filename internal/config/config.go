@@ -39,6 +39,12 @@ type Component struct {
 }
 
 type Health struct {
+	Liveness              HealthCheck `yaml:"liveness" json:"liveness"`
+	Readiness             HealthCheck `yaml:"readiness" json:"readiness"`
+	CandidateVerification HealthCheck `yaml:"candidateVerification" json:"candidateVerification"`
+}
+
+type HealthCheck struct {
 	Path string `yaml:"path" json:"path"`
 }
 
@@ -86,6 +92,37 @@ type Compiled struct {
 	Environment Environment `json:"environment"`
 	Revision    Revision    `json:"revision"`
 	Digest      string      `json:"digest"`
+}
+
+// VerifyArtifactFile checks supplied local bytes against the immutable digest
+// declared for the initial single-component Revision. It never contacts or
+// changes the Host Target.
+func (c Compiled) VerifyArtifactFile(path string) error {
+	file, err := os.Open(path)
+	if err != nil {
+		return fmt.Errorf("open artifact: %w", err)
+	}
+	defer file.Close()
+	info, err := file.Stat()
+	if err != nil {
+		return fmt.Errorf("stat artifact: %w", err)
+	}
+	if !info.Mode().IsRegular() {
+		return errors.New("artifact must be a regular file")
+	}
+	var artifact Artifact
+	for _, artifact = range c.Revision.Artifacts {
+		break
+	}
+	h := sha256.New()
+	if _, err := io.Copy(h, file); err != nil {
+		return fmt.Errorf("read artifact: %w", err)
+	}
+	actual := "sha256:" + hex.EncodeToString(h.Sum(nil))
+	if actual != artifact.Digest {
+		return fmt.Errorf("artifact digest mismatch: expected %s, got %s", artifact.Digest, actual)
+	}
+	return nil
 }
 
 var (
@@ -237,8 +274,17 @@ func (c Compiled) validate() error {
 		return errors.New("initial host tracer supports exactly one HTTP component")
 	}
 	for name, component := range c.Application.Components {
-		if !validName(name) || component.Role != "http" || !validHealthPath(component.Health.Path) {
-			return fmt.Errorf("component %q must be an HTTP service with a health path", name)
+		if !validName(name) || component.Role != "http" {
+			return fmt.Errorf("component %q must be an HTTP service", name)
+		}
+		for _, check := range []struct{ name, path string }{
+			{"liveness", component.Health.Liveness.Path},
+			{"readiness", component.Health.Readiness.Path},
+			{"candidateVerification", component.Health.CandidateVerification.Path},
+		} {
+			if !validHealthPath(check.path) {
+				return fmt.Errorf("component %q requires a valid %s health path", name, check.name)
+			}
 		}
 		implementation, ok := c.Environment.Implementations[name]
 		if !ok || implementation.Kind != "systemd" || !validName(implementation.Target) || implementation.Endpoint.Port < 1024 || implementation.Endpoint.Port > 65535 {

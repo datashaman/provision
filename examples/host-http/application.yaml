@@ -5,4 +5,9 @@ components:
   web:
     role: http
     health:
-      path: /health
+      liveness:
+        path: /live
+      readiness:
+        path: /ready
+      candidateVerification:
+        path: /verify

@@ -16,12 +16,14 @@ The **product model is agreed**, with explicit later amendments recorded in deci
 
 The current goal is to turn the agreed model into executable acceptance cases and an end-to-end host deployment slice without weakening its guarantees.
 
-The first Go increment is deliberately read-only: it validates an explicit, single-HTTP configuration subset and inspects an existing local or SSH host. It does **not** create an executable Plan, bootstrap a host, deploy a workload, or change Gimme-managed state. The example artifact URL and digest are placeholders.
+The current Go increment validates a strict single-HTTP configuration, can verify supplied Artifact bytes against the Revision digest, and inspects existing local or SSH hosts. It includes a non-Laravel Go HTTP fixture and a separate, privileged disposable-host bootstrap path. There is still **no** executable deployment Plan or workload apply path; the installed host executor enables inspection only.
 
 ```sh
 go run ./cmd/provision config validate --file examples/host-http/root.yaml
 go run ./cmd/provision host inspect --address base.local --user marlinf
 ```
+
+Build the fixture bundle with `examples/host-http/build.sh amd64`, then pass its output to `config validate --artifact-file examples/host-http/dist/hello-linux-amd64.tar.gz` to verify its actual bytes. The bundle source in the Revision must be an external HTTPS or OCI location; the local file is a read-only verification input, not a deployment-source override. The fixture's external source is the `host-http-fixture-v1` GitHub release asset. See the [host bootstrap guide](docs/host-bootstrap.md) before preparing a disposable machine. Never apply the bootstrap to the Gimme-managed `base.local` until the user has completed its separate reset.
 
 Development uses an optional exact Go tool pin in `mise.toml`; mise is not a runtime dependency of Provision or deployed applications.
 
@@ -43,6 +45,7 @@ The product should let a user describe:
 - [Gimme successor plan](docs/GIMME_SUCCESSOR_PLAN.md)
 - [Domain language](CONTEXT.md)
 - [Open questions](docs/OPEN_QUESTIONS.md)
+- [Disposable host bootstrap](docs/host-bootstrap.md)
 - [Decision records](docs/adr/)
 - [Exploratory material](docs/explorations/README.md)
 

@@ -4,5 +4,5 @@ name: hello-v1
 application: hello
 artifacts:
   web:
-    source: https://example.invalid/hello.tar.zst
-    digest: sha256:0000000000000000000000000000000000000000000000000000000000000000
+    source: https://github.com/datashaman/provision/releases/download/host-http-fixture-v1/hello-linux-amd64.tar.gz
+    digest: sha256:40817b0fcd85923742d5c16718c413d1dd832e94da54cff6b4aea44bc2df91b0

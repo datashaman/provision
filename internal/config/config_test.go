@@ -63,11 +63,11 @@ func TestRejectsUnsafeOrInvalidDocuments(t *testing.T) {
 		{"multiple documents", "revision.yaml", "kind: Revision", "kind: Revision\n---\nkind: Revision", "multiple YAML documents"},
 		{"wrong application", "environment.yaml", "application: hello", "application: other", "same application"},
 		{"unsupported component", "application.yaml", "role: http", "role: worker", "must be an HTTP service"},
-		{"unsafe health path", "application.yaml", "path: /health", "path: /health check", "health path"},
+		{"unsafe health path", "application.yaml", "path: /live", "path: /live check", "liveness health path"},
 		{"unsafe host", "environment.yaml", "address: base.local", "address: -oProxyCommand=evil", "existing remote host"},
-		{"artifact credential", "revision.yaml", "https://example.invalid", "https://user:secret@example.invalid", "immutable artifact source"},
-		{"artifact query", "revision.yaml", "https://example.invalid/hello.tar.zst", "https://example.invalid/hello.tar.zst?token=secret", "immutable artifact source"},
-		{"bad digest", "revision.yaml", "sha256:0000000000000000000000000000000000000000000000000000000000000000", "sha256:bad", "sha256 digest"},
+		{"artifact credential", "revision.yaml", "https://github.com", "https://user:secret@github.com", "immutable artifact source"},
+		{"artifact query", "revision.yaml", "hello-linux-amd64.tar.gz", "hello-linux-amd64.tar.gz?token=secret", "immutable artifact source"},
+		{"bad digest", "revision.yaml", "sha256:40817b0fcd85923742d5c16718c413d1dd832e94da54cff6b4aea44bc2df91b0", "sha256:bad", "sha256 digest"},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {

@@ -7,10 +7,12 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	"provision/internal/config"
 	"provision/internal/host"
+	"provision/internal/planner"
 )
 
 func main() {
@@ -31,13 +33,54 @@ func run(args []string) error {
 		return runHostBootstrapCheck(args[3:])
 	case args[0] == "config" && args[1] == "validate":
 		return runConfigValidate(args[2:])
+	case args[0] == "plan" && args[1] == "preview":
+		return runPlanPreview(args[2:])
 	default:
 		return usage()
 	}
 }
 
 func usage() error {
-	return errors.New("usage: provision host inspect (--local | --address HOST --user USER) | provision host bootstrap check (--local | --address HOST --user USER) --environment NAME --operator USER | provision config validate --file ROOT.yaml [--artifact-file FILE]")
+	return errors.New("usage: provision host inspect ... | provision host bootstrap check ... | provision config validate --file ROOT.yaml [--artifact-file FILE] | provision plan preview --file ROOT.yaml")
+}
+
+func runPlanPreview(args []string) error {
+	flags := flag.NewFlagSet("plan preview", flag.ContinueOnError)
+	flags.SetOutput(os.Stderr)
+	path := flags.String("file", "", "root configuration document")
+	if err := flags.Parse(args); err != nil {
+		return err
+	}
+	if flags.NArg() != 0 || *path == "" {
+		return errors.New("usage: provision plan preview --file ROOT.yaml")
+	}
+	compiled, err := config.Load(*path)
+	if err != nil {
+		return err
+	}
+	selection, err := compiled.HostSelection()
+	if err != nil {
+		return err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+	defer cancel()
+	observation, err := host.CheckBootstrap(ctx, host.Target{Address: selection.Target.Address, User: selection.Target.User}, compiled.Environment.Name, selection.Target.User)
+	if err != nil {
+		return err
+	}
+	preview, err := planner.Build(compiled, observation)
+	if err != nil {
+		return err
+	}
+	output := json.NewEncoder(os.Stdout)
+	output.SetIndent("", "  ")
+	if !preview.Executable {
+		if err := output.Encode(preview); err != nil {
+			return err
+		}
+		return fmt.Errorf("Plan is not executable: %s", strings.Join(preview.Reasons, "; "))
+	}
+	return output.Encode(preview.Plan)
 }
 
 func runHostBootstrapCheck(args []string) error {

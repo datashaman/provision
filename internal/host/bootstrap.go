@@ -14,22 +14,46 @@ const ExecutorPath = "/usr/local/libexec/provision-host-executor"
 var environmentPattern = regexp.MustCompile(`^[a-z][a-z0-9-]{0,19}$`)
 
 type BootstrapStatus struct {
-	Environment       string   `json:"environment"`
-	Operator          string   `json:"operator"`
-	Account           string   `json:"account"`
-	OS                string   `json:"os"`
-	OSVersion         string   `json:"osVersion"`
-	Architecture      string   `json:"architecture"`
-	SystemdVersion    string   `json:"systemdVersion,omitempty"`
-	SSHServerVersion  string   `json:"sshServerVersion,omitempty"`
-	CaddyVersion      string   `json:"caddyVersion,omitempty"`
-	CaddyActive       bool     `json:"caddyActive"`
-	JournaldActive    bool     `json:"journaldActive"`
-	CgroupV2          bool     `json:"cgroupV2"`
-	ExecutorDigest    string   `json:"executorDigest,omitempty"`
-	AllowedOperations []string `json:"allowedOperations"`
-	Ready             bool     `json:"ready"`
-	Findings          []string `json:"findings"`
+	SchemaVersion          string           `json:"schemaVersion,omitempty"`
+	Environment            string           `json:"environment"`
+	Operator               string           `json:"operator"`
+	Account                string           `json:"account"`
+	OS                     string           `json:"os"`
+	OSVersion              string           `json:"osVersion"`
+	Architecture           string           `json:"architecture"`
+	SystemdVersion         string           `json:"systemdVersion,omitempty"`
+	SSHServerVersion       string           `json:"sshServerVersion,omitempty"`
+	CaddyVersion           string           `json:"caddyVersion,omitempty"`
+	CaddyActive            bool             `json:"caddyActive"`
+	JournaldActive         bool             `json:"journaldActive"`
+	CgroupV2               bool             `json:"cgroupV2"`
+	ExecutorDigest         string           `json:"executorDigest,omitempty"`
+	GenerationStorageReady bool             `json:"generationStorageReady,omitempty"`
+	CaddyConfigValid       bool             `json:"caddyConfigValid,omitempty"`
+	CaddyAdminReachable    bool             `json:"caddyAdminReachable,omitempty"`
+	ListeningTCPPorts      []int            `json:"listeningTcpPorts,omitempty"`
+	Deployment             DeploymentStatus `json:"deployment,omitempty"`
+	AllowedOperations      []string         `json:"allowedOperations"`
+	Ready                  bool             `json:"ready"`
+	Findings               []string         `json:"findings"`
+}
+
+type DeploymentStatus struct {
+	Active *GenerationStatus `json:"active,omitempty"`
+}
+
+type GenerationStatus struct {
+	ID               string `json:"id"`
+	Revision         string `json:"revision"`
+	SystemdUnit      string `json:"systemdUnit"`
+	ReleaseDirectory string `json:"releaseDirectory"`
+	Port             int    `json:"port"`
+	RouteID          string `json:"routeId"`
+	UnitActive       bool   `json:"unitActive"`
+	UnitMatches      bool   `json:"unitMatches"`
+	RouteObserved    bool   `json:"routeObserved"`
+	RouteUpstream    string `json:"routeUpstream,omitempty"`
+	RouteMatches     bool   `json:"routeMatches"`
 }
 
 // CheckBootstrap invokes only the root-owned inspector. It cannot request a

@@ -66,6 +66,28 @@ func (renewalFailureBackend) RenewExecutionLease(context.Context, state.RenewExe
 
 type blockingHandler struct{ observations int }
 
+type initialCancellationHandler struct {
+	cancel    context.CancelFunc
+	satisfied bool
+}
+
+func (h *initialCancellationHandler) Observe(context.Context, planner.Operation) (HandlerObservation, error) {
+	h.cancel()
+	if h.satisfied {
+		return HandlerObservation{State: ObservationSatisfied, Evidence: json.RawMessage(`{"status":"already-present"}`)}, nil
+	}
+	return HandlerObservation{State: ObservationUnknown}, errors.New("initial observation canceled")
+}
+
+func (*initialCancellationHandler) ApplyOrResume(context.Context, operation.Envelope) (operation.Result, error) {
+	return operation.Result{}, errors.New("must not apply")
+}
+
+func (*initialCancellationHandler) Verify(operation.Envelope, operation.Result) error { return nil }
+func (*initialCancellationHandler) Recovery(planned planner.Operation) planner.RecoveryMode {
+	return planned.Recovery
+}
+
 func (h *blockingHandler) Observe(context.Context, planner.Operation) (HandlerObservation, error) {
 	h.observations++
 	return HandlerObservation{State: ObservationPending, Evidence: json.RawMessage(`{"status":"absent"}`)}, nil
@@ -199,6 +221,32 @@ func TestEngineRecordsFailureAndUncertainRecoveryEvidence(t *testing.T) {
 			last := events[1]
 			if last.Kind != test.wantKind || last.Outcome != test.wantOutcome || !strings.Contains(string(last.Observation), test.wantEvidence) {
 				t.Fatalf("last journal event = %+v", last)
+			}
+		})
+	}
+}
+
+func TestEngineJournalsInitialObservationCancellation(t *testing.T) {
+	for _, satisfied := range []bool{false, true} {
+		t.Run(map[bool]string{false: "uncertain", true: "satisfied"}[satisfied], func(t *testing.T) {
+			now := time.Date(2026, 9, 24, 12, 0, 0, 0, time.UTC)
+			ctx, cancel := context.WithCancel(context.Background())
+			handler := &initialCancellationHandler{cancel: cancel, satisfied: satisfied}
+			engine, backend, plan := executionFixture(t, &now, handler)
+			defer backend.Close()
+			result, err := engine.Execute(ctx, Request{PlanID: plan.ID, OperationID: "op-01", Holder: "test-holder", LeaseDuration: time.Minute})
+			wantOutcome := state.ExecutionUncertain
+			if satisfied {
+				wantOutcome = state.ExecutionSucceeded
+				if err != nil || result.Outcome != operation.OutcomeSucceeded {
+					t.Fatalf("satisfied initial observation = %+v, %v", result, err)
+				}
+			} else if err == nil {
+				t.Fatal("canceled initial observation unexpectedly succeeded")
+			}
+			events, journalErr := backend.LoadJournal(context.Background(), plan.ID)
+			if journalErr != nil || len(events) != 2 || events[1].Outcome != wantOutcome {
+				t.Fatalf("initial cancellation journal = %+v, %v", events, journalErr)
 			}
 		})
 	}

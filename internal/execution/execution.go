@@ -116,14 +116,18 @@ func (e Engine) Execute(ctx context.Context, request Request) (operation.Result,
 	envelope := operation.Envelope{SchemaVersion: operation.EnvelopeSchemaVersion, Authorization: proof, Operation: attempt.Operation}
 	before, err := e.Handler.Observe(ctx, attempt.Operation)
 	if err != nil {
-		return operation.Result{}, e.recordUncertain(ctx, attempt, err, HandlerObservation{State: ObservationUnknown})
+		journalContext, cancelJournal := failureContext(ctx)
+		defer cancelJournal()
+		return operation.Result{}, e.recordUncertain(journalContext, attempt, err, HandlerObservation{State: ObservationUnknown})
 	}
 	if before.State == ObservationSatisfied {
 		result := operation.Result{
 			SchemaVersion: operation.ResultSchemaVersion, PlanID: attempt.Plan.ID, OperationID: attempt.Operation.ID,
 			AttemptID: attempt.AttemptID, FencingToken: attempt.FencingToken, Outcome: operation.OutcomeSucceeded, Observation: before.Evidence,
 		}
-		if err := e.commitResult(ctx, attempt, envelope, result); err != nil {
+		commitContext, cancelCommit := failureContext(ctx)
+		defer cancelCommit()
+		if err := e.commitResult(commitContext, attempt, envelope, result); err != nil {
 			return operation.Result{}, err
 		}
 		return result, nil

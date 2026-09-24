@@ -155,16 +155,6 @@ func observeCandidateOperation(ctx context.Context, planned planner.Operation, r
 		} else {
 			state = "unknown"
 		}
-	case planner.SwitchEndpoint:
-		observed := observeEndpoint(ctx, paths, *planned.Input.Endpoint)
-		evidence = observed
-		if observed.Status == host.EndpointActive {
-			state = "satisfied"
-		} else if observed.Status == host.EndpointPending {
-			state = "pending"
-		} else {
-			state = "unknown"
-		}
 	}
 	encoded, err := json.Marshal(evidence)
 	if err != nil {

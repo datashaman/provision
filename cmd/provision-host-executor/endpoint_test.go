@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -106,6 +107,20 @@ func TestAuthorizedEndpointSwitchFailsClosedWhenCaddyRejectsLoad(t *testing.T) {
 	}
 	if !paths.systemd.(*fakeSystemdController).active[systemd.Unit] {
 		t.Fatal("failed switch stopped the verified candidate")
+	}
+}
+
+func TestAdminCaddyControllerTreatsNullConfigurationAsAbsent(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, _ *http.Request) {
+		response.Header().Set("Content-Type", "application/json")
+		_, _ = response.Write([]byte("null\n"))
+	}))
+	defer server.Close()
+	controller := adminCaddyController{client: server.Client(), baseURL: server.URL}
+
+	data, err := controller.Read(context.Background(), "/config/apps/http/servers/provision-lab-web")
+	if !errors.Is(err, errCaddyPathNotFound) || data != nil {
+		t.Fatalf("Caddy null configuration = %q, %v; want absent path", data, err)
 	}
 }
 

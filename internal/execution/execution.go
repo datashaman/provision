@@ -67,9 +67,6 @@ func (e Engine) Execute(ctx context.Context, request Request) (operation.Result,
 	if err != nil {
 		return operation.Result{}, err
 	}
-	if !snapshot.Plan.Target.Local {
-		return operation.Result{}, errors.New("remote Host Target execution is not enabled; use the SSH tracer in issue #7")
-	}
 	if snapshot.Plan.Capability.Observed.AuthorityKeyID == "" || snapshot.Plan.Capability.Observed.AuthorityKeyID != e.Signer.ID() {
 		return operation.Result{}, errors.New("signing key does not match the authority observed in the Plan")
 	}
@@ -96,11 +93,12 @@ func (e Engine) Execute(ctx context.Context, request Request) (operation.Result,
 		Application: attempt.Plan.Application,
 		Environment: attempt.Plan.Environment,
 		Target: authority.TargetIdentity{
-			Name:           attempt.Plan.Target.Name,
-			Local:          attempt.Plan.Target.Local,
-			Address:        attempt.Plan.Target.Address,
-			Operator:       attempt.Plan.Target.User,
-			ExecutorDigest: attempt.Plan.Capability.Observed.ExecutorDigest,
+			Name:                  attempt.Plan.Target.Name,
+			Local:                 attempt.Plan.Target.Local,
+			Address:               attempt.Plan.Target.Address,
+			Operator:              attempt.Plan.Target.User,
+			ExecutorDigest:        attempt.Plan.Capability.Observed.ExecutorDigest,
+			SSHHostKeyFingerprint: attempt.Plan.Capability.Observed.SSHHostKeyFingerprint,
 		},
 		OperationID:     attempt.Operation.ID,
 		OperationKind:   string(attempt.Operation.Kind),

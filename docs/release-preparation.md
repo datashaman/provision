@@ -1,8 +1,8 @@
 # Authorized release preparation
 
-Provision can execute the first operation of an approved Host Plan on the current machine. That operation is intentionally narrow: `stageArtifact` downloads the Artifact URL already recorded in the Plan, verifies its SHA-256 digest, and stores it at `/var/lib/provision/artifacts/sha256/<digest>`. It does not unpack, install, start, stop, or route the application.
+Provision can execute the first operation of an approved Host Plan on either the current machine or a bootstrapped remote machine over SSH. That operation is intentionally narrow: `stageArtifact` downloads the Artifact URL already recorded in the Plan, verifies its SHA-256 digest, and stores it at `/var/lib/provision/artifacts/sha256/<digest>`. It does not unpack, install, start, stop, or route the application.
 
-This slice is for a direct-local Host Target. The machine running `provision deployment execute` must be the bootstrapped target, although it may be reached interactively from another machine first. A configured remote address is rejected. SSH execution will reuse this authorization contract in the next host slice.
+Local and remote execution use the same Plan-bound authorization, fencing, journal, operation envelope, root-owned executor, and structured result. SSH is only the transport boundary; it does not create a second execution model or grant shell-shaped deployment authority.
 
 ## 1. Create the Environment authority
 
@@ -17,7 +17,7 @@ go run ./cmd/provision authority keygen \
 
 The command refuses to overwrite either file. Keep the private key owner-only and off the target's root-owned verification directories. Bootstrap installs only the public key; follow the [host bootstrap guide](host-bootstrap.md), including its `--authority-public-key` argument.
 
-## 2. Declare the target as local
+## 2. Declare a local or remote target
 
 For the Environment being exercised, the selected Host Target must identify the current machine and the already-bootstrapped operator:
 
@@ -30,6 +30,18 @@ targets:
 ```
 
 Do not set `address` on a local target. Inspection still goes through the fixed root-owned executor via the operator's restricted `sudo` rule. The resulting Plan records the executor digest and authority-key identity observed on that machine.
+
+For a remote target, declare the already-bootstrapped machine and SSH user instead:
+
+```yaml
+targets:
+  current:
+    kind: host
+    address: 192.168.101.109
+    user: OPERATOR
+```
+
+The machine's SSH key must already be trusted by the operator account, normally through its OpenSSH `known_hosts` file. Provision uses batch mode, disables password authentication, enables strict host-key checking, and never accepts or replaces a host key automatically. An unknown or changed host identity therefore fails before the remote executor is invoked. The inspector also records the host's own ED25519 fingerprint in the Plan; the signed operation binds it, and the executor recomputes and verifies it before accepting a remote-target envelope. Pin and verify the fingerprint out of band when preparing a reset machine.
 
 ## 3. Preview and approve the exact Plan
 
@@ -60,9 +72,9 @@ go run ./cmd/provision deployment execute \
   --signing-key .provision/host-authority.key
 ```
 
-Before contacting the executor, Provision atomically confirms that the Plan is still current and approved, acquires a renewable fenced execution lease for the Environment mutation, assigns a higher fencing token, and journals the intent. This execution lease is not the product's optional team-member **Environment Lease**. It then signs a maximum-five-minute one-use proof for the exact typed operation and observed local target. The executor accepts only the fixed `stageArtifact` schema and fixed cache root. It rejects a changed payload, wrong key, wrong executor, wrong Environment or operator, expired proof, replayed attempt, or stale fencing token.
+Before contacting the executor, Provision atomically confirms that the Plan is still current and approved, acquires a renewable fenced execution lease for the Environment mutation, assigns a higher fencing token, and journals the intent. This execution lease is not the product's optional team-member **Environment Lease**. It then signs a maximum-five-minute one-use proof for the exact typed operation and observed target. The executor accepts only the fixed `stageArtifact` schema and fixed cache root. It rejects a changed payload, wrong key, wrong executor, wrong Environment or operator, expired proof, replayed attempt, or stale fencing token.
 
-If the digest-addressed Artifact is already present and valid, execution succeeds as `already-present`; otherwise it is downloaded over HTTPS to a temporary file, bounded to 512 MiB, verified, and committed without overwriting another cache entry. A known host failure is returned and journaled with its observation. After an interrupted or unverifiable response, the Operation Handler observes the cache before deciding whether the operation succeeded or remains `uncertain`; uncertain evidence includes the observed state and declared recovery mode. Do not infer failure from an uncertain result.
+If the digest-addressed Artifact is already present and valid, execution succeeds as `already-present`; otherwise the target executor downloads it over HTTPS to a temporary file, bounds it to 512 MiB, verifies it, and commits it without overwriting another cache entry. A known host failure is returned and journaled with its observation. After an interrupted or unverifiable SSH response, Provision reconnects only to observe the digest-addressed cache. If that observation proves the Artifact is present, it commits success. If the target cannot be observed or the cache state is ambiguous, it records `uncertain` with the observed state and declared recovery mode. It does not blindly retry the mutation or infer failure from a lost connection.
 
 ## 5. Read the durable journal
 
@@ -76,4 +88,4 @@ The output contains append-only authoritative intent and outcome events, includi
 
 ## Current boundary
 
-This is release preparation, not a release deployment. Later Plan operations remain unavailable: Provision cannot yet create a Generation, install the Artifact, start or verify a candidate, switch an Endpoint, drain, or retain the previous Generation. The remote-host transport is also unavailable in this slice. These omissions are explicit capability failures rather than silent fallback behavior.
+This is release preparation, not a release deployment. Later Plan operations remain unavailable: Provision cannot yet create a Generation, install the Artifact, start or verify a candidate, switch an Endpoint, drain, or retain the previous Generation. These omissions are explicit capability failures rather than silent fallback behavior.

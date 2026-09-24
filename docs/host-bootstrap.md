@@ -41,9 +41,9 @@ go run ./cmd/provision host inspect --address HOST --user OPERATOR
 go run ./cmd/provision host bootstrap check --address HOST --user OPERATOR --environment lab --operator OPERATOR
 ```
 
-The second command reports the OS and architecture, systemd, OpenSSH-server and Caddy versions, Caddy and journald service state, cgroup-v2 observation, executor digest, authority-key identity, dedicated account, available operations, and drift findings. `ready: true` means only that bootstrap matches the declared setup; it does **not** certify blue-green deployment. Support and required-mode guarantees need the later host scenario tests and published matrix.
+The second command reports the OS and architecture, systemd, OpenSSH-server and Caddy versions, the host's ED25519 SSH-key fingerprint, Caddy and journald service state, cgroup-v2 observation, executor digest, authority-key identity, dedicated account, available operations, and drift findings. `ready: true` means only that bootstrap matches the declared setup; it does **not** certify blue-green deployment. Support and required-mode guarantees need the later host scenario tests and published matrix.
 
-Bootstrap records the exact executor digest and public-key identity. Replacing either requires an explicit re-bootstrap; the executor refuses mismatches. See [Authorized release preparation](release-preparation.md) for the direct-local operation workflow.
+Bootstrap records the exact executor digest and public-key identity. Replacing either requires an explicit re-bootstrap; the executor refuses mismatches. See [Authorized release preparation](release-preparation.md) for the local and SSH operation workflow.
 
 ## Recovery and reset
 

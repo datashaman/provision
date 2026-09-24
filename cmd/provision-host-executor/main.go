@@ -28,8 +28,6 @@ import (
 	"provision/internal/host"
 )
 
-const executorPath = "/usr/local/libexec/provision-host-executor"
-
 var identifier = regexp.MustCompile(`^[a-z][a-z0-9-]{0,19}$`)
 var username = regexp.MustCompile(`^[a-z_][a-z0-9_-]*$`)
 var deploymentIdentifier = regexp.MustCompile(`^[a-z][a-z0-9-]{0,127}$`)
@@ -58,6 +56,8 @@ func run(args []string) error {
 	switch args[0] {
 	case "inspect":
 		return runInspect(args[1:])
+	case "observe-artifact":
+		return runObserveArtifact(args[1:])
 	case "execute":
 		return runExecute(args[1:])
 	default:
@@ -111,6 +111,11 @@ func inspect(environment, operator string) host.BootstrapStatus {
 	result.SSHServerVersion = firstLine(commandCombined("/usr/sbin/sshd", "-V"))
 	if result.SSHServerVersion == "" {
 		result.Findings = append(result.Findings, "OpenSSH server version is not available")
+	}
+	if fingerprint, err := host.ReadSSHHostKeyFingerprint(host.SSHHostPublicKeyPath); err != nil {
+		result.Findings = append(result.Findings, "ED25519 SSH host key identity is not available")
+	} else {
+		result.SSHHostKeyFingerprint = fingerprint
 	}
 	if result.CaddyVersion == "" {
 		result.Findings = append(result.Findings, "Caddy is not available")
@@ -167,7 +172,7 @@ func inspect(environment, operator string) host.BootstrapStatus {
 		}
 		result.Deployment.Active = active
 	}
-	if !rootOwned(executorPath, 0755) || !rootOwned("/usr/local/libexec", 0755) {
+	if !rootOwned(host.ExecutorPath, 0755) || !rootOwned("/usr/local/libexec", 0755) {
 		result.Findings = append(result.Findings, "executor path is not root-owned with safe permissions")
 	}
 	if !rootOwned("/etc/provision/bootstrap/"+environment+".json", 0644) {
@@ -179,13 +184,13 @@ func inspect(environment, operator string) host.BootstrapStatus {
 	if !rootOwned("/var/lib/provision", 0755) || !rootOwned("/var/lib/provision/environments", 0755) {
 		result.Findings = append(result.Findings, "Provision state directory permissions or ownership have changed")
 	}
-	if data, err := os.ReadFile("/etc/sudoers.d/provision-" + environment); err != nil || string(data) != fmt.Sprintf("%s ALL=(root) NOPASSWD: %s\n", operator, executorPath) {
+	if data, err := os.ReadFile("/etc/sudoers.d/provision-" + environment); err != nil || string(data) != fmt.Sprintf("%s ALL=(root) NOPASSWD: %s\n", operator, host.ExecutorPath) {
 		result.Findings = append(result.Findings, "executor sudoers rule does not match the declared operator")
 	}
 	if output, err := exec.Command("visudo", "-cf", "/etc/sudoers.d/provision-"+environment).CombinedOutput(); err != nil {
 		result.Findings = append(result.Findings, "executor sudoers rule is invalid: "+strings.TrimSpace(string(output)))
 	}
-	if data, err := os.ReadFile(executorPath); err == nil {
+	if data, err := os.ReadFile(host.ExecutorPath); err == nil {
 		sum := sha256.Sum256(data)
 		result.ExecutorDigest = "sha256:" + hex.EncodeToString(sum[:])
 	} else {
@@ -199,7 +204,7 @@ func inspect(environment, operator string) host.BootstrapStatus {
 	} else {
 		result.AuthorityKeyID = keyID
 	}
-	if !rootOwned("/var/lib/provision/authority", 0700) || !rootOwned("/var/lib/provision/authority/"+environment, 0700) || !rootOwned("/var/lib/provision/artifacts", 0755) || !rootOwned("/var/lib/provision/artifacts/sha256", 0755) {
+	if !rootOwned("/var/lib/provision/authority", 0700) || !rootOwned("/var/lib/provision/authority/"+environment, 0700) || !rootOwned("/var/lib/provision/artifacts", 0755) || !rootOwned(host.ArtifactCacheRoot, 0755) {
 		result.Findings = append(result.Findings, "authorization or Artifact cache directories have changed")
 	}
 	var record bootstrapRecord

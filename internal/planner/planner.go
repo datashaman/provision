@@ -274,6 +274,9 @@ func capabilityIssues(observation host.BootstrapStatus, selection config.HostSel
 	if observation.AuthorityKeyID == "" {
 		issues = append(issues, "host authorization authority is not observed")
 	}
+	if !selection.Target.Local && observation.SSHHostKeyFingerprint == "" {
+		issues = append(issues, "SSH host key identity is not observed")
+	}
 	if !slices.Contains(observation.AllowedOperations, "stageArtifact") {
 		issues = append(issues, "host executor does not allow typed Artifact staging")
 	}

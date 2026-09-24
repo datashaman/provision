@@ -14,29 +14,30 @@ const ExecutorPath = "/usr/local/libexec/provision-host-executor"
 var environmentPattern = regexp.MustCompile(`^[a-z][a-z0-9-]{0,19}$`)
 
 type BootstrapStatus struct {
-	SchemaVersion          string           `json:"schemaVersion,omitempty"`
-	Environment            string           `json:"environment"`
-	Operator               string           `json:"operator"`
-	Account                string           `json:"account"`
-	OS                     string           `json:"os"`
-	OSVersion              string           `json:"osVersion"`
-	Architecture           string           `json:"architecture"`
-	SystemdVersion         string           `json:"systemdVersion,omitempty"`
-	SSHServerVersion       string           `json:"sshServerVersion,omitempty"`
-	CaddyVersion           string           `json:"caddyVersion,omitempty"`
-	CaddyActive            bool             `json:"caddyActive"`
-	JournaldActive         bool             `json:"journaldActive"`
-	CgroupV2               bool             `json:"cgroupV2"`
-	ExecutorDigest         string           `json:"executorDigest,omitempty"`
-	AuthorityKeyID         string           `json:"authorityKeyId,omitempty"`
-	GenerationStorageReady bool             `json:"generationStorageReady,omitempty"`
-	CaddyConfigValid       bool             `json:"caddyConfigValid,omitempty"`
-	CaddyAdminReachable    bool             `json:"caddyAdminReachable,omitempty"`
-	ListeningTCPPorts      []int            `json:"listeningTcpPorts,omitempty"`
-	Deployment             DeploymentStatus `json:"deployment,omitempty"`
-	AllowedOperations      []string         `json:"allowedOperations"`
-	Ready                  bool             `json:"ready"`
-	Findings               []string         `json:"findings"`
+	SchemaVersion          string                `json:"schemaVersion,omitempty"`
+	Environment            string                `json:"environment"`
+	Operator               string                `json:"operator"`
+	Account                string                `json:"account"`
+	OS                     string                `json:"os"`
+	OSVersion              string                `json:"osVersion"`
+	Architecture           string                `json:"architecture"`
+	SystemdVersion         string                `json:"systemdVersion,omitempty"`
+	SSHServerVersion       string                `json:"sshServerVersion,omitempty"`
+	CaddyVersion           string                `json:"caddyVersion,omitempty"`
+	CaddyActive            bool                  `json:"caddyActive"`
+	JournaldActive         bool                  `json:"journaldActive"`
+	CgroupV2               bool                  `json:"cgroupV2"`
+	ExecutorDigest         string                `json:"executorDigest,omitempty"`
+	AuthorityKeyID         string                `json:"authorityKeyId,omitempty"`
+	SSHHostKeyFingerprint  SSHHostKeyFingerprint `json:"sshHostKeyFingerprint,omitempty"`
+	GenerationStorageReady bool                  `json:"generationStorageReady,omitempty"`
+	CaddyConfigValid       bool                  `json:"caddyConfigValid,omitempty"`
+	CaddyAdminReachable    bool                  `json:"caddyAdminReachable,omitempty"`
+	ListeningTCPPorts      []int                 `json:"listeningTcpPorts,omitempty"`
+	Deployment             DeploymentStatus      `json:"deployment,omitempty"`
+	AllowedOperations      []string              `json:"allowedOperations"`
+	Ready                  bool                  `json:"ready"`
+	Findings               []string              `json:"findings"`
 }
 
 type DeploymentStatus struct {
@@ -74,13 +75,7 @@ func CheckBootstrap(ctx context.Context, target Target, environment, operator st
 	args := command[1:]
 	if !target.Local {
 		name = "ssh"
-		args = append([]string{
-			"-o", "BatchMode=yes",
-			"-o", "PasswordAuthentication=no",
-			"-o", "StrictHostKeyChecking=yes",
-			"-o", "ConnectTimeout=5",
-			"--", target.User + "@" + target.Address,
-		}, command...)
+		args = StrictSSHArguments(target, command...)
 	}
 	output, err := runCommand(ctx, name, args...)
 	if err != nil {
@@ -96,7 +91,7 @@ func CheckBootstrap(ctx context.Context, target Target, environment, operator st
 	if len(status.AllowedOperations) != 2 || status.AllowedOperations[0] != "inspect" || status.AllowedOperations[1] != "stageArtifact" {
 		return BootstrapStatus{}, errors.New("unexpected host executor operation is enabled")
 	}
-	if status.Ready && (status.OS != "ubuntu" || status.Architecture == "" || !strings.HasPrefix(status.SystemdVersion, "systemd ") || status.SSHServerVersion == "" || status.CaddyVersion == "" || !status.CaddyActive || !status.JournaldActive || !strings.HasPrefix(status.ExecutorDigest, "sha256:") || !strings.HasPrefix(status.AuthorityKeyID, "sha256:") || len(status.Findings) != 0) {
+	if status.Ready && (status.OS != "ubuntu" || status.Architecture == "" || !strings.HasPrefix(status.SystemdVersion, "systemd ") || status.SSHServerVersion == "" || status.CaddyVersion == "" || !status.CaddyActive || !status.JournaldActive || !strings.HasPrefix(status.ExecutorDigest, "sha256:") || !strings.HasPrefix(status.AuthorityKeyID, "sha256:") || !target.Local && !status.SSHHostKeyFingerprint.Valid() || len(status.Findings) != 0) {
 		return BootstrapStatus{}, errors.New("host bootstrap check returned incomplete readiness evidence")
 	}
 	return status, nil

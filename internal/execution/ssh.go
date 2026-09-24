@@ -26,7 +26,7 @@ func NewHostHandler(target planner.Target, environment string) (Handler, error) 
 		if target.Address != "" || target.User == "" {
 			return nil, errors.New("local Host Target is invalid")
 		}
-		return LocalHostHandler{}, nil
+		return LocalHostHandler{target: target, environment: environment}, nil
 	}
 	if err := (host.Target{Address: target.Address, User: target.User}).Validate(); err != nil {
 		return nil, err
@@ -35,8 +35,16 @@ func NewHostHandler(target planner.Target, environment string) (Handler, error) 
 }
 
 func (h SSHHostHandler) Observe(ctx context.Context, planned planner.Operation) (HandlerObservation, error) {
-	if planned.Kind != planner.StageArtifact || planned.Input.Artifact == nil {
-		return HandlerObservation{}, errors.New("SSH Host Handler can observe only Artifact preparation")
+	if planned.Kind != planner.StageArtifact {
+		command := exec.CommandContext(ctx, "ssh", host.StrictSSHArguments(host.Target{Address: h.target.Address, User: h.target.User},
+			"sudo", "-n", host.ExecutorPath, "observe-operation",
+			"--environment", h.environment,
+			"--operator", h.target.User,
+		)...)
+		return executeHostObservation(command, planned, "remote Host Target observation")
+	}
+	if planned.Input.Artifact == nil {
+		return HandlerObservation{}, errors.New("SSH Host Handler received invalid Artifact preparation")
 	}
 	if _, err := host.ArtifactCachePath(host.ArtifactCacheRoot, planned.Input.Artifact.Digest); err != nil {
 		return HandlerObservation{}, err

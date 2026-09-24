@@ -1,6 +1,6 @@
 # Authorized release preparation
 
-Provision can execute the first operation of an approved Host Plan on either the current machine or a bootstrapped remote machine over SSH. That operation is intentionally narrow: `stageArtifact` downloads the Artifact URL already recorded in the Plan, verifies its SHA-256 digest, and stores it at `/var/lib/provision/artifacts/sha256/<digest>`. It does not unpack, install, start, stop, or route the application.
+Provision can execute the first four operations of an approved Host Plan on either the current machine or a bootstrapped remote machine over SSH. `stageArtifact` downloads the Artifact URL already recorded in the Plan, verifies its SHA-256 digest, and stores it at `/var/lib/provision/artifacts/sha256/<digest>`. Dependency-gated operations then install that exact native bundle as an immutable candidate Generation, start a separate hardened systemd unit on a loopback-only port, and evaluate the declared liveness, readiness, and revision-bound candidate-verification checks. None of these operations changes the stable Endpoint or active-generation record.
 
 Local and remote execution use the same Plan-bound authorization, fencing, journal, operation envelope, root-owned executor, and structured result. SSH is only the transport boundary; it does not create a second execution model or grant shell-shaped deployment authority.
 
@@ -72,11 +72,31 @@ go run ./cmd/provision deployment execute \
   --signing-key .provision/host-authority.key
 ```
 
-Before contacting the executor, Provision atomically confirms that the Plan is still current and approved, acquires a renewable fenced execution lease for the Environment mutation, assigns a higher fencing token, and journals the intent. This execution lease is not the product's optional team-member **Environment Lease**. It then signs a maximum-five-minute one-use proof for the exact typed operation and observed target. The executor accepts only the fixed `stageArtifact` schema and fixed cache root. It rejects a changed payload, wrong key, wrong executor, wrong Environment or operator, expired proof, replayed attempt, or stale fencing token.
+Before contacting the executor, Provision atomically confirms that the Plan is still current and approved, acquires a renewable fenced execution lease for the Environment mutation, assigns a higher fencing token, and journals the intent. This execution lease is not the product's optional team-member **Environment Lease**. It then signs a maximum-five-minute one-use proof for the exact typed operation and observed target. The executor accepts only the enabled typed schemas and fixed host paths. It rejects a changed payload, wrong key, wrong executor, wrong Environment or operator, expired proof, replayed attempt, or stale fencing token.
 
 If the digest-addressed Artifact is already present and valid, execution succeeds as `already-present`; otherwise the target executor downloads it over HTTPS to a temporary file, bounds it to 512 MiB, verifies it, and commits it without overwriting another cache entry. A known host failure is returned and journaled with its observation. After an interrupted or unverifiable SSH response, Provision reconnects only to observe the digest-addressed cache. If that observation proves the Artifact is present, it commits success. If the target cannot be observed or the cache state is ambiguous, it records `uncertain` with the observed state and declared recovery mode. It does not blindly retry the mutation or infer failure from a lost connection.
 
-## 5. Read the durable journal
+## 5. Install, start, and verify the candidate
+
+Execute the next operations in order with the same Plan, State Backend, and signing key:
+
+```sh
+for operation in op-02 op-03 op-04; do
+  go run ./cmd/provision deployment execute \
+    --plan sha256:PLAN_DIGEST \
+    --operation "$operation" \
+    --state .provision/state.db \
+    --signing-key .provision/host-authority.key
+done
+```
+
+The State Backend refuses an operation until every dependency has a latest successful journal outcome. `op-02` re-verifies the cached Artifact digest, accepts only a gzip-compressed tar bundle containing exactly one executable regular file at its root, and atomically records a Generation manifest binding the Revision, Artifact digest, Environment account, and fixed release directory. The root-owned release root, Generation directory, manifest, and executable are checked for unsafe links, ownership, and permissions.
+
+`op-03` writes only the exact Plan-bound unit under `/etc/systemd/system`, runs it as the dedicated Environment account, and supplies `PROVISION_HTTP_LISTEN=127.0.0.1:<candidate-port>` plus `PROVISION_REVISION=<revision>`. A start failure removes only the new candidate unit. Cleanup refuses the recorded active Generation and never removes its unit or release directory.
+
+`op-04` contacts only the candidate's loopback port. It requires successful liveness and readiness responses and requires the candidate-verification response to report the planned Revision. Only all three passing produces `switchEligible: true`. A failed check is journaled with the individual check results and leaves Caddy, the stable Endpoint, and the active-generation record untouched.
+
+## 6. Read the durable journal
 
 ```sh
 go run ./cmd/provision deployment status \
@@ -88,4 +108,4 @@ The output contains append-only authoritative intent and outcome events, includi
 
 ## Current boundary
 
-This is release preparation, not a release deployment. Later Plan operations remain unavailable: Provision cannot yet create a Generation, install the Artifact, start or verify a candidate, switch an Endpoint, drain, or retain the previous Generation. These omissions are explicit capability failures rather than silent fallback behavior.
+This is candidate preparation, not a completed blue-green deployment. Later Plan operations remain unavailable: Provision cannot yet switch the stable Endpoint, verify the switched route, drain the previous Generation, or retain it for the rollback window. Those omissions are explicit capability failures rather than silent fallback behavior.

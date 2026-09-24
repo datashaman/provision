@@ -16,7 +16,7 @@ The **product model is agreed**, with explicit later amendments recorded in deci
 
 The current goal is to turn the agreed model into executable acceptance cases and an end-to-end host deployment slice without weakening its guarantees.
 
-The current Go increment validates a strict single-HTTP configuration, verifies supplied Artifact bytes against the Revision digest, inspects Host Targets, previews a deterministic Plan, persists exact-Plan approvals in a local SQLite State Backend, and can execute the Plan's first typed preparation operation on the current machine. That operation only downloads and verifies the approved Artifact into a digest-addressed cache; it does not install or start a workload. Its non-Laravel example workload lives separately in [`datashaman/provision-example-http`](https://github.com/datashaman/provision-example-http). This repository also includes a separate, privileged disposable-host bootstrap path.
+The current Go increment validates a strict single-HTTP configuration, verifies supplied Artifact bytes against the Revision digest, inspects Host Targets, previews a deterministic Plan, persists exact-Plan approvals in a local SQLite State Backend, and can execute the Plan's first four typed operations on a direct-local or remote Host Target. Those operations stage the approved Artifact, install an immutable candidate Generation, start it under a separate hardened systemd unit on a loopback-only port, and evaluate the complete Health Contract. They do not switch the stable Endpoint. Its non-Laravel example workload lives separately in [`datashaman/provision-example-http`](https://github.com/datashaman/provision-example-http). This repository also includes a separate, privileged disposable-host bootstrap path.
 
 ```sh
 go run ./cmd/provision config validate --file examples/host-http/root.yaml
@@ -27,7 +27,7 @@ go run ./cmd/provision plan preview --file examples/host-http/root.yaml --state 
 
 Preview output contains the Plan digest needed by the approval flow. Supplying `--state` persists the exact preview as the Environment's current, initially unapproved Plan. See [Plan approval and status](docs/plan-approval.md) for the durable SQLite workflow and its local OS trust boundary.
 
-The first execution slice stages one approved Artifact on either a direct-local or remote Host Target. See [Authorized release preparation](docs/release-preparation.md) for key setup, trusted SSH identity, bootstrap, execution, journal inspection, and the exact safety boundary.
+The current execution slice stages one approved Artifact and prepares and verifies an isolated candidate on either a direct-local or remote Host Target. See [Authorized release preparation](docs/release-preparation.md) for key setup, trusted SSH identity, bootstrap, execution, journal inspection, and the exact safety boundary.
 
 Download the example application from its own release and pass it to validation to verify its actual bytes:
 

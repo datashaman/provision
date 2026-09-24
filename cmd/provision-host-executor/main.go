@@ -58,6 +58,8 @@ func run(args []string) error {
 		return runInspect(args[1:])
 	case "observe-artifact":
 		return runObserveArtifact(args[1:])
+	case "observe-operation":
+		return runObserveOperation(args[1:])
 	case "execute":
 		return runExecute(args[1:])
 	default:
@@ -83,7 +85,7 @@ func runInspect(args []string) error {
 
 func inspect(environment, operator string) host.BootstrapStatus {
 	account := "provision-" + environment
-	result := host.BootstrapStatus{SchemaVersion: "provision.dev/host-inspection/v1alpha1", Environment: environment, Operator: operator, Account: account, AllowedOperations: []string{"inspect", "stageArtifact"}, Findings: []string{}}
+	result := host.BootstrapStatus{SchemaVersion: "provision.dev/host-inspection/v1alpha1", Environment: environment, Operator: operator, Account: account, AllowedOperations: []string{"inspect", "stageArtifact", "installGeneration", "startCandidate", "verifyCandidate"}, Findings: []string{}}
 	result.Architecture = strings.TrimSpace(command("uname", "-m"))
 	if data, err := os.ReadFile("/etc/os-release"); err == nil {
 		for _, line := range strings.Split(string(data), "\n") {
@@ -143,7 +145,7 @@ func inspect(environment, operator string) host.BootstrapStatus {
 	}
 	_, err := os.Stat("/sys/fs/cgroup/cgroup.controllers")
 	result.CgroupV2 = err == nil
-	result.GenerationStorageReady = hasAccount(account, "/var/lib/provision/environments/"+environment)
+	result.GenerationStorageReady = hasAccount(account, "/var/lib/provision/environments/"+environment) && rootOwned("/var/lib/provision/environments/"+environment+"/releases", 0755)
 	if !result.GenerationStorageReady {
 		result.Findings = append(result.Findings, "dedicated Environment account is missing or changed")
 	}

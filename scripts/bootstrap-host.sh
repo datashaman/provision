@@ -32,6 +32,7 @@ executor_path="/usr/local/libexec/provision-host-executor"
 record_path="/etc/provision/bootstrap/$environment.json"
 sudoers_path="/etc/sudoers.d/provision-$environment"
 environment_home="/var/lib/provision/environments/$environment"
+release_root="$environment_home/releases"
 authority_path="/etc/provision/authority/$environment.pub"
 authority_state="/var/lib/provision/authority/$environment"
 artifact_cache="/var/lib/provision/artifacts/sha256"
@@ -63,7 +64,7 @@ if [[ "$mode" == --dry-run ]]; then
   printf '  Authorization verifier: %s (%s)\n' "$authority_path" "$authority_key_id"
   printf '  Record: %s\n  Restricted sudoers: %s\n' "$record_path" "$sudoers_path"
   printf '  Required services: systemd, Caddy\n'
-  printf '  Enabled mutation: signed, Plan-bound Artifact staging only.\nNo changes made.\n'
+  printf '  Enabled mutations: signed, Plan-bound Artifact staging and candidate install/start/verification.\nNo changes made.\n'
   exit 0
 fi
 
@@ -79,7 +80,7 @@ id -u "$operator" >/dev/null 2>&1 || { echo "operator user does not exist" >&2; 
 for path in /usr/local/libexec /etc/provision /etc/provision/bootstrap /etc/provision/authority /var/lib/provision /var/lib/provision/environments /var/lib/provision/authority /var/lib/provision/artifacts "$artifact_cache" "$authority_state"; do
   [[ ! -L "$path" ]] || { echo "symlink at $path; refusing bootstrap" >&2; exit 1; }
 done
-for path in "$executor_path" "$record_path" "$sudoers_path" "$environment_home" "$authority_path"; do
+for path in "$executor_path" "$record_path" "$sudoers_path" "$environment_home" "$release_root" "$authority_path"; do
   [[ ! -L "$path" ]] || { echo "symlink at $path; refusing bootstrap" >&2; exit 1; }
 done
 expect_existing_path() {
@@ -118,6 +119,7 @@ elif [[ -e "$environment_home" ]]; then
   echo "Environment home exists without its account; refusing bootstrap" >&2
   exit 1
 fi
+expect_existing_path "$release_root" directory 0:0:755
 
 record_tmp="$(mktemp)"
 sudoers_tmp="$(mktemp)"
@@ -153,6 +155,7 @@ fi
 install -d -o root -g root -m 0755 /usr/local/libexec /etc/provision /etc/provision/bootstrap /etc/provision/authority /var/lib/provision /var/lib/provision/environments /var/lib/provision/artifacts "$artifact_cache"
 install -d -o root -g root -m 0700 /var/lib/provision/authority "$authority_state"
 install -d -o "$account" -g "$account" -m 0750 "$environment_home"
+install -d -o root -g root -m 0755 "$release_root"
 if [[ ! -e "$executor_path" ]]; then
   install -o root -g root -m 0755 "$binary" "$executor_path"
 fi

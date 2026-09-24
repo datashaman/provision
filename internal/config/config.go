@@ -94,6 +94,37 @@ type Compiled struct {
 	Digest      string      `json:"digest"`
 }
 
+type HostSelection struct {
+	Component      string
+	Implementation Implementation
+	Artifact       Artifact
+	TargetName     string
+	Target         Target
+}
+
+// HostSelection returns the single, validated native Host Target slice used by
+// the initial HTTP tracer.
+func (c Compiled) HostSelection() (HostSelection, error) {
+	for component, implementation := range c.Environment.Implementations {
+		artifact, ok := c.Revision.Artifacts[component]
+		if !ok {
+			return HostSelection{}, errors.New("Revision has no Artifact for planned component")
+		}
+		target, ok := c.Environment.Targets[implementation.Target]
+		if !ok {
+			return HostSelection{}, errors.New("Implementation has no configured Host Target")
+		}
+		return HostSelection{
+			Component:      component,
+			Implementation: implementation,
+			Artifact:       artifact,
+			TargetName:     implementation.Target,
+			Target:         target,
+		}, nil
+	}
+	return HostSelection{}, errors.New("configuration has no implementation to plan")
+}
+
 // VerifyArtifactFile checks supplied local bytes against the immutable digest
 // declared for the initial single-component Revision. It never contacts or
 // changes the Host Target.

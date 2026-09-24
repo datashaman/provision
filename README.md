@@ -16,11 +16,12 @@ The **product model is agreed**, with explicit later amendments recorded in deci
 
 The current goal is to turn the agreed model into executable acceptance cases and an end-to-end host deployment slice without weakening its guarantees.
 
-The current Go increment validates a strict single-HTTP configuration, can verify supplied Artifact bytes against the Revision digest, and inspects existing local or SSH hosts. Its non-Laravel example workload lives separately in [`datashaman/provision-example-http`](https://github.com/datashaman/provision-example-http). This repository also includes a separate, privileged disposable-host bootstrap path. There is still **no** executable deployment Plan or workload apply path; the installed host executor enables inspection only.
+The current Go increment validates a strict single-HTTP configuration, verifies supplied Artifact bytes against the Revision digest, inspects existing SSH hosts, and previews a deterministic read-only host Plan. Its non-Laravel example workload lives separately in [`datashaman/provision-example-http`](https://github.com/datashaman/provision-example-http). This repository also includes a separate, privileged disposable-host bootstrap path. There is still **no** workload apply path; the installed host executor enables inspection only.
 
 ```sh
 go run ./cmd/provision config validate --file examples/host-http/root.yaml
 go run ./cmd/provision host inspect --address base.local --user marlinf
+go run ./cmd/provision plan preview --file examples/host-http/root.yaml
 ```
 
 Download the example application from its own release and pass it to validation to verify its actual bytes:
@@ -30,7 +31,7 @@ gh release download v0.1.0 --repo datashaman/provision-example-http --pattern pr
 go run ./cmd/provision config validate --file examples/host-http/root.yaml --artifact-file /tmp/provision-example-http/provision-example-http-linux-amd64.tar.gz
 ```
 
-The local file is a read-only verification input, not a deployment-source override. See the [host bootstrap guide](docs/host-bootstrap.md) before preparing a disposable machine. Never apply the bootstrap to the Gimme-managed `base.local` until the user has completed its separate reset.
+The local file is a read-only verification input, not a deployment-source override. See the [host bootstrap guide](docs/host-bootstrap.md) before preparing a disposable machine. Never apply the bootstrap over a Gimme-managed host.
 
 Development uses an optional exact Go tool pin in `mise.toml`; mise is not a runtime dependency of Provision or deployed applications.
 

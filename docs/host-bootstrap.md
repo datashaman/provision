@@ -6,7 +6,7 @@ Bootstrap creates a non-login `provision-<environment>` account and a private En
 
 ## Before touching a host
 
-Use a supplied disposable Ubuntu machine that has been reset outside Provision, or obtain a separate explicit ownership decision for any existing workloads. Reimaging is not performed by Provision. In particular, do not apply this script to the current Gimme-managed `base.local`; its Gimme routing, units, database, and key-value store remain outside Provision until the user completes the reset. Record the machine identity and SSH host-key fingerprint out of band after reimaging. The remote CLI uses strict host-key checking and will not silently trust a changed key.
+Use a supplied disposable Ubuntu machine that has been reset outside Provision, or obtain a separate explicit ownership decision for any existing workloads. Reimaging is not performed by Provision. Never apply this script over a Gimme-managed host: the script refuses `/srv/gimme` and Gimme systemd units rather than assuming ownership. Record the machine identity and SSH host-key fingerprint out of band after reimaging. The remote CLI uses strict host-key checking and will not silently trust a changed key. The first reset-host run is recorded in [the 2026-09-24 lab evidence](evidence/2026-09-24-base-host-bootstrap.md).
 
 The bootstrap operator must already exist on the host and must be able to run the one-time script as root. After bootstrap, ordinary Provision inspection uses only the restricted sudo rule. Caddy is installed from the host's configured Ubuntu package sources if missing, and its systemd service is enabled. No Caddy routing is configured by this step.
 

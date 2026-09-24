@@ -52,13 +52,18 @@ type HealthCheckObservation struct {
 }
 
 type HealthObservation struct {
-	Status         CandidateStatus          `json:"status"`
-	GenerationID   string                   `json:"generationId"`
-	Revision       string                   `json:"revision"`
-	Port           int                      `json:"port"`
-	Checks         []HealthCheckObservation `json:"checks"`
-	SwitchEligible bool                     `json:"switchEligible"`
-	Reason         string                   `json:"reason,omitempty"`
+	Status           CandidateStatus          `json:"status"`
+	GenerationID     string                   `json:"generationId"`
+	Revision         string                   `json:"revision"`
+	ArtifactDigest   string                   `json:"artifactDigest"`
+	ReleaseDirectory string                   `json:"releaseDirectory"`
+	Unit             string                   `json:"unit"`
+	Port             int                      `json:"port"`
+	CandidateActive  bool                     `json:"candidateActive"`
+	CandidateCleaned bool                     `json:"candidateCleaned,omitempty"`
+	Checks           []HealthCheckObservation `json:"checks"`
+	SwitchEligible   bool                     `json:"switchEligible"`
+	Reason           string                   `json:"reason,omitempty"`
 }
 
 type OperationObservation struct {

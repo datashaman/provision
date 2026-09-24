@@ -11,6 +11,10 @@ import (
 
 const ExecutorPath = "/usr/local/libexec/provision-host-executor"
 
+func AllowedOperations() []string {
+	return []string{"inspect", "stageArtifact", "installGeneration", "startCandidate", "verifyCandidate"}
+}
+
 var environmentPattern = regexp.MustCompile(`^[a-z][a-z0-9-]{0,19}$`)
 
 type BootstrapStatus struct {
@@ -88,7 +92,7 @@ func CheckBootstrap(ctx context.Context, target Target, environment, operator st
 	if status.Environment != environment || status.Operator != operator || status.Account != "provision-"+environment {
 		return BootstrapStatus{}, errors.New("host bootstrap check returned mismatched identity")
 	}
-	wantedOperations := []string{"inspect", "stageArtifact", "installGeneration", "startCandidate", "verifyCandidate"}
+	wantedOperations := AllowedOperations()
 	if len(status.AllowedOperations) != len(wantedOperations) {
 		return BootstrapStatus{}, errors.New("unexpected host executor operation is enabled")
 	}

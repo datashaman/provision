@@ -27,11 +27,15 @@ const generationManifestName = ".provision-generation.json"
 
 var bundleExecutable = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$`)
 
-var runSystemctl = func(ctx context.Context, args ...string) ([]byte, error) {
-	return exec.CommandContext(ctx, "systemctl", args...).CombinedOutput()
+type systemdController interface {
+	Run(context.Context, ...string) ([]byte, error)
 }
 
-var candidateHealthTimeout = 10 * time.Second
+type commandSystemdController struct{}
+
+func (commandSystemdController) Run(ctx context.Context, args ...string) ([]byte, error) {
+	return exec.CommandContext(ctx, "systemctl", args...).CombinedOutput()
+}
 
 func validateCandidateOperation(planned planner.Operation, record bootstrapRecord, paths executionPaths) error {
 	if planned.Input.Artifact != nil || planned.Input.Endpoint != nil || planned.Input.Previous != nil || planned.Input.Retention != nil {
@@ -52,13 +56,13 @@ func validateCandidateOperation(planned planner.Operation, record bootstrapRecor
 		if len(planned.DependsOn) != 1 || planned.Input.Health == nil || planned.Input.Generation != nil || planned.Input.Systemd != nil {
 			return errors.New("verifyCandidate requires only its typed Health Contract input and one dependency")
 		}
-		return validateHealthInput(*planned.Input.Health)
+		return validateHealthInput(*planned.Input.Health, record, paths)
 	default:
 		return errors.New("host executor does not allow this operation kind")
 	}
 }
 
-func validateGenerationInput(input planner.GenerationInput, record bootstrapRecord, paths executionPaths) error {
+func validateGenerationReference(input planner.GenerationReference, record bootstrapRecord, paths executionPaths) error {
 	expected := filepath.Join(paths.environmentHome, "releases", input.ID)
 	if !deploymentIdentifier.MatchString(input.ID) || !deploymentIdentifier.MatchString(input.Revision) || !digestPattern.MatchString(input.ArtifactDigest) || input.Account != record.Account || input.ReleaseDirectory != expected {
 		return errors.New("Generation input does not match the bootstrapped Environment or fixed release path")
@@ -66,16 +70,19 @@ func validateGenerationInput(input planner.GenerationInput, record bootstrapReco
 	return nil
 }
 
+func validateGenerationInput(input planner.GenerationInput, record bootstrapRecord, paths executionPaths) error {
+	return validateGenerationReference(input.GenerationReference, record, paths)
+}
+
 func validateSystemdInput(input planner.SystemdInput, record bootstrapRecord, paths executionPaths) error {
-	expected := filepath.Join(paths.environmentHome, "releases", input.GenerationID)
-	if !deploymentIdentifier.MatchString(input.GenerationID) || !deploymentIdentifier.MatchString(input.Revision) || !digestPattern.MatchString(input.ArtifactDigest) || input.Account != record.Account || input.ReleaseDirectory != expected || !systemdUnit.MatchString(input.Unit) || !strings.HasPrefix(input.Unit, "provision-"+record.Environment+"-") || input.Port < 1024 || input.Port > 65535 {
+	if err := validateGenerationReference(input.GenerationReference, record, paths); err != nil || !systemdUnit.MatchString(input.Unit) || !strings.HasPrefix(input.Unit, "provision-"+record.Environment+"-") || input.Port < 1024 || input.Port > 65535 {
 		return errors.New("systemd candidate input does not match the bootstrapped Environment or fixed release path")
 	}
 	return nil
 }
 
-func validateHealthInput(input planner.HealthInput) error {
-	if !deploymentIdentifier.MatchString(input.GenerationID) || !deploymentIdentifier.MatchString(input.Revision) || input.Port < 1024 || input.Port > 65535 {
+func validateHealthInput(input planner.HealthInput, record bootstrapRecord, paths executionPaths) error {
+	if err := validateSystemdInput(systemdInputFromHealth(input), record, paths); err != nil {
 		return errors.New("candidate Health Contract identity is invalid")
 	}
 	for _, path := range []string{input.LivenessPath, input.ReadinessPath, input.CandidateVerifyPath} {
@@ -128,7 +135,7 @@ func observeCandidateOperation(ctx context.Context, planned planner.Operation, r
 			state = "unknown"
 		}
 	case planner.VerifyCandidate:
-		observed := checkCandidateHealth(ctx, *planned.Input.Health)
+		observed := checkCandidateHealth(ctx, paths, *planned.Input.Health)
 		evidence = observed
 		if observed.Status == host.CandidateHealthy && observed.SwitchEligible {
 			state = "satisfied"
@@ -163,12 +170,21 @@ func applyCandidateOperation(ctx context.Context, planned planner.Operation, rec
 		}
 		return encoded, err
 	case planner.VerifyCandidate:
-		observed := waitForCandidateHealth(ctx, *planned.Input.Health)
+		observed := waitForCandidateHealth(ctx, paths, *planned.Input.Health)
 		encoded, err := json.Marshal(observed)
 		if err != nil {
 			return nil, err
 		}
 		if observed.Status != host.CandidateHealthy || !observed.SwitchEligible {
+			if cleanupErr := cleanupCandidate(ctx, paths, *planned.Input.Health); cleanupErr != nil {
+				observed.Reason += "; candidate cleanup: " + cleanupErr.Error()
+			} else {
+				observed.CandidateCleaned = true
+			}
+			encoded, err = json.Marshal(observed)
+			if err != nil {
+				return nil, err
+			}
 			return encoded, errors.New(observed.Reason)
 		}
 		return encoded, nil
@@ -324,8 +340,8 @@ func extractNativeBundle(artifactPath, destination string) (string, error) {
 }
 
 func observeSystemdCandidate(ctx context.Context, paths executionPaths, input planner.SystemdInput) host.SystemdObservation {
-	result := host.SystemdObservation{Status: host.CandidateAbsent, GenerationID: input.GenerationID, Revision: input.Revision, Unit: input.Unit, Port: input.Port, ReleaseDirectory: input.ReleaseDirectory}
-	generation := observeGeneration(planner.GenerationInput{ID: input.GenerationID, Revision: input.Revision, ArtifactDigest: input.ArtifactDigest, Account: input.Account, ReleaseDirectory: input.ReleaseDirectory})
+	result := host.SystemdObservation{Status: host.CandidateAbsent, GenerationID: input.ID, Revision: input.Revision, Unit: input.Unit, Port: input.Port, ReleaseDirectory: input.ReleaseDirectory}
+	generation := observeGeneration(planner.GenerationInput{GenerationReference: input.GenerationReference})
 	if generation.Status != host.CandidateInstalled {
 		if generation.Status != host.CandidateAbsent {
 			result.Status = host.CandidateInvalid
@@ -346,7 +362,7 @@ func observeSystemdCandidate(ctx context.Context, paths executionPaths, input pl
 		result.Reason = "candidate systemd unit does not match the approved Plan"
 		return result
 	}
-	output, err := runSystemctl(ctx, "is-active", input.Unit)
+	output, err := paths.systemd.Run(ctx, "is-active", input.Unit)
 	if err == nil && strings.TrimSpace(string(output)) == "active" {
 		result.Status = host.CandidateActive
 	}
@@ -368,7 +384,7 @@ func startCandidate(ctx context.Context, paths executionPaths, input planner.Sys
 		return failedSystemd(input, "candidate private port is already in use"), errors.New("candidate private port is already in use")
 	}
 	_ = listener.Close()
-	generation := observeGeneration(planner.GenerationInput{ID: input.GenerationID, Revision: input.Revision, ArtifactDigest: input.ArtifactDigest, Account: input.Account, ReleaseDirectory: input.ReleaseDirectory})
+	generation := observeGeneration(planner.GenerationInput{GenerationReference: input.GenerationReference})
 	unitPath := filepath.Join(paths.systemdUnits, input.Unit)
 	unit := systemdCandidateUnit(input, generation.Executable)
 	created := false
@@ -384,13 +400,13 @@ func startCandidate(ctx context.Context, paths executionPaths, input planner.Sys
 	} else if err != nil || string(data) != unit {
 		return failedSystemd(input, "candidate systemd unit differs from the approved Plan"), errors.New("candidate systemd unit differs from the approved Plan")
 	}
-	if output, err := runSystemctl(ctx, "daemon-reload"); err != nil {
+	if output, err := paths.systemd.Run(ctx, "daemon-reload"); err != nil {
 		if created {
 			_ = cleanupCandidateUnit(context.Background(), paths, input)
 		}
 		return failedSystemd(input, "reload systemd after candidate install: "+strings.TrimSpace(string(output))), errors.New("reload systemd after candidate install")
 	}
-	if output, err := runSystemctl(ctx, "start", input.Unit); err != nil {
+	if output, err := paths.systemd.Run(ctx, "start", input.Unit); err != nil {
 		if created {
 			_ = cleanupCandidateUnit(context.Background(), paths, input)
 		}
@@ -404,7 +420,7 @@ func startCandidate(ctx context.Context, paths executionPaths, input planner.Sys
 }
 
 func failedSystemd(input planner.SystemdInput, reason string) host.SystemdObservation {
-	return host.SystemdObservation{Status: host.CandidateFailed, GenerationID: input.GenerationID, Revision: input.Revision, Unit: input.Unit, Port: input.Port, ReleaseDirectory: input.ReleaseDirectory, Reason: reason}
+	return host.SystemdObservation{Status: host.CandidateFailed, GenerationID: input.ID, Revision: input.Revision, Unit: input.Unit, Port: input.Port, ReleaseDirectory: input.ReleaseDirectory, Reason: reason}
 }
 
 func systemdCandidateUnit(input planner.SystemdInput, executable string) string {
@@ -430,24 +446,41 @@ RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
 IPAddressDeny=any
 IPAddressAllow=localhost
 
-`, input.GenerationID, input.Account, input.Account, input.ReleaseDirectory, input.Port, input.Revision, filepath.Join(input.ReleaseDirectory, executable))
+`, input.ID, input.Account, input.Account, input.ReleaseDirectory, input.Port, input.Revision, filepath.Join(input.ReleaseDirectory, executable))
 }
 
 func cleanupCandidateUnit(ctx context.Context, paths executionPaths, input planner.SystemdInput) error {
-	active, err := activeCandidate(paths.environmentHome, input.GenerationID, input.Unit)
+	active, err := activeCandidate(paths.environmentHome, input.ID, input.Unit)
 	if err != nil {
 		return err
 	}
 	if active {
 		return errors.New("refusing to clean up the recorded active generation")
 	}
-	_, _ = runSystemctl(ctx, "stop", input.Unit)
+	_, _ = paths.systemd.Run(ctx, "stop", input.Unit)
 	unitPath := filepath.Join(paths.systemdUnits, input.Unit)
 	if err := os.Remove(unitPath); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return errors.New("remove candidate systemd unit")
 	}
-	_, err = runSystemctl(ctx, "daemon-reload")
+	_, err = paths.systemd.Run(ctx, "daemon-reload")
 	return err
+}
+
+func cleanupCandidate(ctx context.Context, paths executionPaths, input planner.HealthInput) error {
+	if err := cleanupCandidateUnit(ctx, paths, systemdInputFromHealth(input)); err != nil {
+		return err
+	}
+	observed := observeGeneration(planner.GenerationInput{GenerationReference: input.GenerationReference})
+	if observed.Status == host.CandidateAbsent {
+		return nil
+	}
+	if observed.Status != host.CandidateInstalled {
+		return errors.New("candidate Generation is unsafe; refusing cleanup")
+	}
+	if err := os.RemoveAll(input.ReleaseDirectory); err != nil {
+		return errors.New("remove failed candidate Generation")
+	}
+	return nil
 }
 
 func activeCandidate(environmentHome, generationID, unit string) (bool, error) {
@@ -495,10 +528,10 @@ func ownedByExecutor(info os.FileInfo) bool {
 	return ok && stat.Uid == uint32(os.Geteuid())
 }
 
-func waitForCandidateHealth(ctx context.Context, input planner.HealthInput) host.HealthObservation {
-	deadline := time.Now().Add(candidateHealthTimeout)
+func waitForCandidateHealth(ctx context.Context, paths executionPaths, input planner.HealthInput) host.HealthObservation {
+	deadline := time.Now().Add(paths.healthTimeout)
 	for {
-		observed := checkCandidateHealth(ctx, input)
+		observed := checkCandidateHealth(ctx, paths, input)
 		if observed.Status == host.CandidateHealthy || time.Now().After(deadline) || ctx.Err() != nil {
 			return observed
 		}
@@ -512,8 +545,13 @@ func waitForCandidateHealth(ctx context.Context, input planner.HealthInput) host
 	}
 }
 
-func checkCandidateHealth(ctx context.Context, input planner.HealthInput) host.HealthObservation {
-	result := host.HealthObservation{Status: host.CandidateFailed, GenerationID: input.GenerationID, Revision: input.Revision, Port: input.Port, Checks: []host.HealthCheckObservation{}}
+func checkCandidateHealth(ctx context.Context, paths executionPaths, input planner.HealthInput) host.HealthObservation {
+	result := host.HealthObservation{Status: host.CandidateFailed, GenerationID: input.ID, Revision: input.Revision, ArtifactDigest: input.ArtifactDigest, ReleaseDirectory: input.ReleaseDirectory, Unit: input.Unit, Port: input.Port, Checks: []host.HealthCheckObservation{}}
+	if observed := observeSystemdCandidate(ctx, paths, systemdInputFromHealth(input)); observed.Status != host.CandidateActive {
+		result.Reason = "planned systemd candidate is not active: " + observed.Reason
+		return result
+	}
+	result.CandidateActive = true
 	checks := []struct {
 		name           string
 		path           string
@@ -572,4 +610,8 @@ func checkCandidateHealth(ctx context.Context, input planner.HealthInput) host.H
 	result.Status = host.CandidateHealthy
 	result.SwitchEligible = true
 	return result
+}
+
+func systemdInputFromHealth(input planner.HealthInput) planner.SystemdInput {
+	return planner.SystemdInput{GenerationReference: input.GenerationReference, Unit: input.Unit, Port: input.Port}
 }

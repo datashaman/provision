@@ -39,6 +39,8 @@ type executionPaths struct {
 	artifactCache    string
 	environmentHome  string
 	systemdUnits     string
+	systemd          systemdController
+	healthTimeout    time.Duration
 	sshHostPublicKey string
 }
 
@@ -163,6 +165,8 @@ func systemExecutionPaths(environment string) executionPaths {
 		artifactCache:    host.ArtifactCacheRoot,
 		environmentHome:  "/var/lib/provision/environments/" + environment,
 		systemdUnits:     "/etc/systemd/system",
+		systemd:          commandSystemdController{},
+		healthTimeout:    10 * time.Second,
 		sshHostPublicKey: host.SSHHostPublicKeyPath,
 	}
 }

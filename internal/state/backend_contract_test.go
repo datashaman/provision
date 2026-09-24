@@ -87,8 +87,8 @@ func TestSQLiteBackendRequiresSuccessfulOperationDependencies(t *testing.T) {
 	plan.Operations = append(plan.Operations, planner.Operation{
 		ID: "op-02", Kind: planner.InstallGeneration, DependsOn: []string{"op-01"},
 		Input: planner.OperationInput{Generation: &planner.GenerationInput{
-			ID: "revision-a-333333333333", Revision: "revision-a", ArtifactDigest: "sha256:" + strings.Repeat("3", 64),
-			Account: "provision-lab", ReleaseDirectory: "/var/lib/provision/environments/lab/releases/revision-a-333333333333",
+			GenerationReference: planner.GenerationReference{ID: "revision-a-333333333333", Revision: "revision-a", ArtifactDigest: "sha256:" + strings.Repeat("3", 64),
+				Account: "provision-lab", ReleaseDirectory: "/var/lib/provision/environments/lab/releases/revision-a-333333333333"},
 		}},
 	})
 	plan.ID = ""

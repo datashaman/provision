@@ -94,7 +94,7 @@ The State Backend refuses an operation until every dependency has a latest succe
 
 `op-03` writes only the exact Plan-bound unit under `/etc/systemd/system`, runs it as the dedicated Environment account, and supplies `PROVISION_HTTP_LISTEN=127.0.0.1:<candidate-port>` plus `PROVISION_REVISION=<revision>`. A start failure removes only the new candidate unit. Cleanup refuses the recorded active Generation and never removes its unit or release directory.
 
-`op-04` contacts only the candidate's loopback port. It requires successful liveness and readiness responses and requires the candidate-verification response to report the planned Revision. Only all three passing produces `switchEligible: true`. A failed check is journaled with the individual check results and leaves Caddy, the stable Endpoint, and the active-generation record untouched.
+`op-04` first re-observes the exact Plan-bound systemd unit and immutable Generation, including its Artifact digest, and then contacts only that candidate's loopback port. It requires successful liveness and readiness responses and requires the candidate-verification response to report the planned Revision. Only an active matching unit plus all three checks passing produces `switchEligible: true`. A failed check is journaled with the individual check results, stops and removes only the failed candidate unit and Generation, and leaves Caddy, the stable Endpoint, and the active-generation record untouched.
 
 ## 6. Read the durable journal
 

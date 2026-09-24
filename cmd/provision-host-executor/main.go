@@ -85,7 +85,7 @@ func runInspect(args []string) error {
 
 func inspect(environment, operator string) host.BootstrapStatus {
 	account := "provision-" + environment
-	result := host.BootstrapStatus{SchemaVersion: "provision.dev/host-inspection/v1alpha1", Environment: environment, Operator: operator, Account: account, AllowedOperations: []string{"inspect", "stageArtifact", "installGeneration", "startCandidate", "verifyCandidate"}, Findings: []string{}}
+	result := host.BootstrapStatus{SchemaVersion: "provision.dev/host-inspection/v1alpha1", Environment: environment, Operator: operator, Account: account, AllowedOperations: host.AllowedOperations(), Findings: []string{}}
 	result.Architecture = strings.TrimSpace(command("uname", "-m"))
 	if data, err := os.ReadFile("/etc/os-release"); err == nil {
 		for _, line := range strings.Split(string(data), "\n") {

@@ -166,7 +166,7 @@ func verifySystemdResult(envelope operation.Envelope, result operation.Result) e
 	if err := decodeObservation(result.Observation, &observed); err != nil {
 		return errors.New("host systemd observation is invalid")
 	}
-	if observed.GenerationID != input.GenerationID || observed.Revision != input.Revision || observed.Unit != input.Unit || observed.Port != input.Port || observed.ReleaseDirectory != input.ReleaseDirectory {
+	if observed.GenerationID != input.ID || observed.Revision != input.Revision || observed.Unit != input.Unit || observed.Port != input.Port || observed.ReleaseDirectory != input.ReleaseDirectory {
 		return errors.New("host systemd observation does not match the Plan")
 	}
 	if result.Outcome == operation.OutcomeSucceeded && observed.Status != host.CandidateActive {
@@ -187,12 +187,12 @@ func verifyHealthResult(envelope operation.Envelope, result operation.Result) er
 	if err := decodeObservation(result.Observation, &observed); err != nil {
 		return errors.New("host health observation is invalid")
 	}
-	if observed.GenerationID != input.GenerationID || observed.Revision != input.Revision || observed.Port != input.Port || len(observed.Checks) == 0 {
+	if observed.GenerationID != input.ID || observed.Revision != input.Revision || observed.ArtifactDigest != input.ArtifactDigest || observed.ReleaseDirectory != input.ReleaseDirectory || observed.Unit != input.Unit || observed.Port != input.Port {
 		return errors.New("host health observation does not match the Plan")
 	}
 	if result.Outcome == operation.OutcomeSucceeded {
 		expected := []struct{ name, path string }{{"liveness", input.LivenessPath}, {"readiness", input.ReadinessPath}, {"candidateVerification", input.CandidateVerifyPath}}
-		if observed.Status != host.CandidateHealthy || !observed.SwitchEligible || len(observed.Checks) != len(expected) {
+		if observed.Status != host.CandidateHealthy || !observed.CandidateActive || !observed.SwitchEligible || observed.CandidateCleaned || len(observed.Checks) != len(expected) {
 			return errors.New("host health success observation is invalid")
 		}
 		for index, check := range observed.Checks {

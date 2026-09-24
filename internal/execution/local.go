@@ -10,11 +10,21 @@ import (
 	"provision/internal/planner"
 )
 
-type LocalHostHandler struct{}
+type LocalHostHandler struct {
+	target      planner.Target
+	environment string
+}
 
-func (LocalHostHandler) Observe(ctx context.Context, planned planner.Operation) (HandlerObservation, error) {
-	if planned.Kind != planner.StageArtifact || planned.Input.Artifact == nil {
-		return HandlerObservation{}, errors.New("local Host Handler can observe only Artifact preparation")
+func (h LocalHostHandler) Observe(ctx context.Context, planned planner.Operation) (HandlerObservation, error) {
+	if planned.Kind != planner.StageArtifact {
+		if h.environment == "" || h.target.User == "" {
+			return HandlerObservation{}, errors.New("local Host Handler lacks Plan target identity")
+		}
+		command := exec.CommandContext(ctx, "sudo", "-n", host.ExecutorPath, "observe-operation", "--environment", h.environment, "--operator", h.target.User)
+		return executeHostObservation(command, planned, "restricted host observation")
+	}
+	if planned.Input.Artifact == nil {
+		return HandlerObservation{}, errors.New("local Host Handler received invalid Artifact preparation")
 	}
 	select {
 	case <-ctx.Done():

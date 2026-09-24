@@ -58,6 +58,8 @@ func run(args []string) error {
 		return runInspect(args[1:])
 	case "observe-artifact":
 		return runObserveArtifact(args[1:])
+	case "observe-operation":
+		return runObserveOperation(args[1:])
 	case "execute":
 		return runExecute(args[1:])
 	default:
@@ -83,7 +85,7 @@ func runInspect(args []string) error {
 
 func inspect(environment, operator string) host.BootstrapStatus {
 	account := "provision-" + environment
-	result := host.BootstrapStatus{SchemaVersion: "provision.dev/host-inspection/v1alpha1", Environment: environment, Operator: operator, Account: account, AllowedOperations: []string{"inspect", "stageArtifact"}, Findings: []string{}}
+	result := host.BootstrapStatus{SchemaVersion: "provision.dev/host-inspection/v1alpha1", Environment: environment, Operator: operator, Account: account, AllowedOperations: host.AllowedOperations(), Findings: []string{}}
 	result.Architecture = strings.TrimSpace(command("uname", "-m"))
 	if data, err := os.ReadFile("/etc/os-release"); err == nil {
 		for _, line := range strings.Split(string(data), "\n") {
@@ -143,7 +145,8 @@ func inspect(environment, operator string) host.BootstrapStatus {
 	}
 	_, err := os.Stat("/sys/fs/cgroup/cgroup.controllers")
 	result.CgroupV2 = err == nil
-	result.GenerationStorageReady = hasAccount(account, "/var/lib/provision/environments/"+environment)
+	environmentHome := "/var/lib/provision/environments/" + environment
+	result.GenerationStorageReady = candidateStorageReady(account, environmentHome)
 	if !result.GenerationStorageReady {
 		result.Findings = append(result.Findings, "dedicated Environment account is missing or changed")
 	}
@@ -364,20 +367,23 @@ func hasAccount(name, home string) bool {
 	for _, line := range strings.Split(string(data), "\n") {
 		fields := strings.Split(line, ":")
 		if len(fields) >= 7 && fields[0] == name {
-			uid, uidErr := strconv.Atoi(fields[2])
-			gid, gidErr := strconv.Atoi(fields[3])
-			if uidErr != nil || gidErr != nil || uid <= 0 || uid >= 1000 || fields[5] != home || fields[6] != "/usr/sbin/nologin" {
-				return false
-			}
-			info, err := os.Lstat(home)
-			if err != nil || !info.IsDir() || info.Mode().Perm() != 0750 {
-				return false
-			}
-			stat, ok := info.Sys().(*syscall.Stat_t)
-			return ok && stat.Uid == uint32(uid) && stat.Gid == uint32(gid)
+			return validEnvironmentAccount(fields, home)
 		}
 	}
 	return false
+}
+
+func validEnvironmentAccount(fields []string, home string) bool {
+	if len(fields) < 7 {
+		return false
+	}
+	uid, uidErr := strconv.Atoi(fields[2])
+	gid, gidErr := strconv.Atoi(fields[3])
+	return uidErr == nil && gidErr == nil && uid > 0 && uid < 1000 && gid > 0 && fields[5] == home && fields[6] == "/usr/sbin/nologin"
+}
+
+func candidateStorageReady(account, environmentHome string) bool {
+	return hasAccount(account, environmentHome) && rootOwned(environmentHome, 0755) && rootOwned(filepath.Join(environmentHome, "releases"), 0755)
 }
 
 func rootOwned(path string, mode os.FileMode) bool {

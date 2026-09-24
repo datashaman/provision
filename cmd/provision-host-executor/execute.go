@@ -37,6 +37,10 @@ type executionPaths struct {
 	publicKey        string
 	authorityState   string
 	artifactCache    string
+	environmentHome  string
+	systemdUnits     string
+	systemd          systemdController
+	healthTimeout    time.Duration
 	sshHostPublicKey string
 }
 
@@ -114,6 +118,44 @@ func runObserveArtifact(args []string) error {
 	return output.Encode(observed)
 }
 
+func runObserveOperation(args []string) error {
+	flags := flag.NewFlagSet("observe-operation", flag.ContinueOnError)
+	environment := flags.String("environment", "", "Environment identity")
+	operator := flags.String("operator", "", "bootstrap operator")
+	if err := flags.Parse(args); err != nil {
+		return err
+	}
+	if flags.NArg() != 0 || !identifier.MatchString(*environment) || !username.MatchString(*operator) {
+		return errors.New("observe-operation requires valid --environment and --operator")
+	}
+	data, err := io.ReadAll(io.LimitReader(os.Stdin, 1<<20+1))
+	if err != nil || len(data) > 1<<20 {
+		return errors.New("operation observation input exceeds 1 MiB")
+	}
+	var planned planner.Operation
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&planned); err != nil {
+		return errors.New("operation observation input is invalid")
+	}
+	var extra any
+	if err := decoder.Decode(&extra); err != io.EOF {
+		return errors.New("operation observation input must contain exactly one JSON value")
+	}
+	paths := systemExecutionPaths(*environment)
+	record, _, err := loadExecutionAuthority(paths, *environment, *operator)
+	if err != nil {
+		return err
+	}
+	observed, err := observeCandidateOperation(context.Background(), planned, record, paths)
+	if err != nil {
+		return err
+	}
+	output := json.NewEncoder(os.Stdout)
+	output.SetIndent("", "  ")
+	return output.Encode(observed)
+}
+
 func systemExecutionPaths(environment string) executionPaths {
 	return executionPaths{
 		executor:         host.ExecutorPath,
@@ -121,6 +163,10 @@ func systemExecutionPaths(environment string) executionPaths {
 		publicKey:        "/etc/provision/authority/" + environment + ".pub",
 		authorityState:   "/var/lib/provision/authority/" + environment,
 		artifactCache:    host.ArtifactCacheRoot,
+		environmentHome:  "/var/lib/provision/environments/" + environment,
+		systemdUnits:     "/etc/systemd/system",
+		systemd:          commandSystemdController{},
+		healthTimeout:    10 * time.Second,
 		sshHostPublicKey: host.SSHHostPublicKeyPath,
 	}
 }
@@ -142,6 +188,9 @@ func loadExecutionAuthority(paths executionPaths, environment, operator string) 
 	var record bootstrapRecord
 	if json.Unmarshal(data, &record) != nil || record.SchemaVersion != "provision.dev/bootstrap/v2" || record.Environment != environment || record.Operator != operator || record.Account != "provision-"+environment || record.ExecutorDigest != executorDigest {
 		return bootstrapRecord{}, nil, errors.New("bootstrap authority record does not match this executor and identity")
+	}
+	if !candidateStorageReady(record.Account, paths.environmentHome) || !rootOwned(paths.systemdUnits, 0755) {
+		return bootstrapRecord{}, nil, errors.New("candidate execution directories or Environment account are unsafe")
 	}
 	publicKey, keyID, err := authority.LoadVerifier(paths.publicKey)
 	if err != nil || keyID != record.AuthorityKeyID {
@@ -181,28 +230,45 @@ func executeAuthorized(ctx context.Context, envelope operation.Envelope, record 
 	if err != nil || digest != claim.OperationDigest {
 		return operation.Result{}, errors.New("authorized operation digest does not match its payload")
 	}
-	if err := validateStageArtifact(envelope.Operation); err != nil {
+	if envelope.Operation.Kind == planner.StageArtifact {
+		if err := validateStageArtifact(envelope.Operation); err != nil {
+			return operation.Result{}, err
+		}
+	} else if err := validateCandidateOperation(envelope.Operation, record, paths); err != nil {
 		return operation.Result{}, err
 	}
 
 	var result operation.Result
 	actionErr, err := withHostFence(paths, claim, now, func() error {
-		observation, err := stageArtifact(ctx, paths.artifactCache, claim.AttemptID, *envelope.Operation.Input.Artifact)
-		if err != nil {
-			return err
+		var encoded json.RawMessage
+		var actionErr error
+		if envelope.Operation.Kind == planner.StageArtifact {
+			observation, err := stageArtifact(ctx, paths.artifactCache, claim.AttemptID, *envelope.Operation.Input.Artifact)
+			if err != nil {
+				actionErr = err
+			} else {
+				encoded, err = json.Marshal(observation)
+				actionErr = err
+			}
+		} else {
+			encoded, actionErr = applyCandidateOperation(ctx, envelope.Operation, record, paths, claim.AttemptID)
 		}
-		encoded, err := json.Marshal(observation)
-		if err != nil {
-			return err
+		if len(encoded) != 0 {
+			result = operation.Result{
+				SchemaVersion: operation.ResultSchemaVersion,
+				PlanID:        claim.PlanID,
+				OperationID:   claim.OperationID,
+				AttemptID:     claim.AttemptID,
+				FencingToken:  claim.FencingToken,
+				Outcome:       operation.OutcomeSucceeded,
+				Observation:   encoded,
+			}
 		}
-		result = operation.Result{
-			SchemaVersion: operation.ResultSchemaVersion,
-			PlanID:        claim.PlanID,
-			OperationID:   claim.OperationID,
-			AttemptID:     claim.AttemptID,
-			FencingToken:  claim.FencingToken,
-			Outcome:       operation.OutcomeSucceeded,
-			Observation:   encoded,
+		if actionErr != nil {
+			return actionErr
+		}
+		if len(encoded) == 0 {
+			return errors.New("host operation returned no observation")
 		}
 		return nil
 	})
@@ -210,13 +276,20 @@ func executeAuthorized(ctx context.Context, envelope operation.Envelope, record 
 		return operation.Result{}, err
 	}
 	if actionErr != nil {
-		artifact := *envelope.Operation.Input.Artifact
-		path, _ := host.ArtifactCachePath(paths.artifactCache, artifact.Digest)
-		encoded, encodeErr := json.Marshal(host.ArtifactObservation{
-			Status: host.ArtifactFailed, Path: path, Digest: artifact.Digest, Reason: actionErr.Error(),
-		})
-		if encodeErr != nil {
-			return operation.Result{}, encodeErr
+		encoded := result.Observation
+		if envelope.Operation.Kind == planner.StageArtifact {
+			artifact := *envelope.Operation.Input.Artifact
+			path, _ := host.ArtifactCachePath(paths.artifactCache, artifact.Digest)
+			var encodeErr error
+			encoded, encodeErr = json.Marshal(host.ArtifactObservation{
+				Status: host.ArtifactFailed, Path: path, Digest: artifact.Digest, Reason: actionErr.Error(),
+			})
+			if encodeErr != nil {
+				return operation.Result{}, encodeErr
+			}
+		}
+		if len(encoded) == 0 {
+			encoded = json.RawMessage(`{"status":"failed","reason":"host operation failed before producing a typed observation"}`)
 		}
 		return operation.Result{
 			SchemaVersion: operation.ResultSchemaVersion,
@@ -425,6 +498,9 @@ func writeJSONAtomic(path string, value any, mode os.FileMode) error {
 	if err := os.Rename(temporary, path); err != nil {
 		_ = os.Remove(temporary)
 		return errors.New("commit durable authorization record")
+	}
+	if err := os.Chmod(path, mode); err != nil {
+		return errors.New("secure durable authorization record")
 	}
 	return nil
 }

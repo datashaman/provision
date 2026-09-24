@@ -76,6 +76,50 @@ func TestSQLiteBackendMigratesPreviousSchemaAtomically(t *testing.T) {
 	}
 }
 
+func TestSQLiteBackendRequiresSuccessfulOperationDependencies(t *testing.T) {
+	path := t.TempDir() + "/state.db"
+	backend, err := OpenSQLite(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer backend.Close()
+	plan := contractPlan(t, "application-a", "lab", "revision-a")
+	plan.Operations = append(plan.Operations, planner.Operation{
+		ID: "op-02", Kind: planner.InstallGeneration, DependsOn: []string{"op-01"},
+		Input: planner.OperationInput{Generation: &planner.GenerationInput{
+			GenerationReference: planner.GenerationReference{ID: "revision-a-333333333333", Revision: "revision-a", ArtifactDigest: "sha256:" + strings.Repeat("3", 64),
+				Account: "provision-lab", ReleaseDirectory: "/var/lib/provision/environments/lab/releases/revision-a-333333333333"},
+		}},
+	})
+	plan.ID = ""
+	encoded, err := json.Marshal(plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	digest := sha256.Sum256(encoded)
+	plan.ID = "sha256:" + hex.EncodeToString(digest[:])
+	now := time.Date(2026, 9, 24, 12, 0, 0, 0, time.UTC)
+	if err := backend.StoreCurrentPlan(context.Background(), plan, now); err != nil {
+		t.Fatal(err)
+	}
+	if err := backend.RecordApproval(context.Background(), plan.ID, ApprovalRecord{Actor: "tester", Decision: DecisionApproved, DecidedAt: now, ExpiresAt: now.Add(time.Hour)}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := backend.BeginOperation(context.Background(), BeginOperationRequest{PlanID: plan.ID, OperationID: "op-02", Holder: "holder", StartedAt: now.Add(time.Minute), LeaseDuration: time.Minute}); err == nil || !strings.Contains(err.Error(), "op-01 has no recorded outcome") {
+		t.Fatalf("candidate began before Artifact preparation: %v", err)
+	}
+	first, err := backend.BeginOperation(context.Background(), BeginOperationRequest{PlanID: plan.ID, OperationID: "op-01", Holder: "holder", StartedAt: now.Add(2 * time.Minute), LeaseDuration: time.Minute})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := backend.CompleteOperation(context.Background(), CompleteOperationRequest{AttemptID: first.AttemptID, Holder: first.Holder, PlanID: plan.ID, OperationID: "op-01", FencingToken: first.FencingToken, Outcome: ExecutionSucceeded, Observation: json.RawMessage(`{"status":"staged"}`), CompletedAt: now.Add(2*time.Minute + time.Second)}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := backend.BeginOperation(context.Background(), BeginOperationRequest{PlanID: plan.ID, OperationID: "op-02", Holder: "holder", StartedAt: now.Add(3 * time.Minute), LeaseDuration: time.Minute}); err != nil {
+		t.Fatalf("candidate did not begin after successful dependency: %v", err)
+	}
+}
+
 func runBackendContract(t *testing.T, factory backendContractFactory) {
 	t.Helper()
 	ctx := context.Background()

@@ -418,8 +418,33 @@ func (b *sqliteBackend) BeginOperation(ctx context.Context, request BeginOperati
 	if !ok {
 		return OperationAttempt{}, errors.New("operation is not present in the approved Plan")
 	}
-	if operation.Kind != planner.StageArtifact || len(operation.DependsOn) != 0 {
-		return OperationAttempt{}, errors.New("only the dependency-free Artifact preparation operation is enabled")
+	switch operation.Kind {
+	case planner.StageArtifact:
+		if len(operation.DependsOn) != 0 {
+			return OperationAttempt{}, errors.New("Artifact preparation cannot have operation dependencies")
+		}
+	case planner.InstallGeneration, planner.StartCandidate, planner.VerifyCandidate:
+		if len(operation.DependsOn) == 0 {
+			return OperationAttempt{}, errors.New("candidate operation requires a successful dependency")
+		}
+	default:
+		return OperationAttempt{}, errors.New("operation kind is not enabled for execution")
+	}
+	for _, dependency := range operation.DependsOn {
+		if _, ok := plannedOperation(plan, dependency); !ok {
+			return OperationAttempt{}, fmt.Errorf("operation dependency %s is not present in the approved Plan", dependency)
+		}
+		var dependencyOutcome string
+		err := tx.QueryRowContext(ctx, `SELECT outcome FROM journal_events WHERE plan_id = ? AND operation_id = ? AND kind = 'outcome' ORDER BY sequence DESC LIMIT 1`, request.PlanID, dependency).Scan(&dependencyOutcome)
+		if errors.Is(err, sql.ErrNoRows) {
+			return OperationAttempt{}, fmt.Errorf("operation dependency %s has no recorded outcome", dependency)
+		}
+		if err != nil {
+			return OperationAttempt{}, fmt.Errorf("read operation dependency %s: %w", dependency, err)
+		}
+		if dependencyOutcome != string(ExecutionSucceeded) {
+			return OperationAttempt{}, fmt.Errorf("operation dependency %s did not succeed", dependency)
+		}
 	}
 
 	var priorToken int64

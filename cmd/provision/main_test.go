@@ -4,8 +4,10 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"os"
 	"os/exec"
+	"os/user"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -100,9 +102,267 @@ func TestPlanPreviewRejectsBusyCandidatePortBeforeMutation(t *testing.T) {
 	}
 }
 
+func TestPlanApprovalSurvivesProcessRestart(t *testing.T) {
+	dir := t.TempDir()
+	sshLog := filepath.Join(dir, "ssh.log")
+	statePath := filepath.Join(dir, "state.db")
+	writeBootstrapInspectionSSH(t, dir)
+	actor := authenticatedActor(t)
+
+	previewCmd := exec.Command("go", "run", ".", "plan", "preview",
+		"--file", filepath.Join("..", "..", "examples", "host-http", "root.yaml"),
+		"--state", statePath,
+	)
+	previewCmd.Env = append(os.Environ(), "PATH="+dir+string(os.PathListSeparator)+os.Getenv("PATH"), "FAKE_SSH_LOG="+sshLog)
+	previewOutput, err := previewCmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("preview failed: %v\n%s", err, previewOutput)
+	}
+	var preview struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(previewOutput, &preview); err != nil || preview.ID == "" {
+		t.Fatalf("preview Plan identity missing: %v\n%s", err, previewOutput)
+	}
+	unapprovedOutput, err := runPlanStatusCommand(t, statePath, preview.ID)
+	if err != nil || !strings.Contains(string(unapprovedOutput), `"eligible": false`) || !strings.Contains(string(unapprovedOutput), `"reason": "unapproved"`) {
+		t.Fatalf("persisted preview was not inspectably unapproved: %v\n%s", err, unapprovedOutput)
+	}
+
+	approve := exec.Command("go", "run", ".", "plan", "approve",
+		"--file", filepath.Join("..", "..", "examples", "host-http", "root.yaml"),
+		"--plan", preview.ID,
+		"--actor", actor,
+		"--state", statePath,
+		"--expires-after", "15m",
+	)
+	approve.Env = append(os.Environ(), "PATH="+dir+string(os.PathListSeparator)+os.Getenv("PATH"), "FAKE_SSH_LOG="+sshLog)
+	approvalOutput, err := approve.CombinedOutput()
+	if err != nil {
+		t.Fatalf("approval failed: %v\n%s", err, approvalOutput)
+	}
+
+	status := exec.Command("go", "run", ".", "plan", "status", "--plan", preview.ID, "--state", statePath)
+	statusOutput, err := status.CombinedOutput()
+	if err != nil {
+		t.Fatalf("status after process restart failed: %v\n%s", err, statusOutput)
+	}
+	var result struct {
+		PlanID   string `json:"planId"`
+		Decision string `json:"decision"`
+		Actor    string `json:"actor"`
+		Eligible bool   `json:"eligible"`
+	}
+	if err := json.Unmarshal(statusOutput, &result); err != nil {
+		t.Fatalf("invalid status JSON: %v\n%s", err, statusOutput)
+	}
+	if result.PlanID != preview.ID || result.Decision != "approved" || result.Actor != actor || !result.Eligible {
+		t.Fatalf("approval was not durably recoverable: %+v\n%s", result, statusOutput)
+	}
+	if info, err := os.Stat(statePath); err != nil || info.Mode().Perm() != 0600 {
+		t.Fatalf("state file permissions = %v, %v; want 0600", info, err)
+	}
+}
+
+func TestPlanApprovalRejectsChangedObservationBeforeWritingState(t *testing.T) {
+	dir := t.TempDir()
+	sshLog := filepath.Join(dir, "ssh.log")
+	statePath := filepath.Join(dir, "state.db")
+	writeBootstrapInspectionSSH(t, dir)
+
+	previewOutput, err := runPersistedPlanPreviewCommand(t, dir, sshLog, statePath)
+	if err != nil {
+		t.Fatalf("preview failed: %v\n%s", err, previewOutput)
+	}
+	var preview struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(previewOutput, &preview); err != nil || preview.ID == "" {
+		t.Fatalf("preview Plan identity missing: %v\n%s", err, previewOutput)
+	}
+
+	approve := exec.Command("go", "run", ".", "plan", "approve",
+		"--file", filepath.Join("..", "..", "examples", "host-http", "root.yaml"),
+		"--plan", preview.ID,
+		"--actor", authenticatedActor(t),
+		"--state", statePath,
+	)
+	approve.Env = append(os.Environ(),
+		"PATH="+dir+string(os.PathListSeparator)+os.Getenv("PATH"),
+		"FAKE_SSH_LOG="+sshLog,
+		"FAKE_EXECUTOR_DIGEST=sha256:"+strings.Repeat("a", 64),
+	)
+	output, err := approve.CombinedOutput()
+	if err == nil || !strings.Contains(string(output), "Plan is stale") {
+		t.Fatalf("changed observation inherited old approval: %v\n%s", err, output)
+	}
+	status, statusErr := runPlanStatusCommand(t, statePath, preview.ID)
+	if statusErr != nil || !strings.Contains(string(status), `"reason": "unapproved"`) {
+		t.Fatalf("stale approval changed the persisted preview: %v\n%s", statusErr, status)
+	}
+}
+
+func TestPlanStatusDoesNotCreateMissingStateBackend(t *testing.T) {
+	statePath := filepath.Join(t.TempDir(), "missing.db")
+	cmd := exec.Command("go", "run", ".", "plan", "status", "--plan", "sha256:"+strings.Repeat("0", 64), "--state", statePath)
+	output, err := cmd.CombinedOutput()
+	if err == nil || !strings.Contains(string(output), "State Backend does not exist") {
+		t.Fatalf("missing State Backend was not rejected: %v\n%s", err, output)
+	}
+	if _, err := os.Stat(statePath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("status created a missing State Backend: %v", err)
+	}
+}
+
+func TestPlanApprovalRejectsAnUnauthenticatedActor(t *testing.T) {
+	dir := t.TempDir()
+	sshLog := filepath.Join(dir, "ssh.log")
+	statePath := filepath.Join(dir, "state.db")
+	writeBootstrapInspectionSSH(t, dir)
+	preview, err := runPersistedPlanPreviewCommand(t, dir, sshLog, statePath)
+	if err != nil {
+		t.Fatalf("preview failed: %v\n%s", err, preview)
+	}
+	planID := decodePlanID(t, preview)
+	claimedActor := authenticatedActor(t) + "-forged"
+	output, err := runPlanApprovalCommand(t, dir, sshLog, statePath, planID, claimedActor, "15m")
+	if err == nil || !strings.Contains(string(output), "does not match authenticated local OS user") {
+		t.Fatalf("unauthenticated actor was accepted: %v\n%s", err, output)
+	}
+	status, statusErr := runPlanStatusCommand(t, statePath, planID)
+	if statusErr != nil || !strings.Contains(string(status), `"reason": "unapproved"`) {
+		t.Fatalf("failed actor authentication changed approval state: %v\n%s", statusErr, status)
+	}
+}
+
+func TestNewApprovalSupersedesOlderPlanWithoutDeletingIt(t *testing.T) {
+	dir := t.TempDir()
+	sshLog := filepath.Join(dir, "ssh.log")
+	statePath := filepath.Join(dir, "state.db")
+	writeBootstrapInspectionSSH(t, dir)
+
+	firstPreview, err := runPersistedPlanPreviewCommand(t, dir, sshLog, statePath)
+	if err != nil {
+		t.Fatalf("first preview failed: %v\n%s", err, firstPreview)
+	}
+	firstID := decodePlanID(t, firstPreview)
+	actor := authenticatedActor(t)
+	if output, err := runPlanApprovalCommand(t, dir, sshLog, statePath, firstID, actor, "15m"); err != nil {
+		t.Fatalf("first approval failed: %v\n%s", err, output)
+	}
+
+	changedDigest := "sha256:" + strings.Repeat("b", 64)
+	secondPreview, err := runPersistedPlanPreviewCommand(t, dir, sshLog, statePath, "FAKE_EXECUTOR_DIGEST="+changedDigest)
+	if err != nil {
+		t.Fatalf("second preview failed: %v\n%s", err, secondPreview)
+	}
+	secondID := decodePlanID(t, secondPreview)
+	if secondID == firstID {
+		t.Fatal("changed observation produced the same Plan identity")
+	}
+	oldStatus, err := runPlanStatusCommand(t, statePath, firstID)
+	if err != nil {
+		t.Fatalf("superseded status failed: %v\n%s", err, oldStatus)
+	}
+	var oldResult struct {
+		Eligible bool   `json:"eligible"`
+		Reason   string `json:"reason"`
+		Plan     struct {
+			ID string `json:"id"`
+		} `json:"plan"`
+	}
+	if err := json.Unmarshal(oldStatus, &oldResult); err != nil || oldResult.Eligible || oldResult.Reason != "superseded" || oldResult.Plan.ID != firstID {
+		t.Fatalf("old Plan was not retained as superseded: %v %+v\n%s", err, oldResult, oldStatus)
+	}
+	unapprovedStatus, err := runPlanStatusCommand(t, statePath, secondID)
+	if err != nil || !strings.Contains(string(unapprovedStatus), `"reason": "unapproved"`) {
+		t.Fatalf("new preview was not persisted as unapproved: %v\n%s", err, unapprovedStatus)
+	}
+	if output, err := runPlanApprovalCommand(t, dir, sshLog, statePath, secondID, actor, "15m", "FAKE_EXECUTOR_DIGEST="+changedDigest); err != nil {
+		t.Fatalf("second approval failed: %v\n%s", err, output)
+	}
+	newStatus, err := runPlanStatusCommand(t, statePath, secondID)
+	if err != nil || !strings.Contains(string(newStatus), `"eligible": true`) {
+		t.Fatalf("new Plan did not become eligible: %v\n%s", err, newStatus)
+	}
+}
+
+func TestExpiredApprovalIsInspectableButIneligible(t *testing.T) {
+	dir := t.TempDir()
+	sshLog := filepath.Join(dir, "ssh.log")
+	statePath := filepath.Join(dir, "state.db")
+	writeBootstrapInspectionSSH(t, dir)
+	preview, err := runPersistedPlanPreviewCommand(t, dir, sshLog, statePath)
+	if err != nil {
+		t.Fatalf("preview failed: %v\n%s", err, preview)
+	}
+	planID := decodePlanID(t, preview)
+	if output, err := runPlanApprovalCommand(t, dir, sshLog, statePath, planID, authenticatedActor(t), "1ns"); err != nil {
+		t.Fatalf("short approval failed: %v\n%s", err, output)
+	}
+	status, err := runPlanStatusCommand(t, statePath, planID)
+	if err != nil {
+		t.Fatalf("expired status failed: %v\n%s", err, status)
+	}
+	if !strings.Contains(string(status), `"decision": "approved"`) || !strings.Contains(string(status), `"eligible": false`) || !strings.Contains(string(status), `"reason": "expired"`) {
+		t.Fatalf("expired approval was not retained and rejected: %s", status)
+	}
+}
+
+func decodePlanID(t *testing.T, output []byte) string {
+	t.Helper()
+	var plan struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(output, &plan); err != nil || plan.ID == "" {
+		t.Fatalf("Plan identity missing: %v\n%s", err, output)
+	}
+	return plan.ID
+}
+
+func authenticatedActor(t *testing.T) string {
+	t.Helper()
+	current, err := user.Current()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return current.Username
+}
+
+func runPlanApprovalCommand(t *testing.T, dir, sshLog, statePath, planID, actor, expiresAfter string, extraEnv ...string) ([]byte, error) {
+	t.Helper()
+	cmd := exec.Command("go", "run", ".", "plan", "approve",
+		"--file", filepath.Join("..", "..", "examples", "host-http", "root.yaml"),
+		"--plan", planID,
+		"--actor", actor,
+		"--state", statePath,
+		"--expires-after", expiresAfter,
+	)
+	cmd.Env = append(os.Environ(), "PATH="+dir+string(os.PathListSeparator)+os.Getenv("PATH"), "FAKE_SSH_LOG="+sshLog)
+	cmd.Env = append(cmd.Env, extraEnv...)
+	return cmd.CombinedOutput()
+}
+
+func runPlanStatusCommand(t *testing.T, statePath, planID string) ([]byte, error) {
+	t.Helper()
+	cmd := exec.Command("go", "run", ".", "plan", "status", "--plan", planID, "--state", statePath)
+	return cmd.CombinedOutput()
+}
+
 func runPlanPreviewCommand(t *testing.T, dir, sshLog string, extraEnv ...string) ([]byte, error) {
 	t.Helper()
 	cmd := exec.Command("go", "run", ".", "plan", "preview", "--file", filepath.Join("..", "..", "examples", "host-http", "root.yaml"))
+	cmd.Env = append(os.Environ(), "PATH="+dir+string(os.PathListSeparator)+os.Getenv("PATH"), "FAKE_SSH_LOG="+sshLog)
+	cmd.Env = append(cmd.Env, extraEnv...)
+	return cmd.CombinedOutput()
+}
+
+func runPersistedPlanPreviewCommand(t *testing.T, dir, sshLog, statePath string, extraEnv ...string) ([]byte, error) {
+	t.Helper()
+	cmd := exec.Command("go", "run", ".", "plan", "preview",
+		"--file", filepath.Join("..", "..", "examples", "host-http", "root.yaml"),
+		"--state", statePath,
+	)
 	cmd.Env = append(os.Environ(), "PATH="+dir+string(os.PathListSeparator)+os.Getenv("PATH"), "FAKE_SSH_LOG="+sshLog)
 	cmd.Env = append(cmd.Env, extraEnv...)
 	return cmd.CombinedOutput()
@@ -117,7 +377,8 @@ case "$*" in
   *"/usr/local/libexec/provision-host-executor inspect --environment lab --operator marlinf")
     ports='18080,28181'
     if [ "${FAKE_CANDIDATE_BUSY:-0}" = 1 ]; then ports='18080,27811,28181'; fi
-    printf '{"schemaVersion":"provision.dev/host-inspection/v1alpha1","environment":"lab","operator":"marlinf","account":"provision-lab","os":"ubuntu","osVersion":"26.04","architecture":"x86_64","systemdVersion":"systemd 259 (259.5-0ubuntu3.4)","sshServerVersion":"OpenSSH_10.2p1","caddyVersion":"%s","caddyActive":true,"journaldActive":true,"cgroupV2":true,"executorDigest":"sha256:e066cdc1a1b8a625dfc32db5ec74c1e4ba7bc459a3a3fc09ccc6488c44d606c5","generationStorageReady":true,"caddyConfigValid":true,"caddyAdminReachable":true,"listeningTcpPorts":[%s],"deployment":{"active":{"id":"provision-example-http-v0-aaaaaaaaaaaa","revision":"provision-example-http-v0","systemdUnit":"provision-lab-web-aaaaaaaaaaaa.service","releaseDirectory":"/var/lib/provision/environments/lab/releases/provision-example-http-v0-aaaaaaaaaaaa","port":28181,"routeId":"provision-lab-web","unitActive":true,"unitMatches":true,"routeObserved":true,"routeUpstream":"127.0.0.1:28181","routeMatches":true}},"allowedOperations":["inspect"],"ready":true,"findings":[]}\n' "${FAKE_CADDY_VERSION:-2.6.2}" "$ports"
+    executor_digest="${FAKE_EXECUTOR_DIGEST:-sha256:e066cdc1a1b8a625dfc32db5ec74c1e4ba7bc459a3a3fc09ccc6488c44d606c5}"
+    printf '{"schemaVersion":"provision.dev/host-inspection/v1alpha1","environment":"lab","operator":"marlinf","account":"provision-lab","os":"ubuntu","osVersion":"26.04","architecture":"x86_64","systemdVersion":"systemd 259 (259.5-0ubuntu3.4)","sshServerVersion":"OpenSSH_10.2p1","caddyVersion":"%s","caddyActive":true,"journaldActive":true,"cgroupV2":true,"executorDigest":"%s","generationStorageReady":true,"caddyConfigValid":true,"caddyAdminReachable":true,"listeningTcpPorts":[%s],"deployment":{"active":{"id":"provision-example-http-v0-aaaaaaaaaaaa","revision":"provision-example-http-v0","systemdUnit":"provision-lab-web-aaaaaaaaaaaa.service","releaseDirectory":"/var/lib/provision/environments/lab/releases/provision-example-http-v0-aaaaaaaaaaaa","port":28181,"routeId":"provision-lab-web","unitActive":true,"unitMatches":true,"routeObserved":true,"routeUpstream":"127.0.0.1:28181","routeMatches":true}},"allowedOperations":["inspect"],"ready":true,"findings":[]}\n' "${FAKE_CADDY_VERSION:-2.6.2}" "$executor_digest" "$ports"
     ;;
   *) exit 23 ;;
 esac

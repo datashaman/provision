@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"provision/internal/authority"
+	"provision/internal/host"
 	"provision/internal/operation"
 	"provision/internal/planner"
 )
@@ -28,6 +29,43 @@ import (
 type fakeSystemdController struct {
 	active   map[string]bool
 	startErr error
+}
+
+type fakeCaddyController struct {
+	servers    map[string][]byte
+	replaceErr error
+}
+
+func (controller *fakeCaddyController) Read(_ context.Context, path string) ([]byte, error) {
+	const serverPrefix = "/config/apps/http/servers/"
+	if strings.HasPrefix(path, serverPrefix) {
+		server, ok := controller.servers[strings.TrimPrefix(path, serverPrefix)]
+		if !ok {
+			return nil, errCaddyPathNotFound
+		}
+		return append([]byte(nil), server...), nil
+	}
+	if strings.HasPrefix(path, "/id/") {
+		server, ok := controller.servers[strings.TrimPrefix(path, "/id/")]
+		if !ok {
+			return nil, errCaddyPathNotFound
+		}
+		return append([]byte(nil), server...), nil
+	}
+	return nil, errCaddyPathNotFound
+}
+
+func (controller *fakeCaddyController) Replace(_ context.Context, path string, body []byte) error {
+	if controller.replaceErr != nil {
+		return controller.replaceErr
+	}
+	controller.servers[strings.TrimPrefix(path, "/config/apps/http/servers/")] = append([]byte(nil), body...)
+	return nil
+}
+
+func (controller *fakeCaddyController) Delete(_ context.Context, path string) error {
+	delete(controller.servers, strings.TrimPrefix(path, "/config/apps/http/servers/"))
+	return nil
 }
 
 func (controller *fakeSystemdController) Run(_ context.Context, args ...string) ([]byte, error) {
@@ -53,11 +91,8 @@ func (controller *fakeSystemdController) Run(_ context.Context, args ...string) 
 
 func TestAuthorizedCandidateLifecyclePreservesActiveAndCleansFailedCandidate(t *testing.T) {
 	paths, record, signer, publicKey, generation, systemd := authorizedCandidateFixture(t)
-	active := []byte(`{"id":"previous-generation","systemdUnit":"provision-lab-web-previous.service"}`)
 	activePath := filepath.Join(paths.environmentHome, "active-generation.json")
-	if err := os.WriteFile(activePath, active, 0644); err != nil {
-		t.Fatal(err)
-	}
+	active := writeActiveRecordFixture(t, activePath, paths.environmentHome)
 
 	install := planner.Operation{ID: "op-02", Kind: planner.InstallGeneration, DependsOn: []string{"op-01"}, Input: planner.OperationInput{Generation: &generation}}
 	installResult, _ := executeCandidateOperation(t, paths, record, signer, publicKey, install, 1)
@@ -134,11 +169,8 @@ func TestAuthorizedCandidateOperationRejectsPlanTampering(t *testing.T) {
 
 func TestAuthorizedUnsafeBundleFailsWithoutChangingActiveGeneration(t *testing.T) {
 	paths, record, signer, publicKey, generation, _ := authorizedCandidateFixture(t)
-	active := []byte(`{"id":"previous-generation","systemdUnit":"provision-lab-web-previous.service"}`)
 	activePath := filepath.Join(paths.environmentHome, "active-generation.json")
-	if err := os.WriteFile(activePath, active, 0644); err != nil {
-		t.Fatal(err)
-	}
+	active := writeActiveRecordFixture(t, activePath, paths.environmentHome)
 	unsafe := nativeBundle(t, "../escape", []byte("bad\n"), 0755)
 	digest := sha256.Sum256(unsafe)
 	generation.ArtifactDigest = "sha256:" + hex.EncodeToString(digest[:])
@@ -162,11 +194,8 @@ func TestAuthorizedUnsafeBundleFailsWithoutChangingActiveGeneration(t *testing.T
 func TestAuthorizedFailedStartCleansOnlyCandidateUnit(t *testing.T) {
 	paths, record, signer, publicKey, generation, systemd := authorizedCandidateFixture(t)
 	controller := paths.systemd.(*fakeSystemdController)
-	active := []byte(`{"id":"previous-generation","systemdUnit":"provision-lab-web-previous.service"}`)
 	activePath := filepath.Join(paths.environmentHome, "active-generation.json")
-	if err := os.WriteFile(activePath, active, 0644); err != nil {
-		t.Fatal(err)
-	}
+	active := writeActiveRecordFixture(t, activePath, paths.environmentHome)
 	previousRelease := filepath.Join(paths.environmentHome, "releases", "previous-generation")
 	if err := os.MkdirAll(previousRelease, 0755); err != nil {
 		t.Fatal(err)
@@ -218,7 +247,7 @@ func authorizedCandidateFixture(t *testing.T) (executionPaths, bootstrapRecord, 
 	paths := executionPaths{
 		authorityState: filepath.Join(root, "authority-state"), artifactCache: filepath.Join(root, "artifacts"),
 		environmentHome: filepath.Join(root, "environments", "lab"), systemdUnits: filepath.Join(root, "systemd"),
-		systemd: controller, healthTimeout: 20 * time.Millisecond,
+		systemd: controller, caddy: &fakeCaddyController{servers: map[string][]byte{}}, healthTimeout: 20 * time.Millisecond,
 	}
 	for _, directory := range []string{paths.authorityState, paths.artifactCache, paths.environmentHome, paths.systemdUnits} {
 		if err := os.MkdirAll(directory, 0755); err != nil {
@@ -265,6 +294,32 @@ func assertActiveUnchanged(t *testing.T, path string, expected []byte) {
 	if err != nil || string(actual) != string(expected) {
 		t.Fatalf("active generation changed: %q, %v", actual, err)
 	}
+}
+
+func writeActiveRecordFixture(t *testing.T, path, environmentHome string) []byte {
+	t.Helper()
+	record := host.ActiveGenerationRecord{
+		SchemaVersion:                        activeGenerationSchema,
+		PlanID:                               "sha256:" + strings.Repeat("a", 64),
+		CandidateVerificationOperationDigest: "sha256:" + strings.Repeat("b", 64),
+		Active: host.GenerationStatus{
+			ID: "previous-generation", Revision: "previous-revision",
+			ArtifactDigest:   "sha256:" + strings.Repeat("c", 64),
+			SystemdUnit:      "provision-lab-web-previous.service",
+			ReleaseDirectory: filepath.Join(environmentHome, "releases", "previous-generation"),
+			Port:             28080, RouteID: "provision-lab-web",
+		},
+		ListenPort: 18080, DrainPolicy: httpDrainPolicy,
+		SwitchedAt: time.Date(2026, 9, 24, 11, 0, 0, 0, time.UTC),
+	}
+	encoded, err := json.Marshal(record)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, encoded, 0644); err != nil {
+		t.Fatal(err)
+	}
+	return encoded
 }
 
 func nativeBundle(t *testing.T, name string, content []byte, mode int64) []byte {

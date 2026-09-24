@@ -40,6 +40,7 @@ type executionPaths struct {
 	environmentHome  string
 	systemdUnits     string
 	systemd          systemdController
+	caddy            caddyController
 	healthTimeout    time.Duration
 	sshHostPublicKey string
 }
@@ -50,10 +51,12 @@ type hostFence struct {
 }
 
 type consumedAuthorization struct {
-	SchemaVersion string          `json:"schemaVersion"`
-	Claim         authority.Claim `json:"claim"`
-	Outcome       string          `json:"outcome"`
-	RecordedAt    time.Time       `json:"recordedAt"`
+	SchemaVersion string            `json:"schemaVersion"`
+	Claim         authority.Claim   `json:"claim"`
+	Operation     planner.Operation `json:"operation"`
+	Observation   json.RawMessage   `json:"observation,omitempty"`
+	Outcome       string            `json:"outcome"`
+	RecordedAt    time.Time         `json:"recordedAt"`
 }
 
 func runExecute(args []string) error {
@@ -166,6 +169,7 @@ func systemExecutionPaths(environment string) executionPaths {
 		environmentHome:  "/var/lib/provision/environments/" + environment,
 		systemdUnits:     "/etc/systemd/system",
 		systemd:          commandSystemdController{},
+		caddy:            newAdminCaddyController(),
 		healthTimeout:    10 * time.Second,
 		sshHostPublicKey: host.SSHHostPublicKeyPath,
 	}
@@ -239,7 +243,8 @@ func executeAuthorized(ctx context.Context, envelope operation.Envelope, record 
 	}
 
 	var result operation.Result
-	actionErr, err := withHostFence(paths, claim, now, func() error {
+	var consumedObservation json.RawMessage
+	actionErr, err := withHostFence(paths, claim, envelope.Operation, now, &consumedObservation, func() error {
 		var encoded json.RawMessage
 		var actionErr error
 		if envelope.Operation.Kind == planner.StageArtifact {
@@ -250,10 +255,13 @@ func executeAuthorized(ctx context.Context, envelope operation.Envelope, record 
 				encoded, err = json.Marshal(observation)
 				actionErr = err
 			}
+		} else if envelope.Operation.Kind == planner.SwitchEndpoint {
+			encoded, actionErr = applySwitchEndpoint(ctx, envelope.Operation, claim, record, paths, now)
 		} else {
 			encoded, actionErr = applyCandidateOperation(ctx, envelope.Operation, record, paths, claim.AttemptID)
 		}
 		if len(encoded) != 0 {
+			consumedObservation = append(consumedObservation[:0], encoded...)
 			result = operation.Result{
 				SchemaVersion: operation.ResultSchemaVersion,
 				PlanID:        claim.PlanID,
@@ -319,7 +327,7 @@ func validateStageArtifact(planned planner.Operation) error {
 	return nil
 }
 
-func withHostFence(paths executionPaths, claim authority.Claim, now time.Time, action func() error) (error, error) {
+func withHostFence(paths executionPaths, claim authority.Claim, planned planner.Operation, now time.Time, observation *json.RawMessage, action func() error) (error, error) {
 	lock, err := os.OpenFile(filepath.Join(paths.authorityState, "executor.lock"), os.O_CREATE|os.O_RDWR, 0600)
 	if err != nil {
 		return nil, errors.New("open host authorization fence lock")
@@ -348,7 +356,7 @@ func withHostFence(paths executionPaths, claim authority.Claim, now time.Time, a
 		}
 	}
 	consumedPath := filepath.Join(paths.authorityState, claim.AttemptID+".json")
-	consumed := consumedAuthorization{SchemaVersion: "provision.dev/consumed-authorization/v1alpha1", Claim: claim, Outcome: "consumed", RecordedAt: now.UTC()}
+	consumed := consumedAuthorization{SchemaVersion: "provision.dev/consumed-authorization/v1alpha2", Claim: claim, Operation: planned, Outcome: "consumed", RecordedAt: now.UTC()}
 	encoded, err := json.Marshal(consumed)
 	if err != nil {
 		return nil, err
@@ -374,6 +382,9 @@ func withHostFence(paths executionPaths, claim authority.Claim, now time.Time, a
 
 	actionErr := action()
 	consumed.RecordedAt = time.Now().UTC()
+	if observation != nil {
+		consumed.Observation = append(consumed.Observation[:0], (*observation)...)
+	}
 	if actionErr != nil {
 		consumed.Outcome = "failed"
 	} else {
@@ -495,12 +506,13 @@ func writeJSONAtomic(path string, value any, mode os.FileMode) error {
 		_ = os.Remove(temporary)
 		return errors.New("close durable authorization record")
 	}
+	if err := os.Chmod(temporary, mode); err != nil {
+		_ = os.Remove(temporary)
+		return errors.New("secure durable authorization record")
+	}
 	if err := os.Rename(temporary, path); err != nil {
 		_ = os.Remove(temporary)
 		return errors.New("commit durable authorization record")
-	}
-	if err := os.Chmod(path, mode); err != nil {
-		return errors.New("secure durable authorization record")
 	}
 	return nil
 }

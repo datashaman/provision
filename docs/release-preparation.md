@@ -1,6 +1,6 @@
 # Authorized release preparation
 
-Provision can execute the first four operations of an approved Host Plan on either the current machine or a bootstrapped remote machine over SSH. `stageArtifact` downloads the Artifact URL already recorded in the Plan, verifies its SHA-256 digest, and stores it at `/var/lib/provision/artifacts/sha256/<digest>`. Dependency-gated operations then install that exact native bundle as an immutable candidate Generation, start a separate hardened systemd unit on a loopback-only port, and evaluate the declared liveness, readiness, and revision-bound candidate-verification checks. None of these operations changes the stable Endpoint or active-generation record.
+Provision can execute the first five operations of an approved Host Plan on either the current machine or a bootstrapped remote machine over SSH. `stageArtifact` downloads the Artifact URL already recorded in the Plan, verifies its SHA-256 digest, and stores it at `/var/lib/provision/artifacts/sha256/<digest>`. Dependency-gated operations then install that exact native bundle as an immutable candidate Generation, start a separate hardened systemd unit on a loopback-only port, evaluate the declared liveness, readiness, and revision-bound candidate-verification checks, and atomically route the stable Endpoint to the verified candidate through Caddy. A previously active Generation remains runnable.
 
 Local and remote execution use the same Plan-bound authorization, fencing, journal, operation envelope, root-owned executor, and structured result. SSH is only the transport boundary; it does not create a second execution model or grant shell-shaped deployment authority.
 
@@ -98,7 +98,25 @@ The State Backend refuses an operation until every dependency has a latest succe
 
 `op-04` first re-observes the exact Plan-bound systemd unit and immutable Generation, including its Artifact digest, and then contacts only that candidate's loopback port. It requires successful liveness and readiness responses and requires the candidate-verification response to report the planned Revision. Only an active matching unit plus all three checks passing produces `switchEligible: true`. A failed check is journaled with the individual check results, stops and removes only the failed candidate unit and Generation, and leaves Caddy, the stable Endpoint, and the active-generation record untouched.
 
-## 6. Read the durable journal
+## 6. Switch the stable Endpoint
+
+Execute `op-05` only after `op-04` succeeds:
+
+```sh
+go run ./cmd/provision deployment execute \
+  --plan sha256:PLAN_DIGEST \
+  --operation op-05 \
+  --state .provision/state.db \
+  --signing-key .provision/host-authority.key
+```
+
+The State Backend requires the successful `op-04` outcome, and the host independently requires its own root-owned record of a successful exact candidate verification for the same signed Plan. The executor re-observes the immutable Generation and systemd unit, refuses drift in the planned previous Generation or stable route, and changes only the Plan-owned Caddy server. Caddy provisions the new configuration before unloading the old configuration; ordinary in-flight HTTP requests therefore follow the recorded `caddy-graceful-config-reload` drain policy while new requests use the candidate. The previous unit and release directory remain runnable.
+
+After Caddy reports the exact route and stable port, the executor atomically records the active and previous Generation identities, Plan, verification-operation digest, drain policy, and switch time. A Caddy load failure leaves the previous route in place. If recording the active Generation fails after the route load, the executor restores the prior Caddy server before reporting failure. The structured result and durable journal identify both Generations across Provision process restart. Bootstrap configures Caddy to resume its autosaved active JSON configuration so the same stable route also survives Caddy and host restarts; planning fails closed when that service contract is absent.
+
+This guarantee is intentionally limited to ordinary HTTP requests. Caddy documents separate stream behavior for WebSockets and other long-lived streams, so this HTTP implementation does not claim realtime connection draining. See Caddy's [zero-downtime reload documentation](https://caddyserver.com/docs/getting-started#reloading-config) and [reverse-proxy streaming behavior](https://caddyserver.com/docs/caddyfile/directives/reverse_proxy#streaming).
+
+## 7. Read the durable journal
 
 ```sh
 go run ./cmd/provision deployment status \
@@ -110,4 +128,4 @@ The output contains append-only authoritative intent and outcome events, includi
 
 ## Current boundary
 
-This is candidate preparation, not a completed blue-green deployment. Later Plan operations remain unavailable: Provision cannot yet switch the stable Endpoint, verify the switched route, drain the previous Generation, or retain it for the rollback window. Those omissions are explicit capability failures rather than silent fallback behavior.
+This is activation with retained rollback material, not yet the complete HTTP blue-green lifecycle. Later Plan operations remain unavailable: Provision cannot yet verify application health through the switched stable route, roll back a failed post-switch verification, declare drain completion, or apply the rollback-window retention decision. Those omissions are explicit capability failures rather than silent fallback behavior.

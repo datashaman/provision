@@ -48,6 +48,20 @@ func TestEnvironmentAccountIdentityDoesNotRequireWritableHome(t *testing.T) {
 	}
 }
 
+func TestCaddyServiceMustResumeAutosavedConfiguration(t *testing.T) {
+	if !caddyExecStartResumesAutosave(`{ path=/usr/bin/caddy ; argv[]=/usr/bin/caddy run --environ --resume ; }`) {
+		t.Fatal("durable Caddy ExecStart rejected")
+	}
+	for _, unsafe := range []string{
+		`{ path=/usr/bin/caddy ; argv[]=/usr/bin/caddy run --environ --config /etc/caddy/Caddyfile ; }`,
+		`{ path=/tmp/caddy ; argv[]=/tmp/caddy run --resume ; }`,
+	} {
+		if caddyExecStartResumesAutosave(unsafe) {
+			t.Fatalf("non-durable Caddy ExecStart accepted: %s", unsafe)
+		}
+	}
+}
+
 func TestAuthorizedArtifactPreparationRejectsReplayAndStaleFence(t *testing.T) {
 	dir := t.TempDir()
 	privatePath := filepath.Join(dir, "authority.key")

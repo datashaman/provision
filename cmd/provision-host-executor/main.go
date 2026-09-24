@@ -4,7 +4,6 @@ package main
 
 import (
 	"bufio"
-	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -134,6 +133,13 @@ func inspect(environment, operator string) host.BootstrapStatus {
 	if !result.CaddyAdminReachable {
 		result.Findings = append(result.Findings, "Caddy admin endpoint is not reachable")
 	}
+	result.CaddyConfigDurable = caddyServiceResumesAutosave()
+	if !result.CaddyConfigDurable {
+		result.Findings = append(result.Findings, "Caddy service does not resume its autosaved active configuration")
+	}
+	if !rootOwned("/etc/systemd/system/caddy.service.d", 0755) || !rootOwned("/etc/systemd/system/caddy.service.d/provision.conf", 0644) {
+		result.Findings = append(result.Findings, "Caddy durable service override permissions or ownership have changed")
+	}
 	var portErr error
 	result.ListeningTCPPorts, portErr = listeningTCPPorts()
 	if portErr != nil {
@@ -150,14 +156,15 @@ func inspect(environment, operator string) host.BootstrapStatus {
 	if !result.GenerationStorageReady {
 		result.Findings = append(result.Findings, "dedicated Environment account is missing or changed")
 	}
-	active, err := readActiveGeneration(environment)
+	activeRecord, err := readActiveGeneration(environment)
 	if err != nil {
 		result.Findings = append(result.Findings, err.Error())
-	} else if active != nil {
+	} else if activeRecord != nil {
+		active := &activeRecord.Active
 		active.UnitActive = command("systemctl", "is-active", active.SystemdUnit) == "active"
 		workingDirectory := command("systemctl", "show", active.SystemdUnit, "--property=WorkingDirectory", "--value")
-		environment := strings.Fields(command("systemctl", "show", active.SystemdUnit, "--property=Environment", "--value"))
-		active.UnitMatches = workingDirectory == active.ReleaseDirectory && contains(environment, fmt.Sprintf("PORT=%d", active.Port))
+		unitEnvironment := strings.Fields(command("systemctl", "show", active.SystemdUnit, "--property=Environment", "--value"))
+		active.UnitMatches = workingDirectory == active.ReleaseDirectory && contains(unitEnvironment, fmt.Sprintf("PROVISION_HTTP_LISTEN=127.0.0.1:%d", active.Port)) && contains(unitEnvironment, "PROVISION_REVISION="+active.Revision)
 		route, routeOK := caddyAdminRead("/id/" + url.PathEscape(active.RouteID))
 		active.RouteObserved = routeOK
 		active.RouteUpstream = firstJSONValue(route, "dial")
@@ -174,6 +181,17 @@ func inspect(environment, operator string) host.BootstrapStatus {
 			result.Findings = append(result.Findings, "active Caddy route does not match the recorded generation port")
 		}
 		result.Deployment.Active = active
+		if activeRecord.Previous != nil {
+			previous := activeRecord.Previous
+			previous.UnitActive = command("systemctl", "is-active", previous.SystemdUnit) == "active"
+			previousDirectory := command("systemctl", "show", previous.SystemdUnit, "--property=WorkingDirectory", "--value")
+			previousEnvironment := strings.Fields(command("systemctl", "show", previous.SystemdUnit, "--property=Environment", "--value"))
+			previous.UnitMatches = previousDirectory == previous.ReleaseDirectory && contains(previousEnvironment, fmt.Sprintf("PROVISION_HTTP_LISTEN=127.0.0.1:%d", previous.Port)) && contains(previousEnvironment, "PROVISION_REVISION="+previous.Revision)
+			if !previous.UnitActive || !previous.UnitMatches {
+				result.Findings = append(result.Findings, "retained previous Generation is not runnable")
+			}
+			result.Deployment.Previous = previous
+		}
 	}
 	if !rootOwned(host.ExecutorPath, 0755) || !rootOwned("/usr/local/libexec", 0755) {
 		result.Findings = append(result.Findings, "executor path is not root-owned with safe permissions")
@@ -236,6 +254,15 @@ func commandCombined(name string, args ...string) string {
 
 func commandSucceeded(name string, args ...string) bool {
 	return exec.Command(name, args...).Run() == nil
+}
+
+func caddyServiceResumesAutosave() bool {
+	execStart := command("systemctl", "show", "caddy", "--property=ExecStart", "--value")
+	return caddyExecStartResumesAutosave(execStart)
+}
+
+func caddyExecStartResumesAutosave(execStart string) bool {
+	return strings.Contains(execStart, "/usr/bin/caddy") && strings.Contains(execStart, " run ") && strings.Contains(execStart, "--resume")
 }
 
 func caddyAdminOK(path string) bool {
@@ -328,33 +355,13 @@ func contains(values []string, wanted string) bool {
 	return false
 }
 
-func readActiveGeneration(environment string) (*host.GenerationStatus, error) {
+func readActiveGeneration(environment string) (*host.ActiveGenerationRecord, error) {
 	path := filepath.Join("/var/lib/provision/environments", environment, "active-generation.json")
-	info, err := os.Lstat(path)
-	if errors.Is(err, os.ErrNotExist) {
-		return nil, nil
-	}
+	record, err := readActiveGenerationRecord(path)
 	if err != nil {
-		return nil, errors.New("active generation observation cannot be read")
+		return nil, errors.New("active Generation observation: " + err.Error())
 	}
-	if !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 || info.Size() > 64<<10 {
-		return nil, errors.New("active generation observation is not a safe regular file")
-	}
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return nil, errors.New("active generation observation cannot be read")
-	}
-	var active host.GenerationStatus
-	decoder := json.NewDecoder(bytes.NewReader(data))
-	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(&active); err != nil {
-		return nil, errors.New("active generation observation is invalid")
-	}
-	releaseRoot := filepath.Join("/var/lib/provision/environments", environment, "releases")
-	if !deploymentIdentifier.MatchString(active.ID) || !deploymentIdentifier.MatchString(active.Revision) || !systemdUnit.MatchString(active.SystemdUnit) || !deploymentIdentifier.MatchString(active.RouteID) || active.Port < 1024 || active.Port > 65535 || !filepath.IsAbs(active.ReleaseDirectory) || !strings.HasPrefix(filepath.Clean(active.ReleaseDirectory), releaseRoot+string(os.PathSeparator)) {
-		return nil, errors.New("active generation observation contains unsafe identity or path data")
-	}
-	return &active, nil
+	return record, nil
 }
 
 func firstLine(value string) string { return strings.SplitN(value, "\n", 2)[0] }

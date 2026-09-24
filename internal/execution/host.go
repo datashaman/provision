@@ -104,6 +104,8 @@ func verifyHostResult(envelope operation.Envelope, result operation.Result) erro
 		return verifySystemdResult(envelope, result)
 	case planner.VerifyCandidate:
 		return verifyHealthResult(envelope, result)
+	case planner.SwitchEndpoint:
+		return verifyEndpointResult(envelope, result)
 	default:
 		return errors.New("host operation result kind is unsupported")
 	}
@@ -205,6 +207,44 @@ func verifyHealthResult(envelope operation.Envelope, result operation.Result) er
 		return errors.New("host health failure observation is invalid")
 	}
 	return nil
+}
+
+func verifyEndpointResult(envelope operation.Envelope, result operation.Result) error {
+	input := envelope.Operation.Input.Endpoint
+	if input == nil {
+		return errors.New("host Endpoint observation has no planned Endpoint")
+	}
+	var observed host.EndpointObservation
+	if err := decodeObservation(result.Observation, &observed); err != nil {
+		return errors.New("host Endpoint observation is invalid")
+	}
+	if observed.RouteID != input.RouteID || observed.ListenPort != input.ListenPort || observed.Upstream != input.Upstream || observed.DrainPolicy != input.DrainPolicy || !endpointGenerationMatches(observed.Active, *input) {
+		return errors.New("host Endpoint observation does not match the Plan")
+	}
+	plannedPrevious := envelope.Operation.Input.Previous
+	if plannedPrevious == nil != (observed.Previous == nil) || plannedPrevious != nil && !generationStatusIdentityMatches(*plannedPrevious, *observed.Previous) {
+		return errors.New("host Endpoint previous Generation does not match the Plan")
+	}
+	if result.Outcome == operation.OutcomeSucceeded {
+		if observed.Status != host.EndpointActive || !observed.CandidateVerified || !observed.GracefulReload || !observed.PreviousRetained || !observed.Active.UnitActive || !observed.Active.UnitMatches || !observed.Active.RouteObserved || !observed.Active.RouteMatches || observed.Active.RouteUpstream != input.Upstream {
+			return errors.New("host Endpoint success observation is invalid")
+		}
+		if observed.Previous != nil && (!observed.Previous.UnitActive || !observed.Previous.UnitMatches || observed.Previous.RouteMatches) {
+			return errors.New("host Endpoint retained previous Generation observation is invalid")
+		}
+	}
+	if result.Outcome == operation.OutcomeFailed && (observed.Status != host.EndpointFailed || observed.Reason == "" || observed.CandidateVerified || observed.GracefulReload) {
+		return errors.New("host Endpoint failure observation is invalid")
+	}
+	return nil
+}
+
+func endpointGenerationMatches(observed host.GenerationStatus, input planner.EndpointInput) bool {
+	return observed.ID == input.ID && observed.Revision == input.Revision && observed.ArtifactDigest == input.ArtifactDigest && observed.SystemdUnit == input.Unit && observed.ReleaseDirectory == input.ReleaseDirectory && observed.Port == input.UpstreamPort && observed.RouteID == input.RouteID
+}
+
+func generationStatusIdentityMatches(left, right host.GenerationStatus) bool {
+	return left.ID == right.ID && left.Revision == right.Revision && left.ArtifactDigest == right.ArtifactDigest && left.SystemdUnit == right.SystemdUnit && left.ReleaseDirectory == right.ReleaseDirectory && left.Port == right.Port && left.RouteID == right.RouteID
 }
 
 func decodeObservation(data json.RawMessage, out any) error {

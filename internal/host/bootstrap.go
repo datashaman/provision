@@ -7,12 +7,13 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+	"time"
 )
 
 const ExecutorPath = "/usr/local/libexec/provision-host-executor"
 
 func AllowedOperations() []string {
-	return []string{"inspect", "stageArtifact", "installGeneration", "startCandidate", "verifyCandidate"}
+	return []string{"inspect", "stageArtifact", "installGeneration", "startCandidate", "verifyCandidate", "switchEndpoint"}
 }
 
 var environmentPattern = regexp.MustCompile(`^[a-z][a-z0-9-]{0,19}$`)
@@ -37,6 +38,7 @@ type BootstrapStatus struct {
 	GenerationStorageReady bool                  `json:"generationStorageReady,omitempty"`
 	CaddyConfigValid       bool                  `json:"caddyConfigValid,omitempty"`
 	CaddyAdminReachable    bool                  `json:"caddyAdminReachable,omitempty"`
+	CaddyConfigDurable     bool                  `json:"caddyConfigDurable,omitempty"`
 	ListeningTCPPorts      []int                 `json:"listeningTcpPorts,omitempty"`
 	Deployment             DeploymentStatus      `json:"deployment,omitempty"`
 	AllowedOperations      []string              `json:"allowedOperations"`
@@ -45,12 +47,14 @@ type BootstrapStatus struct {
 }
 
 type DeploymentStatus struct {
-	Active *GenerationStatus `json:"active,omitempty"`
+	Active   *GenerationStatus `json:"active,omitempty"`
+	Previous *GenerationStatus `json:"previous,omitempty"`
 }
 
 type GenerationStatus struct {
 	ID               string `json:"id"`
 	Revision         string `json:"revision"`
+	ArtifactDigest   string `json:"artifactDigest"`
 	SystemdUnit      string `json:"systemdUnit"`
 	ReleaseDirectory string `json:"releaseDirectory"`
 	Port             int    `json:"port"`
@@ -60,6 +64,17 @@ type GenerationStatus struct {
 	RouteObserved    bool   `json:"routeObserved"`
 	RouteUpstream    string `json:"routeUpstream,omitempty"`
 	RouteMatches     bool   `json:"routeMatches"`
+}
+
+type ActiveGenerationRecord struct {
+	SchemaVersion                        string            `json:"schemaVersion"`
+	PlanID                               string            `json:"planId"`
+	CandidateVerificationOperationDigest string            `json:"candidateVerificationOperationDigest"`
+	Active                               GenerationStatus  `json:"active"`
+	Previous                             *GenerationStatus `json:"previous,omitempty"`
+	ListenPort                           int               `json:"listenPort"`
+	DrainPolicy                          string            `json:"drainPolicy"`
+	SwitchedAt                           time.Time         `json:"switchedAt"`
 }
 
 // CheckBootstrap invokes only the root-owned inspector. It cannot request a
@@ -101,7 +116,7 @@ func CheckBootstrap(ctx context.Context, target Target, environment, operator st
 			return BootstrapStatus{}, errors.New("unexpected host executor operation is enabled")
 		}
 	}
-	if status.Ready && (status.OS != "ubuntu" || status.Architecture == "" || !strings.HasPrefix(status.SystemdVersion, "systemd ") || status.SSHServerVersion == "" || status.CaddyVersion == "" || !status.CaddyActive || !status.JournaldActive || !strings.HasPrefix(status.ExecutorDigest, "sha256:") || !strings.HasPrefix(status.AuthorityKeyID, "sha256:") || !target.Local && !status.SSHHostKeyFingerprint.Valid() || len(status.Findings) != 0) {
+	if status.Ready && (status.OS != "ubuntu" || status.Architecture == "" || !strings.HasPrefix(status.SystemdVersion, "systemd ") || status.SSHServerVersion == "" || status.CaddyVersion == "" || !status.CaddyActive || !status.CaddyConfigValid || !status.CaddyAdminReachable || !status.CaddyConfigDurable || !status.GenerationStorageReady || !status.JournaldActive || !strings.HasPrefix(status.ExecutorDigest, "sha256:") || !strings.HasPrefix(status.AuthorityKeyID, "sha256:") || !target.Local && !status.SSHHostKeyFingerprint.Valid() || len(status.Findings) != 0) {
 		return BootstrapStatus{}, errors.New("host bootstrap check returned incomplete readiness evidence")
 	}
 	return status, nil

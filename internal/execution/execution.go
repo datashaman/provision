@@ -37,10 +37,11 @@ type HandlerObservation struct {
 }
 
 type Engine struct {
-	Backend state.Backend
-	Signer  authority.Signer
-	Handler Handler
-	Now     func() time.Time
+	Backend         state.Backend
+	Signer          authority.Signer
+	Handler         Handler
+	Now             func() time.Time
+	renewalInterval time.Duration
 }
 
 type Request struct {
@@ -129,7 +130,13 @@ func (e Engine) Execute(ctx context.Context, request Request) (operation.Result,
 	}
 	result, executeErr := e.executeWithLeaseRenewal(ctx, request, attempt, envelope)
 	if executeErr != nil {
-		after, observeErr := e.Handler.Observe(ctx, attempt.Operation)
+		failureContext := ctx
+		cancelFailureContext := func() {}
+		if ctx.Err() != nil {
+			failureContext, cancelFailureContext = context.WithTimeout(context.Background(), 10*time.Second)
+		}
+		defer cancelFailureContext()
+		after, observeErr := e.Handler.Observe(failureContext, attempt.Operation)
 		if observeErr == nil && after.State == ObservationSatisfied {
 			result = operation.Result{
 				SchemaVersion: operation.ResultSchemaVersion, PlanID: attempt.Plan.ID, OperationID: attempt.Operation.ID,
@@ -144,7 +151,7 @@ func (e Engine) Execute(ctx context.Context, request Request) (operation.Result,
 			executeErr = fmt.Errorf("%w; post-failure observation: %v", executeErr, observeErr)
 			after = HandlerObservation{State: ObservationUnknown}
 		}
-		return operation.Result{}, e.recordUncertain(ctx, attempt, executeErr, after)
+		return operation.Result{}, e.recordUncertain(failureContext, attempt, executeErr, after)
 	}
 	if err := e.commitResult(ctx, attempt, envelope, result); err != nil {
 		return operation.Result{}, err
@@ -190,6 +197,9 @@ func (e Engine) executeWithLeaseRenewal(ctx context.Context, request Request, at
 	renewEvery := request.LeaseDuration / 2
 	if renewEvery < time.Second {
 		renewEvery = time.Second
+	}
+	if e.renewalInterval > 0 {
+		renewEvery = e.renewalInterval
 	}
 	ticker := time.NewTicker(renewEvery)
 	defer ticker.Stop()

@@ -20,11 +20,15 @@ import (
 
 type handlerFake struct {
 	observations []HandlerObservation
+	observeErr   error
 	apply        func(operation.Envelope) (operation.Result, error)
 	verifyErr    error
 }
 
 func (h *handlerFake) Observe(context.Context, planner.Operation) (HandlerObservation, error) {
+	if h.observeErr != nil {
+		return HandlerObservation{State: ObservationUnknown}, h.observeErr
+	}
 	if len(h.observations) == 0 {
 		return HandlerObservation{State: ObservationUnknown}, errors.New("no observation configured")
 	}
@@ -48,6 +52,50 @@ func (h *handlerFake) Recovery(planned planner.Operation) planner.RecoveryMode {
 	return planned.Recovery
 }
 
+type cancelingHandler struct {
+	cancel       context.CancelFunc
+	observations int
+}
+
+type renewalFailureBackend struct{ state.Backend }
+
+func (renewalFailureBackend) RenewExecutionLease(context.Context, state.RenewExecutionLeaseRequest) (time.Time, error) {
+	return time.Time{}, errors.New("renewal unavailable")
+}
+
+type blockingHandler struct{ observations int }
+
+func (h *blockingHandler) Observe(context.Context, planner.Operation) (HandlerObservation, error) {
+	h.observations++
+	return HandlerObservation{State: ObservationPending, Evidence: json.RawMessage(`{"status":"absent"}`)}, nil
+}
+
+func (*blockingHandler) ApplyOrResume(ctx context.Context, _ operation.Envelope) (operation.Result, error) {
+	<-ctx.Done()
+	return operation.Result{}, ctx.Err()
+}
+
+func (*blockingHandler) Verify(operation.Envelope, operation.Result) error { return nil }
+func (*blockingHandler) Recovery(planned planner.Operation) planner.RecoveryMode {
+	return planned.Recovery
+}
+
+func (h *cancelingHandler) Observe(context.Context, planner.Operation) (HandlerObservation, error) {
+	h.observations++
+	return HandlerObservation{State: ObservationPending, Evidence: json.RawMessage(`{"status":"absent"}`)}, nil
+}
+
+func (h *cancelingHandler) ApplyOrResume(ctx context.Context, _ operation.Envelope) (operation.Result, error) {
+	h.cancel()
+	<-ctx.Done()
+	return operation.Result{}, ctx.Err()
+}
+
+func (*cancelingHandler) Verify(operation.Envelope, operation.Result) error { return nil }
+func (*cancelingHandler) Recovery(planned planner.Operation) planner.RecoveryMode {
+	return planned.Recovery
+}
+
 func TestEngineRecordsFailureAndUncertainRecoveryEvidence(t *testing.T) {
 	start := time.Date(2026, 9, 24, 12, 0, 0, 0, time.UTC)
 	tests := []struct {
@@ -57,7 +105,17 @@ func TestEngineRecordsFailureAndUncertainRecoveryEvidence(t *testing.T) {
 		wantKind     state.JournalEventKind
 		wantError    bool
 		wantEvidence string
+		wantRejected bool
 	}{
+		{
+			name: "initial observation failure",
+			handler: func(_ *time.Time) *handlerFake {
+				return &handlerFake{observeErr: errors.New("observation unavailable"), apply: func(operation.Envelope) (operation.Result, error) {
+					return operation.Result{}, errors.New("must not apply")
+				}}
+			},
+			wantOutcome: state.ExecutionUncertain, wantKind: state.JournalOutcome, wantError: true, wantEvidence: "observation unavailable",
+		},
 		{
 			name: "structured host failure",
 			handler: func(_ *time.Time) *handlerFake {
@@ -66,6 +124,15 @@ func TestEngineRecordsFailureAndUncertainRecoveryEvidence(t *testing.T) {
 				}}
 			},
 			wantOutcome: state.ExecutionFailed, wantKind: state.JournalOutcome, wantError: true, wantEvidence: "digest mismatch",
+		},
+		{
+			name: "result verification failure",
+			handler: func(_ *time.Time) *handlerFake {
+				return &handlerFake{observations: []HandlerObservation{{State: ObservationPending}}, verifyErr: errors.New("result evidence invalid"), apply: func(envelope operation.Envelope) (operation.Result, error) {
+					return matchingResult(envelope, operation.OutcomeSucceeded, `{"status":"staged"}`), nil
+				}}
+			},
+			wantOutcome: state.ExecutionUncertain, wantKind: state.JournalOutcome, wantError: true, wantEvidence: "result evidence invalid",
 		},
 		{
 			name: "uncertain call observed as completed",
@@ -99,7 +166,7 @@ func TestEngineRecordsFailureAndUncertainRecoveryEvidence(t *testing.T) {
 					return matchingResult(envelope, operation.OutcomeSucceeded, `{"status":"staged"}`), nil
 				}}
 			},
-			wantOutcome: state.ExecutionSucceeded, wantKind: state.JournalRejected, wantError: true, wantEvidence: `"status":"rejected"`,
+			wantOutcome: state.ExecutionSucceeded, wantError: true, wantEvidence: `"status":"staged"`, wantRejected: true,
 		},
 	}
 	for _, test := range tests {
@@ -112,6 +179,16 @@ func TestEngineRecordsFailureAndUncertainRecoveryEvidence(t *testing.T) {
 				t.Fatalf("Execute error = %v, wantError=%v", err, test.wantError)
 			}
 			events, err := backend.LoadJournal(context.Background(), plan.ID)
+			if test.wantRejected {
+				if err != nil || len(events) != 1 {
+					t.Fatalf("authoritative journal = %+v, %v", events, err)
+				}
+				rejected, rejectErr := backend.LoadRejectedResults(context.Background(), plan.ID)
+				if rejectErr != nil || len(rejected) != 1 || rejected[0].SubmittedOutcome != test.wantOutcome || !strings.Contains(string(rejected[0].SubmittedObservation), test.wantEvidence) {
+					t.Fatalf("rejected results = %+v, %v", rejected, rejectErr)
+				}
+				return
+			}
 			if err != nil || len(events) != 2 {
 				t.Fatalf("journal = %+v, %v", events, err)
 			}
@@ -120,6 +197,39 @@ func TestEngineRecordsFailureAndUncertainRecoveryEvidence(t *testing.T) {
 				t.Fatalf("last journal event = %+v", last)
 			}
 		})
+	}
+}
+
+func TestEngineJournalsAfterCallerCancellation(t *testing.T) {
+	now := time.Date(2026, 9, 24, 12, 0, 0, 0, time.UTC)
+	ctx, cancel := context.WithCancel(context.Background())
+	handler := &cancelingHandler{cancel: cancel}
+	engine, backend, plan := executionFixture(t, &now, handler)
+	defer backend.Close()
+	_, err := engine.Execute(ctx, Request{PlanID: plan.ID, OperationID: "op-01", Holder: "test-holder", LeaseDuration: time.Minute})
+	if err == nil || handler.observations != 2 {
+		t.Fatalf("canceled execution = %v, observations=%d", err, handler.observations)
+	}
+	events, journalErr := backend.LoadJournal(context.Background(), plan.ID)
+	if journalErr != nil || len(events) != 2 || events[1].Kind != state.JournalOutcome || events[1].Outcome != state.ExecutionUncertain || !strings.Contains(string(events[1].Observation), `"observed":"pending"`) {
+		t.Fatalf("canceled execution journal = %+v, %v", events, journalErr)
+	}
+}
+
+func TestEngineCancelsAndJournalsWhenLeaseRenewalFails(t *testing.T) {
+	now := time.Date(2026, 9, 24, 12, 0, 0, 0, time.UTC)
+	handler := &blockingHandler{}
+	engine, backend, plan := executionFixture(t, &now, handler)
+	defer backend.Close()
+	engine.Backend = renewalFailureBackend{Backend: backend}
+	engine.renewalInterval = time.Millisecond
+	_, err := engine.Execute(context.Background(), Request{PlanID: plan.ID, OperationID: "op-01", Holder: "test-holder", LeaseDuration: time.Minute})
+	if err == nil || !strings.Contains(err.Error(), "renewal unavailable") || handler.observations != 2 {
+		t.Fatalf("renewal failure = %v, observations=%d", err, handler.observations)
+	}
+	events, journalErr := backend.LoadJournal(context.Background(), plan.ID)
+	if journalErr != nil || len(events) != 2 || events[1].Outcome != state.ExecutionUncertain || !strings.Contains(string(events[1].Observation), "renewal unavailable") {
+		t.Fatalf("renewal failure journal = %+v, %v", events, journalErr)
 	}
 }
 

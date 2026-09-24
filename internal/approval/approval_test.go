@@ -48,6 +48,10 @@ func (f *backendFake) LoadJournal(context.Context, string) ([]state.JournalEvent
 	return nil, errors.New("not used")
 }
 
+func (f *backendFake) LoadRejectedResults(context.Context, string) ([]state.RejectedResult, error) {
+	return nil, errors.New("not used")
+}
+
 func (f *backendFake) Close() error { return nil }
 
 func TestApproveUsesEnvironmentScopedCapabilityThroughBackend(t *testing.T) {

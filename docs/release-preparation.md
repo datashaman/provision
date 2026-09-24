@@ -72,7 +72,7 @@ go run ./cmd/provision deployment status \
   --state .provision/state.db
 ```
 
-The output contains append-only intent and outcome events, including the attempt identity and fencing token. It survives process restart. The State Backend rejects a concurrent Environment mutation and refuses a late result from an expired or replaced execution lease. That rejected result cannot advance state or release the current lease, but its submitted observation is retained as a `rejected` audit event so the interrupted history does not disappear.
+The output contains append-only authoritative intent and outcome events, including the attempt identity and fencing token. It survives process restart. The State Backend rejects a concurrent Environment mutation and refuses a late result from an expired or replaced execution lease. A stale token cannot append to that journal, advance state, or release the current lease. Its submitted observation is retained separately under `rejectedResults` as non-authoritative audit evidence so the interrupted history does not disappear.
 
 ## Current boundary
 

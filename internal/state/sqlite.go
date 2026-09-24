@@ -21,8 +21,9 @@ import (
 )
 
 const (
-	SchemaVersion         = "provision.dev/state/sqlite/v1alpha2"
-	previousSchemaVersion = "provision.dev/state/sqlite/v1alpha1"
+	SchemaVersion         = "provision.dev/state/sqlite/v1alpha3"
+	previousSchemaVersion = "provision.dev/state/sqlite/v1alpha2"
+	oldestSchemaVersion   = "provision.dev/state/sqlite/v1alpha1"
 )
 
 type sqliteBackend struct {
@@ -144,8 +145,19 @@ func (b *sqliteBackend) initialize(ctx context.Context) error {
 	if err := tx.QueryRowContext(ctx, `SELECT schema_version FROM state_metadata WHERE singleton = 1`).Scan(&version); err != nil {
 		return fmt.Errorf("read State Backend schema for migration: %w", err)
 	}
-	if version != SchemaVersion && version != previousSchemaVersion {
+	if version != SchemaVersion && version != previousSchemaVersion && version != oldestSchemaVersion {
 		return fmt.Errorf("State Backend schema %q is unsupported", version)
+	}
+	if version == previousSchemaVersion {
+		var legacyLeaseTable int
+		if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'environment_leases'`).Scan(&legacyLeaseTable); err != nil {
+			return fmt.Errorf("inspect previous State Backend lease schema: %w", err)
+		}
+		if legacyLeaseTable == 1 {
+			if _, err := tx.ExecContext(ctx, `ALTER TABLE environment_leases RENAME TO execution_leases`); err != nil {
+				return fmt.Errorf("migrate execution lease table: %w", err)
+			}
+		}
 	}
 	for _, statement := range []string{
 		`CREATE TABLE IF NOT EXISTS plans (
@@ -195,18 +207,33 @@ func (b *sqliteBackend) initialize(ctx context.Context) error {
             operation_id TEXT NOT NULL,
             attempt_id TEXT NOT NULL,
             fencing_token INTEGER NOT NULL,
-			kind TEXT NOT NULL CHECK (kind IN ('intent', 'outcome', 'rejected')),
+			kind TEXT NOT NULL CHECK (kind IN ('intent', 'outcome')),
             outcome TEXT NOT NULL CHECK (outcome IN ('', 'succeeded', 'failed', 'uncertain')),
             observation_json BLOB NOT NULL,
             occurred_at TEXT NOT NULL,
             UNIQUE (attempt_id, kind)
+        ) STRICT`,
+		`CREATE TABLE IF NOT EXISTS rejected_execution_results (
+            sequence INTEGER PRIMARY KEY AUTOINCREMENT,
+            schema_version TEXT NOT NULL,
+            application TEXT NOT NULL,
+            environment TEXT NOT NULL,
+            plan_id TEXT NOT NULL REFERENCES plans(id),
+            operation_id TEXT NOT NULL,
+            attempt_id TEXT NOT NULL,
+            submitted_fencing_token INTEGER NOT NULL,
+            submitted_outcome TEXT NOT NULL CHECK (submitted_outcome IN ('succeeded', 'failed', 'uncertain')),
+            submitted_observation_json BLOB NOT NULL,
+            reason TEXT NOT NULL,
+            received_at TEXT NOT NULL,
+            UNIQUE (attempt_id)
         ) STRICT`,
 	} {
 		if _, err := tx.ExecContext(ctx, statement); err != nil {
 			return fmt.Errorf("initialize State Backend: %w", err)
 		}
 	}
-	if _, err := tx.ExecContext(ctx, `UPDATE state_metadata SET schema_version = ? WHERE singleton = 1 AND schema_version = ?`, SchemaVersion, previousSchemaVersion); err != nil {
+	if _, err := tx.ExecContext(ctx, `UPDATE state_metadata SET schema_version = ? WHERE singleton = 1 AND schema_version IN (?, ?)`, SchemaVersion, previousSchemaVersion, oldestSchemaVersion); err != nil {
 		return fmt.Errorf("migrate State Backend schema: %w", err)
 	}
 	if err := tx.Commit(); err != nil {
@@ -546,20 +573,11 @@ func (b *sqliteBackend) CompleteOperation(ctx context.Context, request CompleteO
 			request.PlanID, request.OperationID, request.AttemptID, request.FencingToken).Scan(&intentCount); err != nil || intentCount != 1 {
 			return errors.New(reason)
 		}
-		evidence, err := json.Marshal(struct {
-			Status               string           `json:"status"`
-			Reason               string           `json:"reason"`
-			SubmittedOutcome     ExecutionOutcome `json:"submittedOutcome"`
-			SubmittedObservation json.RawMessage  `json:"submittedObservation"`
-		}{"rejected", reason, request.Outcome, request.Observation})
-		if err != nil {
-			return errors.New(reason)
-		}
-		if _, err := tx.ExecContext(ctx, `INSERT INTO journal_events(schema_version, application, environment, plan_id, operation_id, attempt_id, fencing_token, kind, outcome, observation_json, occurred_at)
-            VALUES ('provision.dev/journal-event/v1alpha1', ?, ?, ?, ?, ?, ?, 'rejected', ?, ?, ?)
-            ON CONFLICT(attempt_id, kind) DO NOTHING`,
-			application, environment, request.PlanID, request.OperationID, request.AttemptID, request.FencingToken, request.Outcome, evidence, formatTime(request.CompletedAt)); err != nil {
-			return fmt.Errorf("journal rejected operation result: %w", err)
+		if _, err := tx.ExecContext(ctx, `INSERT INTO rejected_execution_results(schema_version, application, environment, plan_id, operation_id, attempt_id, submitted_fencing_token, submitted_outcome, submitted_observation_json, reason, received_at)
+			VALUES ('provision.dev/rejected-execution-result/v1alpha1', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			ON CONFLICT(attempt_id) DO NOTHING`,
+			application, environment, request.PlanID, request.OperationID, request.AttemptID, request.FencingToken, request.Outcome, []byte(request.Observation), reason, formatTime(request.CompletedAt)); err != nil {
+			return fmt.Errorf("record rejected operation result: %w", err)
 		}
 		if err := tx.Commit(); err != nil {
 			return fmt.Errorf("commit rejected operation result: %w", err)
@@ -629,6 +647,33 @@ func (b *sqliteBackend) LoadJournal(ctx context.Context, planID string) ([]Journ
 		return nil, fmt.Errorf("read execution journal: %w", err)
 	}
 	return events, nil
+}
+
+func (b *sqliteBackend) LoadRejectedResults(ctx context.Context, planID string) ([]RejectedResult, error) {
+	rows, err := b.db.QueryContext(ctx, `SELECT sequence, schema_version, application, environment, plan_id, operation_id, attempt_id, submitted_fencing_token, submitted_outcome, submitted_observation_json, reason, received_at
+		FROM rejected_execution_results WHERE plan_id = ? ORDER BY sequence`, planID)
+	if err != nil {
+		return nil, fmt.Errorf("read rejected execution results: %w", err)
+	}
+	defer rows.Close()
+	results := []RejectedResult{}
+	for rows.Next() {
+		var result RejectedResult
+		var outcome, receivedAt string
+		if err := rows.Scan(&result.Sequence, &result.SchemaVersion, &result.Application, &result.Environment, &result.PlanID, &result.OperationID, &result.AttemptID, &result.SubmittedFencingToken, &outcome, &result.SubmittedObservation, &result.Reason, &receivedAt); err != nil {
+			return nil, fmt.Errorf("decode rejected execution result: %w", err)
+		}
+		result.SubmittedOutcome = ExecutionOutcome(outcome)
+		result.ReceivedAt, err = parseTime(receivedAt)
+		if err != nil || !json.Valid(result.SubmittedObservation) {
+			return nil, errors.New("stored rejected execution result is invalid")
+		}
+		results = append(results, result)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("read rejected execution results: %w", err)
+	}
+	return results, nil
 }
 
 func plannedOperation(plan planner.Plan, operationID string) (planner.Operation, bool) {

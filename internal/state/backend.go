@@ -19,6 +19,7 @@ type Backend interface {
 	RenewExecutionLease(context.Context, RenewExecutionLeaseRequest) (time.Time, error)
 	CompleteOperation(context.Context, CompleteOperationRequest) error
 	LoadJournal(context.Context, string) ([]JournalEvent, error)
+	LoadRejectedResults(context.Context, string) ([]RejectedResult, error)
 	Close() error
 }
 
@@ -89,9 +90,8 @@ type CompleteOperationRequest struct {
 type JournalEventKind string
 
 const (
-	JournalIntent   JournalEventKind = "intent"
-	JournalOutcome  JournalEventKind = "outcome"
-	JournalRejected JournalEventKind = "rejected"
+	JournalIntent  JournalEventKind = "intent"
+	JournalOutcome JournalEventKind = "outcome"
 )
 
 type JournalEvent struct {
@@ -107,4 +107,19 @@ type JournalEvent struct {
 	Outcome       ExecutionOutcome `json:"outcome,omitempty"`
 	Observation   json.RawMessage  `json:"observation"`
 	OccurredAt    time.Time        `json:"occurredAt"`
+}
+
+type RejectedResult struct {
+	Sequence              int64            `json:"sequence"`
+	SchemaVersion         string           `json:"schemaVersion"`
+	Application           string           `json:"application"`
+	Environment           string           `json:"environment"`
+	PlanID                string           `json:"planId"`
+	OperationID           string           `json:"operationId"`
+	AttemptID             string           `json:"attemptId"`
+	SubmittedFencingToken int64            `json:"submittedFencingToken"`
+	SubmittedOutcome      ExecutionOutcome `json:"submittedOutcome"`
+	SubmittedObservation  json.RawMessage  `json:"submittedObservation"`
+	Reason                string           `json:"reason"`
+	ReceivedAt            time.Time        `json:"receivedAt"`
 }

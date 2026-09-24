@@ -143,13 +143,18 @@ func runDeploymentStatus(args []string) error {
 	if err != nil {
 		return err
 	}
+	rejected, err := backend.LoadRejectedResults(ctx, *planID)
+	if err != nil {
+		return err
+	}
 	output := json.NewEncoder(os.Stdout)
 	output.SetIndent("", "  ")
 	return output.Encode(struct {
-		SchemaVersion string               `json:"schemaVersion"`
-		PlanID        string               `json:"planId"`
-		Events        []state.JournalEvent `json:"events"`
-	}{"provision.dev/deployment-status/v1alpha1", *planID, events})
+		SchemaVersion   string                 `json:"schemaVersion"`
+		PlanID          string                 `json:"planId"`
+		Events          []state.JournalEvent   `json:"events"`
+		RejectedResults []state.RejectedResult `json:"rejectedResults"`
+	}{"provision.dev/deployment-status/v1alpha2", *planID, events, rejected})
 }
 
 func runPlanPreview(args []string) error {

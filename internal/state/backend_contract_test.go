@@ -46,6 +46,21 @@ func TestSQLiteBackendMigratesPreviousSchemaAtomically(t *testing.T) {
 	if _, err := raw.Exec(`INSERT INTO state_metadata(singleton, schema_version) VALUES (1, ?)`, previousSchemaVersion); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := raw.Exec(`CREATE TABLE environment_leases (
+        application TEXT NOT NULL,
+        environment TEXT NOT NULL,
+        fencing_token INTEGER NOT NULL,
+        holder TEXT NOT NULL,
+        plan_id TEXT NOT NULL,
+        operation_id TEXT NOT NULL,
+        attempt_id TEXT NOT NULL,
+        acquired_at TEXT NOT NULL,
+        expires_at TEXT NOT NULL,
+        released_at TEXT,
+        PRIMARY KEY (application, environment)
+    ) STRICT`); err != nil {
+		t.Fatal(err)
+	}
 	if err := raw.Close(); err != nil {
 		t.Fatal(err)
 	}
@@ -126,11 +141,12 @@ func runBackendContract(t *testing.T, factory backendContractFactory) {
 		t.Fatal(err)
 	}
 	journal, err := backend.LoadJournal(ctx, first.ID)
-	if err != nil || len(journal) != 4 || journal[0].Kind != JournalIntent || journal[2].Kind != JournalRejected || journal[2].Outcome != ExecutionSucceeded || journal[3].Kind != JournalOutcome || journal[3].Outcome != ExecutionSucceeded {
+	if err != nil || len(journal) != 3 || journal[0].Kind != JournalIntent || journal[2].Kind != JournalOutcome || journal[2].Outcome != ExecutionSucceeded {
 		t.Fatalf("journal = %+v, %v", journal, err)
 	}
-	if !strings.Contains(string(journal[2].Observation), `"status":"rejected"`) || !strings.Contains(string(journal[2].Observation), `"submittedObservation":{"status":"staged"}`) {
-		t.Fatalf("rejected stale result lost its evidence: %s", journal[2].Observation)
+	rejected, err := backend.LoadRejectedResults(ctx, first.ID)
+	if err != nil || len(rejected) != 1 || rejected[0].SubmittedOutcome != ExecutionSucceeded || !strings.Contains(string(rejected[0].SubmittedObservation), `"status":"staged"`) || !strings.Contains(rejected[0].Reason, "stale") {
+		t.Fatalf("rejected stale result = %+v, %v", rejected, err)
 	}
 	if err := backend.StoreCurrentPlan(ctx, second, now.Add(6*time.Minute)); err != nil {
 		t.Fatal(err)
@@ -163,8 +179,12 @@ func runBackendContract(t *testing.T, factory backendContractFactory) {
 		t.Fatalf("durable snapshot = %+v, %v", durable, err)
 	}
 	durableJournal, err := reopened.LoadJournal(ctx, first.ID)
-	if err != nil || len(durableJournal) != 4 || durableJournal[2].Kind != JournalRejected || durableJournal[3].Outcome != ExecutionSucceeded {
+	if err != nil || len(durableJournal) != 3 || durableJournal[2].Outcome != ExecutionSucceeded {
 		t.Fatalf("durable journal = %+v, %v", durableJournal, err)
+	}
+	durableRejected, err := reopened.LoadRejectedResults(ctx, first.ID)
+	if err != nil || len(durableRejected) != 1 || durableRejected[0].AttemptID != firstAttempt.AttemptID {
+		t.Fatalf("durable rejected results = %+v, %v", durableRejected, err)
 	}
 }
 

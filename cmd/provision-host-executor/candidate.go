@@ -142,10 +142,18 @@ func observeCandidateOperation(ctx context.Context, planned planner.Operation, r
 	case planner.VerifyCandidate:
 		observed := checkCandidateHealth(ctx, paths, *planned.Input.Health)
 		evidence = observed
-		if observed.Status == host.CandidateHealthy && observed.SwitchEligible {
+		// A healthy preflight is evidence, not completion. The signed verification
+		// must execute so the host can durably authorize the later Endpoint switch.
+		state = "pending"
+	case planner.SwitchEndpoint:
+		observed := observeEndpoint(ctx, paths, *planned.Input.Endpoint)
+		evidence = observed
+		if observed.Status == host.EndpointActive {
 			state = "satisfied"
-		} else {
+		} else if observed.Status == host.EndpointPending {
 			state = "pending"
+		} else {
+			state = "unknown"
 		}
 	case planner.SwitchEndpoint:
 		observed := observeEndpoint(ctx, paths, *planned.Input.Endpoint)

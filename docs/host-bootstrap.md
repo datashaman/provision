@@ -2,13 +2,13 @@
 
 This is the explicit, privileged preparation step for the first native HTTP tracer. It is not a Deployment or a substitute for a Plan. It uses a small audited shell script rather than Ansible; no runtime component depends on Ansible. The script currently supports Ubuntu only. It refuses to run if `/srv/gimme` or a Gimme systemd unit is present.
 
-Bootstrap creates a non-login `provision-<environment>` runtime account plus root-owned Environment and immutable release directories that the account cannot modify. It installs a root-owned nonresident executor and one public verification key, then gives one existing operator account passwordless `sudo` access to that executable alone. The executor supports inspection plus four Plan-authorized typed operations: Artifact staging, Generation installation, candidate systemd start, and candidate Health Contract verification. It accepts no arbitrary command or route operation. An operator's other host privileges, if any, are outside this restricted path.
+Bootstrap creates a non-login `provision-<environment>` runtime account plus root-owned Environment and immutable release directories that the account cannot modify. It installs a root-owned nonresident executor and one public verification key, then gives one existing operator account passwordless `sudo` access to that executable alone. The executor supports inspection plus five Plan-authorized typed operations: Artifact staging, Generation installation, candidate systemd start, candidate Health Contract verification, and an exact verified-candidate Caddy switch. It accepts no arbitrary command or caller-selected route mutation. An operator's other host privileges, if any, are outside this restricted path.
 
 ## Before touching a host
 
 Use a supplied disposable Ubuntu machine that has been reset outside Provision, or obtain a separate explicit ownership decision for any existing workloads. Reimaging is not performed by Provision. Never apply this script over a Gimme-managed host: the script refuses `/srv/gimme` and Gimme systemd units rather than assuming ownership. Record the machine identity and SSH host-key fingerprint out of band after reimaging. The remote CLI uses strict host-key checking and will not silently trust a changed key. The first reset-host run is recorded in [the 2026-09-24 lab evidence](evidence/2026-09-24-base-host-bootstrap.md).
 
-The bootstrap operator must already exist on the host and must be able to run the one-time script as root. After bootstrap, ordinary Provision inspection uses only the restricted sudo rule. Caddy is installed from the host's configured Ubuntu package sources if missing, and its systemd service is enabled. No Caddy routing is configured by this step.
+The bootstrap operator must already exist on the host and must be able to run the one-time script as root. After bootstrap, ordinary Provision inspection uses only the restricted sudo rule. Caddy is installed from the host's configured Ubuntu package sources if missing, and its systemd service is enabled. A root-owned systemd drop-in makes Caddy restart with `--resume`, so the active JSON configuration autosaved by Caddy's admin API survives service and host restarts. Bootstrap does not add an application route.
 
 ## Build, preview, and apply
 
@@ -41,7 +41,7 @@ go run ./cmd/provision host inspect --address HOST --user OPERATOR
 go run ./cmd/provision host bootstrap check --address HOST --user OPERATOR --environment lab --operator OPERATOR
 ```
 
-The second command reports the OS and architecture, systemd, OpenSSH-server and Caddy versions, the host's ED25519 SSH-key fingerprint, Caddy and journald service state, cgroup-v2 observation, executor digest, authority-key identity, dedicated account, root-owned release storage, available operations, and drift findings. `ready: true` means only that bootstrap matches the declared setup; it does **not** certify blue-green deployment. Support and required-mode guarantees need host scenario tests and the published matrix.
+The second command reports the OS and architecture, systemd, OpenSSH-server and Caddy versions, the host's ED25519 SSH-key fingerprint, Caddy and journald service state, durable Caddy autosave resumption, cgroup-v2 observation, executor digest, authority-key identity, dedicated account, root-owned release storage, available operations, and drift findings. `ready: true` means only that bootstrap matches the declared setup; it does **not** certify blue-green deployment. Support and required-mode guarantees need host scenario tests and the published matrix.
 
 Bootstrap records the exact executor digest and public-key identity. Replacing either requires an explicit re-bootstrap; the executor refuses mismatches. See [Authorized release preparation](release-preparation.md) for the local and SSH operation workflow.
 

@@ -38,25 +38,30 @@ func (commandSystemdController) Run(ctx context.Context, args ...string) ([]byte
 }
 
 func validateCandidateOperation(planned planner.Operation, record bootstrapRecord, paths executionPaths) error {
-	if planned.Input.Artifact != nil || planned.Input.Endpoint != nil || planned.Input.Previous != nil || planned.Input.Retention != nil {
+	if planned.Input.Artifact != nil || planned.Input.Retention != nil {
 		return errors.New("candidate operation contains an unrelated typed input")
 	}
 	switch planned.Kind {
 	case planner.InstallGeneration:
-		if len(planned.DependsOn) != 1 || planned.Input.Generation == nil || planned.Input.Systemd != nil || planned.Input.Health != nil {
+		if len(planned.DependsOn) != 1 || planned.Input.Generation == nil || planned.Input.Systemd != nil || planned.Input.Health != nil || planned.Input.Endpoint != nil || planned.Input.Previous != nil {
 			return errors.New("installGeneration requires only its typed Generation input and one dependency")
 		}
 		return validateGenerationInput(*planned.Input.Generation, record, paths)
 	case planner.StartCandidate:
-		if len(planned.DependsOn) != 1 || planned.Input.Systemd == nil || planned.Input.Generation != nil || planned.Input.Health != nil {
+		if len(planned.DependsOn) != 1 || planned.Input.Systemd == nil || planned.Input.Generation != nil || planned.Input.Health != nil || planned.Input.Endpoint != nil || planned.Input.Previous != nil {
 			return errors.New("startCandidate requires only its typed systemd input and one dependency")
 		}
 		return validateSystemdInput(*planned.Input.Systemd, record, paths)
 	case planner.VerifyCandidate:
-		if len(planned.DependsOn) != 1 || planned.Input.Health == nil || planned.Input.Generation != nil || planned.Input.Systemd != nil {
+		if len(planned.DependsOn) != 1 || planned.Input.Health == nil || planned.Input.Generation != nil || planned.Input.Systemd != nil || planned.Input.Endpoint != nil || planned.Input.Previous != nil {
 			return errors.New("verifyCandidate requires only its typed Health Contract input and one dependency")
 		}
 		return validateHealthInput(*planned.Input.Health, record, paths)
+	case planner.SwitchEndpoint:
+		if len(planned.DependsOn) != 1 || planned.DependsOn[0] != "op-04" || planned.Input.Endpoint == nil || planned.Input.Generation != nil || planned.Input.Systemd != nil || planned.Input.Health != nil {
+			return errors.New("switchEndpoint requires only its typed Endpoint input, optional planned previous Generation, and candidate-verification dependency")
+		}
+		return validateEndpointInput(*planned.Input.Endpoint, planned.Input.Previous, record, paths)
 	default:
 		return errors.New("host executor does not allow this operation kind")
 	}
@@ -142,6 +147,16 @@ func observeCandidateOperation(ctx context.Context, planned planner.Operation, r
 		} else {
 			state = "pending"
 		}
+	case planner.SwitchEndpoint:
+		observed := observeEndpoint(ctx, paths, *planned.Input.Endpoint)
+		evidence = observed
+		if observed.Status == host.EndpointActive {
+			state = "satisfied"
+		} else if observed.Status == host.EndpointPending {
+			state = "pending"
+		} else {
+			state = "unknown"
+		}
 	}
 	encoded, err := json.Marshal(evidence)
 	if err != nil {
@@ -188,6 +203,8 @@ func applyCandidateOperation(ctx context.Context, planned planner.Operation, rec
 			return encoded, errors.New(observed.Reason)
 		}
 		return encoded, nil
+	case planner.SwitchEndpoint:
+		return nil, errors.New("switchEndpoint requires its signed Plan claim")
 	default:
 		return nil, errors.New("host executor does not allow this operation kind")
 	}
@@ -485,25 +502,14 @@ func cleanupCandidate(ctx context.Context, paths executionPaths, input planner.H
 
 func activeCandidate(environmentHome, generationID, unit string) (bool, error) {
 	path := filepath.Join(environmentHome, "active-generation.json")
-	info, err := os.Lstat(path)
-	if errors.Is(err, os.ErrNotExist) {
+	record, err := readActiveGenerationRecord(path)
+	if err != nil {
+		return false, errors.New(err.Error() + "; refusing candidate cleanup")
+	}
+	if record == nil {
 		return false, nil
 	}
-	if err != nil || !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 || info.Mode().Perm() != 0644 || !ownedByExecutor(info) || info.Size() > 64<<10 {
-		return false, errors.New("active generation record is unsafe; refusing candidate cleanup")
-	}
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return false, errors.New("active generation record cannot be read; refusing candidate cleanup")
-	}
-	var active struct {
-		ID          string `json:"id"`
-		SystemdUnit string `json:"systemdUnit"`
-	}
-	if json.Unmarshal(data, &active) != nil || !deploymentIdentifier.MatchString(active.ID) || !systemdUnit.MatchString(active.SystemdUnit) {
-		return false, errors.New("active generation record is invalid; refusing candidate cleanup")
-	}
-	return active.ID == generationID || active.SystemdUnit == unit, nil
+	return record.Active.ID == generationID || record.Active.SystemdUnit == unit, nil
 }
 
 func ensureReleaseRoot(path string) error {

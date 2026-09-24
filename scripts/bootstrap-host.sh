@@ -36,6 +36,9 @@ release_root="$environment_home/releases"
 authority_path="/etc/provision/authority/$environment.pub"
 authority_state="/var/lib/provision/authority/$environment"
 artifact_cache="/var/lib/provision/artifacts/sha256"
+caddy_override_dir="/etc/systemd/system/caddy.service.d"
+caddy_override_path="$caddy_override_dir/provision.conf"
+caddy_autosave_path="/var/lib/caddy/.config/caddy/autosave.json"
 
 sha256_file() {
   if command -v sha256sum >/dev/null 2>&1; then
@@ -63,8 +66,9 @@ if [[ "$mode" == --dry-run ]]; then
   printf '  Executor: %s (%s)\n' "$executor_path" "$digest"
   printf '  Authorization verifier: %s (%s)\n' "$authority_path" "$authority_key_id"
   printf '  Record: %s\n  Restricted sudoers: %s\n' "$record_path" "$sudoers_path"
+  printf '  Durable Caddy service override: %s\n' "$caddy_override_path"
   printf '  Required services: systemd, Caddy\n'
-  printf '  Enabled mutations: signed, Plan-bound Artifact staging and candidate install/start/verification.\nNo changes made.\n'
+  printf '  Enabled mutations: signed, Plan-bound Artifact staging, candidate install/start/verification, and verified Endpoint switch.\nNo changes made.\n'
   exit 0
 fi
 
@@ -77,10 +81,10 @@ if find /etc/systemd/system -maxdepth 1 -name 'gimme-*' -print -quit | grep -q .
   exit 1
 fi
 id -u "$operator" >/dev/null 2>&1 || { echo "operator user does not exist" >&2; exit 1; }
-for path in /usr/local/libexec /etc/provision /etc/provision/bootstrap /etc/provision/authority /var/lib/provision /var/lib/provision/environments /var/lib/provision/authority /var/lib/provision/artifacts "$artifact_cache" "$authority_state"; do
+for path in /usr/local/libexec /etc/provision /etc/provision/bootstrap /etc/provision/authority /var/lib/provision /var/lib/provision/environments /var/lib/provision/authority /var/lib/provision/artifacts "$artifact_cache" "$authority_state" "$caddy_override_dir"; do
   [[ ! -L "$path" ]] || { echo "symlink at $path; refusing bootstrap" >&2; exit 1; }
 done
-for path in "$executor_path" "$record_path" "$sudoers_path" "$environment_home" "$release_root" "$authority_path"; do
+for path in "$executor_path" "$record_path" "$sudoers_path" "$environment_home" "$release_root" "$authority_path" "$caddy_override_path"; do
   [[ ! -L "$path" ]] || { echo "symlink at $path; refusing bootstrap" >&2; exit 1; }
 done
 expect_existing_path() {
@@ -104,6 +108,8 @@ expect_existing_path "$executor_path" file 0:0:755
 expect_existing_path "$record_path" file 0:0:644
 expect_existing_path "$sudoers_path" file 0:0:440
 expect_existing_path "$authority_path" file 0:0:644
+expect_existing_path "$caddy_override_dir" directory 0:0:755
+expect_existing_path "$caddy_override_path" file 0:0:644
 if [[ -e "$executor_path" && "sha256:$(sha256_file "$executor_path")" != "$digest" ]]; then
   echo "an existing executor has different bytes; refusing bootstrap" >&2
   exit 1
@@ -124,11 +130,18 @@ expect_existing_path "$release_root" directory 0:0:755
 record_tmp="$(mktemp)"
 sudoers_tmp="$(mktemp)"
 authority_tmp="$(mktemp)"
-trap 'rm -f "$record_tmp" "$sudoers_tmp" "$authority_tmp"' EXIT
+caddy_override_tmp="$(mktemp)"
+trap 'rm -f "$record_tmp" "$sudoers_tmp" "$authority_tmp" "$caddy_override_tmp"' EXIT
 printf '%s\n' "$authority_key" > "$authority_tmp"
 printf '{"schemaVersion":"provision.dev/bootstrap/v2","environment":"%s","operator":"%s","account":"%s","executorDigest":"%s","authorityKeyId":"%s"}\n' \
   "$environment" "$operator" "$account" "$digest" "$authority_key_id" > "$record_tmp"
 printf '%s ALL=(root) NOPASSWD: %s\n' "$operator" "$executor_path" > "$sudoers_tmp"
+printf '%s\n' \
+  '[Service]' \
+  'ExecStart=' \
+  'ExecStart=/usr/bin/caddy run --environ --resume' \
+  'ExecReload=' \
+  "ExecReload=/usr/bin/caddy reload --config $caddy_autosave_path --force" > "$caddy_override_tmp"
 visudo -cf "$sudoers_tmp" >/dev/null
 if [[ -e "$record_path" ]] && ! cmp -s "$record_tmp" "$record_path"; then
   echo "bootstrap record differs; refusing to overwrite" >&2
@@ -142,12 +155,27 @@ if [[ -e "$authority_path" ]] && ! cmp -s "$authority_tmp" "$authority_path"; th
   echo "authorization public key differs; refusing to overwrite" >&2
   exit 1
 fi
+if [[ -e "$caddy_override_path" ]] && ! cmp -s "$caddy_override_tmp" "$caddy_override_path"; then
+  echo "Caddy service override differs; refusing to overwrite" >&2
+  exit 1
+fi
 
 if ! command -v caddy >/dev/null 2>&1; then
   DEBIAN_FRONTEND=noninteractive apt-get update
   DEBIAN_FRONTEND=noninteractive apt-get install -y caddy
 fi
 systemctl enable --now caddy
+for _ in {1..50}; do
+  [[ -f "$caddy_autosave_path" ]] && break
+  sleep 0.1
+done
+[[ -f "$caddy_autosave_path" ]] || { echo "Caddy autosaved configuration is unavailable; refusing bootstrap" >&2; exit 1; }
+if [[ ! -e "$caddy_override_path" ]]; then
+  install -d -o root -g root -m 0755 "$caddy_override_dir"
+  install -o root -g root -m 0644 "$caddy_override_tmp" "$caddy_override_path"
+  systemctl daemon-reload
+  systemctl restart caddy
+fi
 
 if ! getent passwd "$account" >/dev/null; then
   adduser --system --group --no-create-home --home "$environment_home" --shell /usr/sbin/nologin "$account"

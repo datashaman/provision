@@ -66,6 +66,28 @@ type HealthObservation struct {
 	Reason           string                   `json:"reason,omitempty"`
 }
 
+type EndpointStatus string
+
+const (
+	EndpointPending EndpointStatus = "pending"
+	EndpointActive  EndpointStatus = "active"
+	EndpointFailed  EndpointStatus = "failed"
+)
+
+type EndpointObservation struct {
+	Status            EndpointStatus    `json:"status"`
+	RouteID           string            `json:"routeId"`
+	ListenPort        int               `json:"listenPort"`
+	Upstream          string            `json:"upstream"`
+	Active            GenerationStatus  `json:"active"`
+	Previous          *GenerationStatus `json:"previous,omitempty"`
+	CandidateVerified bool              `json:"candidateVerified"`
+	GracefulReload    bool              `json:"gracefulReload"`
+	PreviousRetained  bool              `json:"previousRetained"`
+	DrainPolicy       string            `json:"drainPolicy"`
+	Reason            string            `json:"reason,omitempty"`
+}
+
 type OperationObservation struct {
 	State    string          `json:"state"`
 	Evidence json.RawMessage `json:"evidence"`

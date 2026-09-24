@@ -67,14 +67,7 @@ func inspect(ctx context.Context, target Target, run runner) (Observation, error
 		name := args[0]
 		commandArgs := args[1:]
 		if !target.Local {
-			commandArgs = append([]string{
-				"-o", "BatchMode=yes",
-				"-o", "PasswordAuthentication=no",
-				"-o", "StrictHostKeyChecking=yes",
-				"-o", "ConnectTimeout=5",
-				"--", target.User + "@" + target.Address,
-				name,
-			}, commandArgs...)
+			commandArgs = StrictSSHArguments(target, append([]string{name}, commandArgs...)...)
 			name = "ssh"
 		}
 		out, err := run(ctx, name, commandArgs...)

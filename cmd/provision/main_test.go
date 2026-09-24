@@ -13,6 +13,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"provision/internal/host"
 )
 
 func TestAuthorizedReleasePreparationIsJournaledAcrossRestart(t *testing.T) {
@@ -91,6 +93,228 @@ func TestAuthorizedReleasePreparationIsJournaledAcrossRestart(t *testing.T) {
 	}
 }
 
+func TestAuthorizedRemoteReleasePreparationIsJournaledAcrossRestart(t *testing.T) {
+	dir := t.TempDir()
+	configPath := writeRemoteHostConfiguration(t, dir)
+	writeRemoteExecutorSSH(t, dir)
+	statePath := filepath.Join(dir, "state.db")
+	privateKeyPath := filepath.Join(dir, "authority.key")
+	publicKeyPath := filepath.Join(dir, "authority.pub")
+	executionLog := filepath.Join(dir, "execution.json")
+	sshLog := filepath.Join(dir, "ssh.jsonl")
+	keyID := generateAuthorityKey(t, privateKeyPath, publicKeyPath)
+
+	commandEnv := append(os.Environ(),
+		"PATH="+dir+string(os.PathListSeparator)+os.Getenv("PATH"),
+		"FAKE_AUTHORITY_KEY_ID="+keyID,
+		"FAKE_EXECUTION_LOG="+executionLog,
+		"FAKE_SSH_LOG="+sshLog,
+	)
+	planID := previewAndApprove(t, configPath, statePath, commandEnv)
+
+	execute := exec.Command("go", "run", ".", "deployment", "execute",
+		"--plan", planID,
+		"--operation", "op-01",
+		"--state", statePath,
+		"--signing-key", privateKeyPath,
+	)
+	execute.Env = commandEnv
+	executeOutput, err := execute.CombinedOutput()
+	if err != nil || !strings.Contains(string(executeOutput), `"outcome": "succeeded"`) {
+		t.Fatalf("authorized remote preparation failed: %v\n%s", err, executeOutput)
+	}
+
+	status := exec.Command("go", "run", ".", "deployment", "status", "--plan", planID, "--state", statePath)
+	statusOutput, err := status.CombinedOutput()
+	if err != nil {
+		t.Fatalf("remote journal status after restart failed: %v\n%s", err, statusOutput)
+	}
+	for _, evidence := range []string{`"kind": "intent"`, `"kind": "outcome"`, `"outcome": "succeeded"`, `"status": "staged"`} {
+		if !strings.Contains(string(statusOutput), evidence) {
+			t.Fatalf("remote journal omitted %s:\n%s", evidence, statusOutput)
+		}
+	}
+	envelope, err := os.ReadFile(executionLog)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(envelope), `"kind":"stageArtifact"`) || strings.Contains(string(envelope), `"command"`) {
+		t.Fatalf("remote host received an untyped or command-bearing mutation: %s", envelope)
+	}
+	sshCalls, err := os.ReadFile(sshLog)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, required := range []string{`"StrictHostKeyChecking=yes"`, `"` + authenticatedActor(t) + `@192.0.2.10"`, `"observe-artifact"`, `"execute"`} {
+		if !strings.Contains(string(sshCalls), required) {
+			t.Fatalf("remote execution omitted trusted SSH evidence %s:\n%s", required, sshCalls)
+		}
+	}
+}
+
+func TestRemoteConnectionLossRecordsExplicitUncertainOutcome(t *testing.T) {
+	dir := t.TempDir()
+	configPath := writeRemoteHostConfiguration(t, dir)
+	writeRemoteExecutorSSH(t, dir)
+	statePath := filepath.Join(dir, "state.db")
+	privateKeyPath := filepath.Join(dir, "authority.key")
+	publicKeyPath := filepath.Join(dir, "authority.pub")
+	keyID := generateAuthorityKey(t, privateKeyPath, publicKeyPath)
+	commandEnv := append(os.Environ(),
+		"PATH="+dir+string(os.PathListSeparator)+os.Getenv("PATH"),
+		"FAKE_AUTHORITY_KEY_ID="+keyID,
+		"FAKE_SSH_LOG="+filepath.Join(dir, "ssh.jsonl"),
+		"FAKE_REMOTE_MODE=connection-loss",
+		"FAKE_OBSERVE_MARKER="+filepath.Join(dir, "observed-once"),
+	)
+	planID := previewAndApprove(t, configPath, statePath, commandEnv)
+
+	execute := exec.Command("go", "run", ".", "deployment", "execute",
+		"--plan", planID,
+		"--operation", "op-01",
+		"--state", statePath,
+		"--signing-key", privateKeyPath,
+	)
+	execute.Env = commandEnv
+	executeOutput, err := execute.CombinedOutput()
+	if err == nil || !strings.Contains(string(executeOutput), "outcome recorded as uncertain") {
+		t.Fatalf("connection loss did not produce an explicit uncertain outcome: %v\n%s", err, executeOutput)
+	}
+
+	status := exec.Command("go", "run", ".", "deployment", "status", "--plan", planID, "--state", statePath)
+	statusOutput, statusErr := status.CombinedOutput()
+	if statusErr != nil {
+		t.Fatalf("uncertain remote journal status failed: %v\n%s", statusErr, statusOutput)
+	}
+	for _, evidence := range []string{`"kind": "intent"`, `"kind": "outcome"`, `"outcome": "uncertain"`, `"status": "uncertain"`, `"observed": "unknown"`} {
+		if !strings.Contains(string(statusOutput), evidence) {
+			t.Fatalf("uncertain remote journal omitted %s:\n%s", evidence, statusOutput)
+		}
+	}
+}
+
+func generateAuthorityKey(t *testing.T, privateKeyPath, publicKeyPath string) string {
+	t.Helper()
+	keygen := exec.Command("go", "run", ".", "authority", "keygen", "--private-key", privateKeyPath, "--public-key", publicKeyPath)
+	keyOutput, err := keygen.CombinedOutput()
+	if err != nil {
+		t.Fatalf("authority key generation failed: %v\n%s", err, keyOutput)
+	}
+	var key struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(keyOutput, &key); err != nil || !strings.HasPrefix(key.ID, "sha256:") {
+		t.Fatalf("invalid authority key result: %v\n%s", err, keyOutput)
+	}
+	return key.ID
+}
+
+func previewAndApprove(t *testing.T, configPath, statePath string, commandEnv []string) string {
+	t.Helper()
+	preview := exec.Command("go", "run", ".", "plan", "preview", "--file", configPath, "--state", statePath)
+	preview.Env = commandEnv
+	previewOutput, err := preview.CombinedOutput()
+	if err != nil {
+		t.Fatalf("remote Plan preview failed: %v\n%s", err, previewOutput)
+	}
+	planID := decodePlanID(t, previewOutput)
+	approve := exec.Command("go", "run", ".", "plan", "approve",
+		"--file", configPath,
+		"--plan", planID,
+		"--actor", authenticatedActor(t),
+		"--state", statePath,
+	)
+	approve.Env = commandEnv
+	if output, err := approve.CombinedOutput(); err != nil {
+		t.Fatalf("remote Plan approval failed: %v\n%s", err, output)
+	}
+	return planID
+}
+
+func TestProvisionRemoteSSHHelper(t *testing.T) {
+	if os.Getenv("GO_WANT_PROVISION_REMOTE_SSH_HELPER") != "1" {
+		return
+	}
+	separator := 0
+	for index, argument := range os.Args {
+		if argument == "--" {
+			separator = index + 1
+			break
+		}
+	}
+	arguments := os.Args[separator:]
+	if logPath := os.Getenv("FAKE_SSH_LOG"); logPath != "" {
+		log, _ := os.OpenFile(logPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600)
+		if log != nil {
+			_ = json.NewEncoder(log).Encode(arguments)
+			_ = log.Close()
+		}
+	}
+	joined := strings.Join(arguments, " ")
+	operator := authenticatedActor(t)
+	if strings.Contains(joined, " inspect ") {
+		writeReadyBootstrapInspection(t, operator, os.Getenv("FAKE_AUTHORITY_KEY_ID"))
+		os.Exit(0)
+	}
+	if strings.Contains(joined, " observe-artifact ") {
+		if os.Getenv("FAKE_REMOTE_MODE") == "connection-loss" {
+			marker := os.Getenv("FAKE_OBSERVE_MARKER")
+			if _, err := os.Stat(marker); err == nil {
+				fmt.Fprintln(os.Stderr, "connection lost before remote state could be observed")
+				os.Exit(255)
+			}
+			_ = os.WriteFile(marker, []byte("observed"), 0600)
+		}
+		digest := arguments[len(arguments)-1]
+		_ = json.NewEncoder(os.Stdout).Encode(map[string]any{
+			"status": "absent", "path": "/var/lib/provision/artifacts/sha256/" + strings.TrimPrefix(digest, "sha256:"), "digest": digest, "size": 0,
+		})
+		os.Exit(0)
+	}
+	if strings.Contains(joined, " execute ") {
+		data, err := io.ReadAll(io.LimitReader(os.Stdin, 1<<20))
+		if err != nil {
+			os.Exit(2)
+		}
+		if path := os.Getenv("FAKE_EXECUTION_LOG"); path != "" {
+			_ = os.WriteFile(path, data, 0600)
+		}
+		if os.Getenv("FAKE_REMOTE_MODE") == "connection-loss" {
+			fmt.Fprintln(os.Stderr, "connection lost after dispatch")
+			os.Exit(255)
+		}
+		var envelope struct {
+			Authorization struct {
+				Claim struct {
+					PlanID       string `json:"planId"`
+					OperationID  string `json:"operationId"`
+					AttemptID    string `json:"attemptId"`
+					FencingToken int64  `json:"fencingToken"`
+				} `json:"claim"`
+			} `json:"authorization"`
+		}
+		if json.Unmarshal(data, &envelope) != nil {
+			os.Exit(2)
+		}
+		claim := envelope.Authorization.Claim
+		_ = json.NewEncoder(os.Stdout).Encode(map[string]any{
+			"schemaVersion": "provision.dev/host-operation-result/v1alpha1",
+			"planId":        claim.PlanID, "operationId": claim.OperationID,
+			"attemptId": claim.AttemptID, "fencingToken": claim.FencingToken,
+			"outcome": "succeeded",
+			"observation": map[string]any{
+				"status": "staged",
+				"path":   "/var/lib/provision/artifacts/sha256/bac304a885179a21fc889fef25cf09f12d8af19e30aa49c1c05e719d10f031b5",
+				"digest": "sha256:bac304a885179a21fc889fef25cf09f12d8af19e30aa49c1c05e719d10f031b5",
+				"size":   123,
+			},
+		})
+		os.Exit(0)
+	}
+	fmt.Fprintln(os.Stderr, "unexpected remote SSH helper invocation", arguments)
+	os.Exit(2)
+}
+
 func TestProvisionSudoHelper(t *testing.T) {
 	if os.Getenv("GO_WANT_PROVISION_SUDO_HELPER") != "1" {
 		return
@@ -106,7 +330,7 @@ func TestProvisionSudoHelper(t *testing.T) {
 	if len(args) >= 3 && args[0] == "-n" && args[2] == "inspect" {
 		operator := authenticatedActor(t)
 		keyID := os.Getenv("FAKE_AUTHORITY_KEY_ID")
-		fmt.Fprintf(os.Stdout, `{"schemaVersion":"provision.dev/host-inspection/v1alpha1","environment":"lab","operator":%q,"account":"provision-lab","os":"ubuntu","osVersion":"26.04","architecture":"x86_64","systemdVersion":"systemd 259 (259.5-0ubuntu3.4)","sshServerVersion":"OpenSSH_10.2p1","caddyVersion":"2.6.2","caddyActive":true,"journaldActive":true,"cgroupV2":true,"executorDigest":"sha256:e066cdc1a1b8a625dfc32db5ec74c1e4ba7bc459a3a3fc09ccc6488c44d606c5","authorityKeyId":%q,"generationStorageReady":true,"caddyConfigValid":true,"caddyAdminReachable":true,"listeningTcpPorts":[18080,28181],"deployment":{"active":{"id":"provision-example-http-v0-aaaaaaaaaaaa","revision":"provision-example-http-v0","systemdUnit":"provision-lab-web-aaaaaaaaaaaa.service","releaseDirectory":"/var/lib/provision/environments/lab/releases/provision-example-http-v0-aaaaaaaaaaaa","port":28181,"routeId":"provision-lab-web","unitActive":true,"unitMatches":true,"routeObserved":true,"routeUpstream":"127.0.0.1:28181","routeMatches":true}},"allowedOperations":["inspect","stageArtifact"],"ready":true,"findings":[]}`+"\n", operator, keyID)
+		writeReadyBootstrapInspection(t, operator, keyID)
 		os.Exit(0)
 	}
 	if len(args) >= 3 && args[0] == "-n" && args[2] == "execute" {
@@ -465,7 +689,39 @@ func authenticatedActor(t *testing.T) string {
 	return current.Username
 }
 
+func writeReadyBootstrapInspection(t *testing.T, operator, authorityKeyID string) {
+	t.Helper()
+	status := host.BootstrapStatus{
+		SchemaVersion: "provision.dev/host-inspection/v1alpha1", Environment: "lab", Operator: operator, Account: "provision-lab",
+		OS: "ubuntu", OSVersion: "26.04", Architecture: "x86_64", SystemdVersion: "systemd 259 (259.5-0ubuntu3.4)",
+		SSHServerVersion: "OpenSSH_10.2p1", CaddyVersion: "2.6.2", CaddyActive: true, JournaldActive: true, CgroupV2: true,
+		ExecutorDigest: "sha256:e066cdc1a1b8a625dfc32db5ec74c1e4ba7bc459a3a3fc09ccc6488c44d606c5", AuthorityKeyID: authorityKeyID,
+		SSHHostKeyFingerprint: "SHA256:ddddddddddddddddddddddddddddddddddddddddddd", GenerationStorageReady: true,
+		CaddyConfigValid: true, CaddyAdminReachable: true, ListeningTCPPorts: []int{18080, 28181},
+		Deployment: host.DeploymentStatus{Active: &host.GenerationStatus{
+			ID: "provision-example-http-v0-aaaaaaaaaaaa", Revision: "provision-example-http-v0",
+			SystemdUnit: "provision-lab-web-aaaaaaaaaaaa.service", ReleaseDirectory: "/var/lib/provision/environments/lab/releases/provision-example-http-v0-aaaaaaaaaaaa",
+			Port: 28181, RouteID: "provision-lab-web", UnitActive: true, UnitMatches: true,
+			RouteObserved: true, RouteUpstream: "127.0.0.1:28181", RouteMatches: true,
+		}},
+		AllowedOperations: []string{"inspect", "stageArtifact"}, Ready: true, Findings: []string{},
+	}
+	if err := json.NewEncoder(os.Stdout).Encode(status); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func writeLocalHostConfiguration(t *testing.T, dir string) string {
+	t.Helper()
+	return writeHostConfiguration(t, dir, fmt.Sprintf("    local: true\n    user: %s", authenticatedActor(t)))
+}
+
+func writeRemoteHostConfiguration(t *testing.T, dir string) string {
+	t.Helper()
+	return writeHostConfiguration(t, dir, fmt.Sprintf("    address: 192.0.2.10\n    user: %s", authenticatedActor(t)))
+}
+
+func writeHostConfiguration(t *testing.T, dir, targetFields string) string {
 	t.Helper()
 	root := filepath.Join("..", "..", "examples", "host-http")
 	for _, name := range []string{"root.yaml", "application.yaml", "revision.yaml"} {
@@ -484,8 +740,7 @@ application: provision-example-http
 targets:
   current:
     kind: host
-    local: true
-    user: %s
+%s
 implementations:
   web:
     kind: systemd
@@ -493,7 +748,7 @@ implementations:
     rollout: required
     endpoint:
       port: 18080
-`, authenticatedActor(t))
+`, targetFields)
 	if err := os.WriteFile(filepath.Join(dir, "environment.yaml"), []byte(environment), 0600); err != nil {
 		t.Fatal(err)
 	}
@@ -508,6 +763,18 @@ func writeLocalExecutorSudo(t *testing.T, dir string) {
 	}
 	script := fmt.Sprintf("#!/bin/sh\nGO_WANT_PROVISION_SUDO_HELPER=1 exec %q -test.run=TestProvisionSudoHelper -- \"$@\"\n", testBinary)
 	if err := os.WriteFile(filepath.Join(dir, "sudo"), []byte(script), 0700); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func writeRemoteExecutorSSH(t *testing.T, dir string) {
+	t.Helper()
+	testBinary, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	script := fmt.Sprintf("#!/bin/sh\nGO_WANT_PROVISION_REMOTE_SSH_HELPER=1 exec %q -test.run=TestProvisionRemoteSSHHelper -- \"$@\"\n", testBinary)
+	if err := os.WriteFile(filepath.Join(dir, "ssh"), []byte(script), 0700); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -561,7 +828,7 @@ case "$*" in
     ports='18080,28181'
     if [ "${FAKE_CANDIDATE_BUSY:-0}" = 1 ]; then ports='18080,27811,28181'; fi
     executor_digest="${FAKE_EXECUTOR_DIGEST:-sha256:e066cdc1a1b8a625dfc32db5ec74c1e4ba7bc459a3a3fc09ccc6488c44d606c5}"
-    printf '{"schemaVersion":"provision.dev/host-inspection/v1alpha1","environment":"lab","operator":"marlinf","account":"provision-lab","os":"ubuntu","osVersion":"26.04","architecture":"x86_64","systemdVersion":"systemd 259 (259.5-0ubuntu3.4)","sshServerVersion":"OpenSSH_10.2p1","caddyVersion":"%s","caddyActive":true,"journaldActive":true,"cgroupV2":true,"executorDigest":"%s","authorityKeyId":"sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc","generationStorageReady":true,"caddyConfigValid":true,"caddyAdminReachable":true,"listeningTcpPorts":[%s],"deployment":{"active":{"id":"provision-example-http-v0-aaaaaaaaaaaa","revision":"provision-example-http-v0","systemdUnit":"provision-lab-web-aaaaaaaaaaaa.service","releaseDirectory":"/var/lib/provision/environments/lab/releases/provision-example-http-v0-aaaaaaaaaaaa","port":28181,"routeId":"provision-lab-web","unitActive":true,"unitMatches":true,"routeObserved":true,"routeUpstream":"127.0.0.1:28181","routeMatches":true}},"allowedOperations":["inspect","stageArtifact"],"ready":true,"findings":[]}\n' "${FAKE_CADDY_VERSION:-2.6.2}" "$executor_digest" "$ports"
+    printf '{"schemaVersion":"provision.dev/host-inspection/v1alpha1","environment":"lab","operator":"marlinf","account":"provision-lab","os":"ubuntu","osVersion":"26.04","architecture":"x86_64","systemdVersion":"systemd 259 (259.5-0ubuntu3.4)","sshServerVersion":"OpenSSH_10.2p1","caddyVersion":"%s","caddyActive":true,"journaldActive":true,"cgroupV2":true,"executorDigest":"%s","authorityKeyId":"sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc","sshHostKeyFingerprint":"SHA256:ddddddddddddddddddddddddddddddddddddddddddd","generationStorageReady":true,"caddyConfigValid":true,"caddyAdminReachable":true,"listeningTcpPorts":[%s],"deployment":{"active":{"id":"provision-example-http-v0-aaaaaaaaaaaa","revision":"provision-example-http-v0","systemdUnit":"provision-lab-web-aaaaaaaaaaaa.service","releaseDirectory":"/var/lib/provision/environments/lab/releases/provision-example-http-v0-aaaaaaaaaaaa","port":28181,"routeId":"provision-lab-web","unitActive":true,"unitMatches":true,"routeObserved":true,"routeUpstream":"127.0.0.1:28181","routeMatches":true}},"allowedOperations":["inspect","stageArtifact"],"ready":true,"findings":[]}\n' "${FAKE_CADDY_VERSION:-2.6.2}" "$executor_digest" "$ports"
     ;;
   *) exit 23 ;;
 esac

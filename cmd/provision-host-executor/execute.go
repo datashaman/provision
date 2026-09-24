@@ -15,16 +15,14 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
-	"strings"
 	"syscall"
 	"time"
 
 	"provision/internal/authority"
+	"provision/internal/host"
 	"provision/internal/operation"
 	"provision/internal/planner"
 )
-
-const maxArtifactBytes int64 = 512 << 20
 
 var (
 	digestPattern  = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
@@ -34,11 +32,12 @@ var (
 )
 
 type executionPaths struct {
-	executor       string
-	bootstrap      string
-	publicKey      string
-	authorityState string
-	artifactCache  string
+	executor         string
+	bootstrap        string
+	publicKey        string
+	authorityState   string
+	artifactCache    string
+	sshHostPublicKey string
 }
 
 type hostFence struct {
@@ -51,14 +50,6 @@ type consumedAuthorization struct {
 	Claim         authority.Claim `json:"claim"`
 	Outcome       string          `json:"outcome"`
 	RecordedAt    time.Time       `json:"recordedAt"`
-}
-
-type artifactObservation struct {
-	Status string `json:"status"`
-	Path   string `json:"path"`
-	Digest string `json:"digest"`
-	Size   int64  `json:"size"`
-	Reason string `json:"reason,omitempty"`
 }
 
 func runExecute(args []string) error {
@@ -99,13 +90,38 @@ func runExecute(args []string) error {
 	return output.Encode(result)
 }
 
+func runObserveArtifact(args []string) error {
+	flags := flag.NewFlagSet("observe-artifact", flag.ContinueOnError)
+	environment := flags.String("environment", "", "Environment identity")
+	operator := flags.String("operator", "", "bootstrap operator")
+	digest := flags.String("digest", "", "planned Artifact digest")
+	if err := flags.Parse(args); err != nil {
+		return err
+	}
+	if flags.NArg() != 0 || !identifier.MatchString(*environment) || !username.MatchString(*operator) || !digestPattern.MatchString(*digest) {
+		return errors.New("observe-artifact requires valid --environment, --operator, and --digest")
+	}
+	paths := systemExecutionPaths(*environment)
+	if _, _, err := loadExecutionAuthority(paths, *environment, *operator); err != nil {
+		return err
+	}
+	observed, err := host.ObserveArtifactCache(paths.artifactCache, *digest)
+	if err != nil {
+		return err
+	}
+	output := json.NewEncoder(os.Stdout)
+	output.SetIndent("", "  ")
+	return output.Encode(observed)
+}
+
 func systemExecutionPaths(environment string) executionPaths {
 	return executionPaths{
-		executor:       executorPath,
-		bootstrap:      "/etc/provision/bootstrap/" + environment + ".json",
-		publicKey:      "/etc/provision/authority/" + environment + ".pub",
-		authorityState: "/var/lib/provision/authority/" + environment,
-		artifactCache:  "/var/lib/provision/artifacts/sha256",
+		executor:         host.ExecutorPath,
+		bootstrap:        "/etc/provision/bootstrap/" + environment + ".json",
+		publicKey:        "/etc/provision/authority/" + environment + ".pub",
+		authorityState:   "/var/lib/provision/authority/" + environment,
+		artifactCache:    host.ArtifactCacheRoot,
+		sshHostPublicKey: host.SSHHostPublicKeyPath,
 	}
 }
 
@@ -145,8 +161,18 @@ func executeAuthorized(ctx context.Context, envelope operation.Envelope, record 
 	if !digestPattern.MatchString(claim.PlanID) || !deploymentIdentifier.MatchString(claim.Application) || claim.Environment != record.Environment || !operationID.MatchString(claim.OperationID) || !attemptID.MatchString(claim.AttemptID) || claim.FencingToken <= 0 {
 		return operation.Result{}, errors.New("authorization contains invalid operation identity")
 	}
-	if !deploymentIdentifier.MatchString(claim.Target.Name) || !claim.Target.Local || claim.Target.Address != "" || claim.Target.Operator != record.Operator || claim.Target.ExecutorDigest != record.ExecutorDigest {
+	validTargetLocation := claim.Target.Local && claim.Target.Address == ""
+	if !claim.Target.Local {
+		validTargetLocation = (host.Target{Address: claim.Target.Address, User: claim.Target.Operator}).Validate() == nil
+	}
+	if !deploymentIdentifier.MatchString(claim.Target.Name) || !validTargetLocation || claim.Target.Operator != record.Operator || claim.Target.ExecutorDigest != record.ExecutorDigest {
 		return operation.Result{}, errors.New("authorization targets a different Host Target")
+	}
+	if !claim.Target.Local {
+		fingerprint, err := host.ReadSSHHostKeyFingerprint(paths.sshHostPublicKey)
+		if err != nil || claim.Target.SSHHostKeyFingerprint != fingerprint {
+			return operation.Result{}, errors.New("authorization targets a different SSH host identity")
+		}
 	}
 	if claim.OperationID != envelope.Operation.ID || claim.OperationKind != string(envelope.Operation.Kind) {
 		return operation.Result{}, errors.New("authorization does not identify the supplied operation")
@@ -185,8 +211,9 @@ func executeAuthorized(ctx context.Context, envelope operation.Envelope, record 
 	}
 	if actionErr != nil {
 		artifact := *envelope.Operation.Input.Artifact
-		encoded, encodeErr := json.Marshal(artifactObservation{
-			Status: "failed", Path: filepath.Join(paths.artifactCache, strings.TrimPrefix(artifact.Digest, "sha256:")), Digest: artifact.Digest, Reason: actionErr.Error(),
+		path, _ := host.ArtifactCachePath(paths.artifactCache, artifact.Digest)
+		encoded, encodeErr := json.Marshal(host.ArtifactObservation{
+			Status: host.ArtifactFailed, Path: path, Digest: artifact.Digest, Reason: actionErr.Error(),
 		})
 		if encodeErr != nil {
 			return operation.Result{}, encodeErr
@@ -288,17 +315,18 @@ func withHostFence(paths executionPaths, claim authority.Claim, now time.Time, a
 	return actionErr, nil
 }
 
-func stageArtifact(ctx context.Context, cacheRoot, attempt string, artifact planner.ArtifactInput) (artifactObservation, error) {
-	digestHex := strings.TrimPrefix(artifact.Digest, "sha256:")
-	destination := filepath.Join(cacheRoot, digestHex)
-	if observation, ok := verifyCachedArtifact(destination, artifact.Digest); ok {
-		observation.Status = "already-present"
+func stageArtifact(ctx context.Context, cacheRoot, attempt string, artifact planner.ArtifactInput) (host.ArtifactObservation, error) {
+	destination, err := host.ArtifactCachePath(cacheRoot, artifact.Digest)
+	if err != nil {
+		return host.ArtifactObservation{}, err
+	}
+	if observation, ok := verifyCachedArtifact(cacheRoot, artifact.Digest); ok {
 		return observation, nil
 	}
 	temporary := filepath.Join(cacheRoot, "."+attempt+".tmp")
 	file, err := os.OpenFile(temporary, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
 	if err != nil {
-		return artifactObservation{}, errors.New("create temporary Artifact cache entry")
+		return host.ArtifactObservation{}, errors.New("create temporary Artifact cache entry")
 	}
 	removeTemporary := true
 	defer func() {
@@ -309,7 +337,7 @@ func stageArtifact(ctx context.Context, cacheRoot, attempt string, artifact plan
 	}()
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, artifact.Source, nil)
 	if err != nil {
-		return artifactObservation{}, errors.New("create Artifact request")
+		return host.ArtifactObservation{}, errors.New("create Artifact request")
 	}
 	client := &http.Client{
 		Timeout: 2 * time.Minute,
@@ -322,62 +350,48 @@ func stageArtifact(ctx context.Context, cacheRoot, attempt string, artifact plan
 	}
 	response, err := client.Do(request)
 	if err != nil {
-		return artifactObservation{}, errors.New("download Artifact")
+		return host.ArtifactObservation{}, errors.New("download Artifact")
 	}
 	defer response.Body.Close()
-	if response.StatusCode != http.StatusOK || response.ContentLength > maxArtifactBytes {
-		return artifactObservation{}, errors.New("Artifact source returned an unsupported response")
+	if response.StatusCode != http.StatusOK || response.ContentLength > host.MaxArtifactBytes {
+		return host.ArtifactObservation{}, errors.New("Artifact source returned an unsupported response")
 	}
 	hash := sha256.New()
-	written, err := io.Copy(io.MultiWriter(file, hash), io.LimitReader(response.Body, maxArtifactBytes+1))
-	if err != nil || written > maxArtifactBytes {
-		return artifactObservation{}, errors.New("downloaded Artifact exceeds its safe limit")
+	written, err := io.Copy(io.MultiWriter(file, hash), io.LimitReader(response.Body, host.MaxArtifactBytes+1))
+	if err != nil || written > host.MaxArtifactBytes {
+		return host.ArtifactObservation{}, errors.New("downloaded Artifact exceeds its safe limit")
 	}
 	actual := "sha256:" + hex.EncodeToString(hash.Sum(nil))
 	if actual != artifact.Digest {
-		return artifactObservation{}, errors.New("downloaded Artifact digest does not match the approved Plan")
+		return host.ArtifactObservation{}, errors.New("downloaded Artifact digest does not match the approved Plan")
 	}
 	if err := file.Sync(); err != nil {
-		return artifactObservation{}, errors.New("sync staged Artifact")
+		return host.ArtifactObservation{}, errors.New("sync staged Artifact")
 	}
 	if err := file.Close(); err != nil {
-		return artifactObservation{}, errors.New("close staged Artifact")
+		return host.ArtifactObservation{}, errors.New("close staged Artifact")
 	}
 	if err := os.Chmod(temporary, 0644); err != nil {
-		return artifactObservation{}, errors.New("secure staged Artifact permissions")
+		return host.ArtifactObservation{}, errors.New("secure staged Artifact permissions")
 	}
 	if err := os.Link(temporary, destination); err != nil {
-		if observation, ok := verifyCachedArtifact(destination, artifact.Digest); ok {
+		if observation, ok := verifyCachedArtifact(cacheRoot, artifact.Digest); ok {
 			_ = os.Remove(temporary)
 			removeTemporary = false
-			observation.Status = "already-present"
 			return observation, nil
 		}
-		return artifactObservation{}, errors.New("commit staged Artifact to cache")
+		return host.ArtifactObservation{}, errors.New("commit staged Artifact to cache")
 	}
 	if err := os.Remove(temporary); err != nil {
-		return artifactObservation{}, errors.New("remove temporary Artifact cache entry")
+		return host.ArtifactObservation{}, errors.New("remove temporary Artifact cache entry")
 	}
 	removeTemporary = false
-	return artifactObservation{Status: "staged", Path: destination, Digest: artifact.Digest, Size: written}, nil
+	return host.ArtifactObservation{Status: host.ArtifactStaged, Path: destination, Digest: artifact.Digest, Size: written}, nil
 }
 
-func verifyCachedArtifact(path, expected string) (artifactObservation, bool) {
-	info, err := os.Lstat(path)
-	if err != nil || !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 || info.Mode().Perm() != 0644 || info.Size() > maxArtifactBytes {
-		return artifactObservation{}, false
-	}
-	file, err := os.Open(path)
-	if err != nil {
-		return artifactObservation{}, false
-	}
-	defer file.Close()
-	hash := sha256.New()
-	if _, err := io.Copy(hash, io.LimitReader(file, maxArtifactBytes+1)); err != nil {
-		return artifactObservation{}, false
-	}
-	actual := "sha256:" + hex.EncodeToString(hash.Sum(nil))
-	return artifactObservation{Path: path, Digest: actual, Size: info.Size()}, actual == expected
+func verifyCachedArtifact(cacheRoot, expected string) (host.ArtifactObservation, bool) {
+	observed, err := host.ObserveArtifactCache(cacheRoot, expected)
+	return observed, err == nil && observed.Status == host.ArtifactAlreadyPresent
 }
 
 func writeJSONAtomic(path string, value any, mode os.FileMode) error {

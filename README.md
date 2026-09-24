@@ -27,7 +27,7 @@ go run ./cmd/provision plan preview --file examples/host-http/root.yaml --state 
 
 Preview output contains the Plan digest needed by the approval flow. Supplying `--state` persists the exact preview as the Environment's current, initially unapproved Plan. See [Plan approval and status](docs/plan-approval.md) for the durable SQLite workflow and its local OS trust boundary.
 
-The first execution slice is deliberately direct-local. See [Authorized release preparation](docs/release-preparation.md) for key setup, bootstrap, execution, journal inspection, and the exact safety boundary. SSH transport for the same operation contract is the next slice.
+The first execution slice stages one approved Artifact on either a direct-local or remote Host Target. See [Authorized release preparation](docs/release-preparation.md) for key setup, trusted SSH identity, bootstrap, execution, journal inspection, and the exact safety boundary.
 
 Download the example application from its own release and pass it to validation to verify its actual bytes:
 

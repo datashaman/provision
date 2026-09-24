@@ -13,16 +13,19 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"provision/internal/host"
 )
 
 const SchemaVersion = "provision.dev/host-authorization/v1alpha1"
 
 type TargetIdentity struct {
-	Name           string `json:"name"`
-	Local          bool   `json:"local"`
-	Address        string `json:"address,omitempty"`
-	Operator       string `json:"operator"`
-	ExecutorDigest string `json:"executorDigest"`
+	Name                  string                     `json:"name"`
+	Local                 bool                       `json:"local"`
+	Address               string                     `json:"address,omitempty"`
+	Operator              string                     `json:"operator"`
+	ExecutorDigest        string                     `json:"executorDigest"`
+	SSHHostKeyFingerprint host.SSHHostKeyFingerprint `json:"sshHostKeyFingerprint,omitempty"`
 }
 
 type Claim struct {

@@ -1,8 +1,11 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
+	"encoding/base64"
+	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
 	"os"
@@ -13,6 +16,7 @@ import (
 	"time"
 
 	"provision/internal/authority"
+	"provision/internal/host"
 	"provision/internal/operation"
 	"provision/internal/planner"
 )
@@ -69,7 +73,19 @@ func TestAuthorizedArtifactPreparationRejectsReplayAndStaleFence(t *testing.T) {
 		SchemaVersion: "provision.dev/bootstrap/v2", Environment: "lab", Operator: "operator",
 		Account: "provision-lab", ExecutorDigest: "sha256:" + strings.Repeat("e", 64), AuthorityKeyID: keyInfo.ID,
 	}
-	paths := executionPaths{authorityState: authorityState, artifactCache: artifactCache}
+	sshHostPublicKey := filepath.Join(dir, "ssh_host_ed25519_key.pub")
+	keyBlob := binary.BigEndian.AppendUint32(nil, 11)
+	keyBlob = append(keyBlob, []byte("ssh-ed25519")...)
+	keyBlob = binary.BigEndian.AppendUint32(keyBlob, 32)
+	keyBlob = append(keyBlob, bytes.Repeat([]byte{7}, 32)...)
+	if err := os.WriteFile(sshHostPublicKey, []byte("ssh-ed25519 "+base64.StdEncoding.EncodeToString(keyBlob)+"\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	hostFingerprint, err := host.ReadSSHHostKeyFingerprint(sshHostPublicKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	paths := executionPaths{authorityState: authorityState, artifactCache: artifactCache, sshHostPublicKey: sshHostPublicKey}
 	envelope := signedTestEnvelope(t, signer, planned, operationDigest, record, "attempt-22222222222222222222222222222222", 2, now, now.Add(time.Minute))
 	result, err := executeAuthorized(context.Background(), envelope, record, publicKey, paths, now)
 	if err != nil || result.Outcome != operation.OutcomeSucceeded || !strings.Contains(string(result.Observation), `"already-present"`) {
@@ -85,7 +101,7 @@ func TestAuthorizedArtifactPreparationRejectsReplayAndStaleFence(t *testing.T) {
 	}
 
 	tampered := envelope
-	tampered.Operation.Input.Artifact.Source = "https://attacker.example/replacement.tar.gz"
+	tampered.Operation.Input.Artifact = &planner.ArtifactInput{Source: "https://attacker.example/replacement.tar.gz", Digest: planned.Input.Artifact.Digest}
 	if _, err := executeAuthorized(context.Background(), tampered, record, publicKey, paths, now); err == nil || !strings.Contains(err.Error(), "digest does not match") {
 		t.Fatalf("tampered typed operation accepted: %v", err)
 	}
@@ -100,7 +116,7 @@ func TestAuthorizedArtifactPreparationRejectsReplayAndStaleFence(t *testing.T) {
 		t.Fatal(err)
 	}
 	missingArtifact := planned
-	missingArtifact.Input.Artifact.Digest = "sha256:" + strings.Repeat("4", 64)
+	missingArtifact.Input.Artifact = &planner.ArtifactInput{Source: planned.Input.Artifact.Source, Digest: "sha256:" + strings.Repeat("4", 64)}
 	missingDigest, err := planner.OperationDigest(missingArtifact)
 	if err != nil {
 		t.Fatal(err)
@@ -110,13 +126,33 @@ func TestAuthorizedArtifactPreparationRejectsReplayAndStaleFence(t *testing.T) {
 	if err != nil || failedResult.Outcome != operation.OutcomeFailed || !strings.Contains(string(failedResult.Observation), `"status":"failed"`) || !strings.Contains(string(failedResult.Observation), "temporary Artifact cache entry") {
 		t.Fatalf("known host failure was not structured: %+v, %v", failedResult, err)
 	}
+
+	remote := signedTestEnvelopeForTarget(t, signer, planned, operationDigest, record,
+		authority.TargetIdentity{Name: "base", Address: "192.168.101.109", Operator: record.Operator, ExecutorDigest: record.ExecutorDigest, SSHHostKeyFingerprint: hostFingerprint},
+		"attempt-55555555555555555555555555555555", 5, now, now.Add(time.Minute))
+	remoteResult, err := executeAuthorized(context.Background(), remote, record, publicKey, paths, now)
+	if err != nil || remoteResult.Outcome != operation.OutcomeSucceeded {
+		t.Fatalf("authorized remote-target preparation = %+v, %v", remoteResult, err)
+	}
+	wrongHost := signedTestEnvelopeForTarget(t, signer, planned, operationDigest, record,
+		authority.TargetIdentity{Name: "base", Address: "192.168.101.109", Operator: record.Operator, ExecutorDigest: record.ExecutorDigest, SSHHostKeyFingerprint: host.SSHHostKeyFingerprint("SHA256:" + strings.Repeat("x", 43))},
+		"attempt-66666666666666666666666666666666", 6, now, now.Add(time.Minute))
+	if _, err := executeAuthorized(context.Background(), wrongHost, record, publicKey, paths, now); err == nil || !strings.Contains(err.Error(), "different SSH host identity") {
+		t.Fatalf("authorization for another SSH host accepted: %v", err)
+	}
 }
 
 func signedTestEnvelope(t *testing.T, signer authority.Signer, planned planner.Operation, operationDigest string, record bootstrapRecord, attempt string, token int64, issuedAt, expiresAt time.Time) operation.Envelope {
+	return signedTestEnvelopeForTarget(t, signer, planned, operationDigest, record,
+		authority.TargetIdentity{Name: "current", Local: true, Operator: record.Operator, ExecutorDigest: record.ExecutorDigest},
+		attempt, token, issuedAt, expiresAt)
+}
+
+func signedTestEnvelopeForTarget(t *testing.T, signer authority.Signer, planned planner.Operation, operationDigest string, record bootstrapRecord, target authority.TargetIdentity, attempt string, token int64, issuedAt, expiresAt time.Time) operation.Envelope {
 	t.Helper()
 	proof, err := signer.Sign(authority.Claim{
 		PlanID: "sha256:" + strings.Repeat("a", 64), Application: "application", Environment: record.Environment,
-		Target:      authority.TargetIdentity{Name: "current", Local: true, Operator: record.Operator, ExecutorDigest: record.ExecutorDigest},
+		Target:      target,
 		OperationID: planned.ID, OperationKind: string(planned.Kind), OperationDigest: operationDigest,
 		AttemptID: attempt, FencingToken: token, IssuedAt: issuedAt, ExpiresAt: expiresAt,
 	})
@@ -126,8 +162,35 @@ func signedTestEnvelope(t *testing.T, signer authority.Signer, planned planner.O
 	return operation.Envelope{SchemaVersion: operation.EnvelopeSchemaVersion, Authorization: proof, Operation: planned}
 }
 
+func TestArtifactObservationDistinguishesAbsentValidAndInvalidCacheEntries(t *testing.T) {
+	cache := t.TempDir()
+	digest := "sha256:" + strings.Repeat("a", 64)
+	observed, err := host.ObserveArtifactCache(cache, digest)
+	if err != nil || observed.Status != host.ArtifactAbsent || observed.Digest != digest {
+		t.Fatalf("absent observation = %+v", observed)
+	}
+	bytes := []byte("artifact bytes\n")
+	sum := sha256.Sum256(bytes)
+	digest = "sha256:" + hex.EncodeToString(sum[:])
+	path := filepath.Join(cache, hex.EncodeToString(sum[:]))
+	if err := os.WriteFile(path, bytes, 0644); err != nil {
+		t.Fatal(err)
+	}
+	observed, err = host.ObserveArtifactCache(cache, digest)
+	if err != nil || observed.Status != host.ArtifactAlreadyPresent || observed.Size != int64(len(bytes)) {
+		t.Fatalf("valid observation = %+v", observed)
+	}
+	if err := os.WriteFile(path, []byte("changed"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	observed, err = host.ObserveArtifactCache(cache, digest)
+	if err != nil || observed.Status != host.ArtifactInvalid || !strings.Contains(observed.Reason, "does not match") {
+		t.Fatalf("invalid observation = %+v", observed)
+	}
+}
+
 func TestHostOperationResultRemainsStructured(t *testing.T) {
-	observation, _ := json.Marshal(artifactObservation{Status: "staged", Digest: "sha256:" + strings.Repeat("a", 64)})
+	observation, _ := json.Marshal(host.ArtifactObservation{Status: host.ArtifactStaged, Digest: "sha256:" + strings.Repeat("a", 64)})
 	if !json.Valid(observation) || strings.Contains(string(observation), "command") {
 		t.Fatalf("unsafe observation: %s", observation)
 	}

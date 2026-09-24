@@ -236,7 +236,9 @@ One stable trigger serves each logical Schedule. Its occurrence ledger records t
 
 ### Plan-bound host authority
 
-The deployment principal may invoke only the root-owned host executor entrypoint. The executor validates a short-lived authorization for the exact approved Plan and target host, then checks the operation schema, Plan digest, target environment, allowed paths, and operation-specific privileges before applying a typed operation bundle. SSH principals are constrained to the same entrypoint where the host permits it; their authentication does not replace Plan authorization. Initial bootstrap is a separate explicit operation with elevated privilege. The concrete allowed operation set, authorization proof, replay protection, and transport hardening remain implementation work.
+The deployment principal may invoke only the root-owned host executor entrypoint. The implemented direct-local path acquires a monotonic fenced Environment lease, journals intent, and signs an Ed25519 authorization with a maximum five-minute lifetime. That proof binds the exact approved and current Plan, Application, Environment, local Host Target, operator, observed executor digest, typed operation digest, attempt, and fencing token. The executor verifies the root-owned public key and bootstrap record, rejects replays and stale fencing tokens durably, and currently permits only the dependency-free `stageArtifact` operation into a fixed digest-addressed cache. It accepts no arbitrary shell command or caller-selected filesystem path. The State Backend commits the verified outcome and releases the lease atomically; a missing or unverifiable response is journaled as uncertain when the lease is still valid.
+
+Initial bootstrap remains a separate explicit operation with elevated privilege. SSH transport for the same operation envelope and host checks is deferred to the remote-host slice; SSH authentication will not replace Plan authorization.
 
 ### Secret version changes
 

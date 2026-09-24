@@ -59,6 +59,7 @@ type Environment struct {
 
 type Target struct {
 	Kind    string `yaml:"kind" json:"kind"`
+	Local   bool   `yaml:"local,omitempty" json:"local,omitempty"`
 	Address string `yaml:"address" json:"address"`
 	User    string `yaml:"user" json:"user"`
 }
@@ -330,7 +331,14 @@ func (c Compiled) validate() error {
 			return errors.New("initial host tracer supports exactly one host target")
 		}
 		target, ok := c.Environment.Targets[implementation.Target]
-		if !ok || target.Kind != "host" || !hostPattern.MatchString(target.Address) || strings.HasSuffix(target.Address, ".") || !userPattern.MatchString(target.User) {
+		if !ok || target.Kind != "host" || !userPattern.MatchString(target.User) {
+			return fmt.Errorf("implementation target %q must name an existing host and operator", implementation.Target)
+		}
+		if target.Local {
+			if target.Address != "" {
+				return fmt.Errorf("local implementation target %q cannot declare an address", implementation.Target)
+			}
+		} else if !hostPattern.MatchString(target.Address) || strings.HasSuffix(target.Address, ".") {
 			return fmt.Errorf("implementation target %q must name an existing remote host", implementation.Target)
 		}
 		artifact, ok := c.Revision.Artifacts[name]

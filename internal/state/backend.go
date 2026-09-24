@@ -2,6 +2,7 @@ package state
 
 import (
 	"context"
+	"encoding/json"
 	"time"
 
 	"provision/internal/planner"
@@ -14,6 +15,9 @@ type Backend interface {
 	StoreCurrentPlan(context.Context, planner.Plan, time.Time) error
 	RecordApproval(context.Context, string, ApprovalRecord) error
 	LoadPlanSnapshot(context.Context, string) (PlanSnapshot, error)
+	BeginOperation(context.Context, BeginOperationRequest) (OperationAttempt, error)
+	CompleteOperation(context.Context, CompleteOperationRequest) error
+	LoadJournal(context.Context, string) ([]JournalEvent, error)
 	Close() error
 }
 
@@ -32,4 +36,63 @@ type PlanSnapshot struct {
 	Plan          planner.Plan
 	Approval      *ApprovalRecord
 	CurrentPlanID string
+}
+
+type BeginOperationRequest struct {
+	PlanID        string
+	OperationID   string
+	Holder        string
+	StartedAt     time.Time
+	LeaseDuration time.Duration
+}
+
+type OperationAttempt struct {
+	AttemptID      string            `json:"attemptId"`
+	Holder         string            `json:"holder"`
+	FencingToken   int64             `json:"fencingToken"`
+	StartedAt      time.Time         `json:"startedAt"`
+	LeaseExpiresAt time.Time         `json:"leaseExpiresAt"`
+	Plan           planner.Plan      `json:"plan"`
+	Operation      planner.Operation `json:"operation"`
+}
+
+type ExecutionOutcome string
+
+const (
+	ExecutionSucceeded ExecutionOutcome = "succeeded"
+	ExecutionFailed    ExecutionOutcome = "failed"
+	ExecutionUncertain ExecutionOutcome = "uncertain"
+)
+
+type CompleteOperationRequest struct {
+	AttemptID    string
+	Holder       string
+	PlanID       string
+	OperationID  string
+	FencingToken int64
+	Outcome      ExecutionOutcome
+	Observation  json.RawMessage
+	CompletedAt  time.Time
+}
+
+type JournalEventKind string
+
+const (
+	JournalIntent  JournalEventKind = "intent"
+	JournalOutcome JournalEventKind = "outcome"
+)
+
+type JournalEvent struct {
+	Sequence      int64            `json:"sequence"`
+	SchemaVersion string           `json:"schemaVersion"`
+	Application   string           `json:"application"`
+	Environment   string           `json:"environment"`
+	PlanID        string           `json:"planId"`
+	OperationID   string           `json:"operationId"`
+	AttemptID     string           `json:"attemptId"`
+	FencingToken  int64            `json:"fencingToken"`
+	Kind          JournalEventKind `json:"kind"`
+	Outcome       ExecutionOutcome `json:"outcome,omitempty"`
+	Observation   json.RawMessage  `json:"observation"`
+	OccurredAt    time.Time        `json:"occurredAt"`
 }

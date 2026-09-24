@@ -46,6 +46,7 @@ type Plan struct {
 type Target struct {
 	Name    string `json:"name"`
 	Kind    string `json:"kind"`
+	Local   bool   `json:"local,omitempty"`
 	Address string `json:"address"`
 	User    string `json:"user"`
 }
@@ -211,6 +212,7 @@ func Build(compiled config.Compiled, observation host.BootstrapStatus) (Preview,
 		Target: Target{
 			Name:    selection.TargetName,
 			Kind:    selection.Target.Kind,
+			Local:   selection.Target.Local,
 			Address: selection.Target.Address,
 			User:    selection.Target.User,
 		},
@@ -268,6 +270,12 @@ func capabilityIssues(observation host.BootstrapStatus, selection config.HostSel
 	}
 	if observation.ExecutorDigest == "" {
 		issues = append(issues, "restricted host executor identity is not observed")
+	}
+	if observation.AuthorityKeyID == "" {
+		issues = append(issues, "host authorization authority is not observed")
+	}
+	if !slices.Contains(observation.AllowedOperations, "stageArtifact") {
+		issues = append(issues, "host executor does not allow typed Artifact staging")
 	}
 	if active := observation.Deployment.Active; active != nil && (!active.UnitActive || !active.UnitMatches || !active.RouteObserved || !active.RouteMatches) {
 		issues = append(issues, "active generation and stable Caddy route do not match observed deployment state")
@@ -348,6 +356,10 @@ func digest(value any) (string, error) {
 	}
 	sum := sha256.Sum256(canonical)
 	return "sha256:" + hex.EncodeToString(sum[:]), nil
+}
+
+func OperationDigest(operation Operation) (string, error) {
+	return digest(operation)
 }
 
 func (p Plan) VerifyIdentity() error {

@@ -32,6 +32,18 @@ func (f *backendFake) LoadPlanSnapshot(context.Context, string) (state.PlanSnaps
 	return f.snapshot, nil
 }
 
+func (f *backendFake) BeginOperation(context.Context, state.BeginOperationRequest) (state.OperationAttempt, error) {
+	return state.OperationAttempt{}, errors.New("not used")
+}
+
+func (f *backendFake) CompleteOperation(context.Context, state.CompleteOperationRequest) error {
+	return errors.New("not used")
+}
+
+func (f *backendFake) LoadJournal(context.Context, string) ([]state.JournalEvent, error) {
+	return nil, errors.New("not used")
+}
+
 func (f *backendFake) Close() error { return nil }
 
 func TestApproveUsesEnvironmentScopedCapabilityThroughBackend(t *testing.T) {

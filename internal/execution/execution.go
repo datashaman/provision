@@ -130,19 +130,17 @@ func (e Engine) Execute(ctx context.Context, request Request) (operation.Result,
 	}
 	result, executeErr := e.executeWithLeaseRenewal(ctx, request, attempt, envelope)
 	if executeErr != nil {
-		failureContext := ctx
-		cancelFailureContext := func() {}
-		if ctx.Err() != nil {
-			failureContext, cancelFailureContext = context.WithTimeout(context.Background(), 10*time.Second)
-		}
-		defer cancelFailureContext()
-		after, observeErr := e.Handler.Observe(failureContext, attempt.Operation)
+		observationContext, cancelObservation := failureContext(ctx)
+		after, observeErr := e.Handler.Observe(observationContext, attempt.Operation)
+		cancelObservation()
 		if observeErr == nil && after.State == ObservationSatisfied {
 			result = operation.Result{
 				SchemaVersion: operation.ResultSchemaVersion, PlanID: attempt.Plan.ID, OperationID: attempt.Operation.ID,
 				AttemptID: attempt.AttemptID, FencingToken: attempt.FencingToken, Outcome: operation.OutcomeSucceeded, Observation: after.Evidence,
 			}
-			if err := e.commitResult(ctx, attempt, envelope, result); err != nil {
+			commitContext, cancelCommit := failureContext(ctx)
+			defer cancelCommit()
+			if err := e.commitResult(commitContext, attempt, envelope, result); err != nil {
 				return operation.Result{}, err
 			}
 			return result, nil
@@ -151,7 +149,9 @@ func (e Engine) Execute(ctx context.Context, request Request) (operation.Result,
 			executeErr = fmt.Errorf("%w; post-failure observation: %v", executeErr, observeErr)
 			after = HandlerObservation{State: ObservationUnknown}
 		}
-		return operation.Result{}, e.recordUncertain(failureContext, attempt, executeErr, after)
+		journalContext, cancelJournal := failureContext(ctx)
+		defer cancelJournal()
+		return operation.Result{}, e.recordUncertain(journalContext, attempt, executeErr, after)
 	}
 	if err := e.commitResult(ctx, attempt, envelope, result); err != nil {
 		return operation.Result{}, err
@@ -160,6 +160,13 @@ func (e Engine) Execute(ctx context.Context, request Request) (operation.Result,
 		return result, errors.New("host preparation operation failed")
 	}
 	return result, nil
+}
+
+func failureContext(parent context.Context) (context.Context, context.CancelFunc) {
+	if parent.Err() == nil {
+		return parent, func() {}
+	}
+	return context.WithTimeout(context.Background(), 10*time.Second)
 }
 
 func (e Engine) commitResult(ctx context.Context, attempt state.OperationAttempt, envelope operation.Envelope, result operation.Result) error {

@@ -53,8 +53,9 @@ func (h *handlerFake) Recovery(planned planner.Operation) planner.RecoveryMode {
 }
 
 type cancelingHandler struct {
-	cancel       context.CancelFunc
-	observations int
+	cancel                   context.CancelFunc
+	observations             int
+	satisfyAfterCancellation bool
 }
 
 type renewalFailureBackend struct{ state.Backend }
@@ -82,6 +83,9 @@ func (*blockingHandler) Recovery(planned planner.Operation) planner.RecoveryMode
 
 func (h *cancelingHandler) Observe(context.Context, planner.Operation) (HandlerObservation, error) {
 	h.observations++
+	if h.satisfyAfterCancellation && h.observations > 1 {
+		return HandlerObservation{State: ObservationSatisfied, Evidence: json.RawMessage(`{"status":"already-present"}`)}, nil
+	}
 	return HandlerObservation{State: ObservationPending, Evidence: json.RawMessage(`{"status":"absent"}`)}, nil
 }
 
@@ -213,6 +217,22 @@ func TestEngineJournalsAfterCallerCancellation(t *testing.T) {
 	events, journalErr := backend.LoadJournal(context.Background(), plan.ID)
 	if journalErr != nil || len(events) != 2 || events[1].Kind != state.JournalOutcome || events[1].Outcome != state.ExecutionUncertain || !strings.Contains(string(events[1].Observation), `"observed":"pending"`) {
 		t.Fatalf("canceled execution journal = %+v, %v", events, journalErr)
+	}
+}
+
+func TestEngineCommitsObservedSuccessAfterCallerCancellation(t *testing.T) {
+	now := time.Date(2026, 9, 24, 12, 0, 0, 0, time.UTC)
+	ctx, cancel := context.WithCancel(context.Background())
+	handler := &cancelingHandler{cancel: cancel, satisfyAfterCancellation: true}
+	engine, backend, plan := executionFixture(t, &now, handler)
+	defer backend.Close()
+	result, err := engine.Execute(ctx, Request{PlanID: plan.ID, OperationID: "op-01", Holder: "test-holder", LeaseDuration: time.Minute})
+	if err != nil || result.Outcome != operation.OutcomeSucceeded || handler.observations != 2 {
+		t.Fatalf("recovered canceled execution = %+v, %v, observations=%d", result, err, handler.observations)
+	}
+	events, journalErr := backend.LoadJournal(context.Background(), plan.ID)
+	if journalErr != nil || len(events) != 2 || events[1].Outcome != state.ExecutionSucceeded || !strings.Contains(string(events[1].Observation), "already-present") {
+		t.Fatalf("recovered cancellation journal = %+v, %v", events, journalErr)
 	}
 }
 

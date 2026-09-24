@@ -16,13 +16,16 @@ The **product model is agreed**, with explicit later amendments recorded in deci
 
 The current goal is to turn the agreed model into executable acceptance cases and an end-to-end host deployment slice without weakening its guarantees.
 
-The current Go increment validates a strict single-HTTP configuration, verifies supplied Artifact bytes against the Revision digest, inspects existing SSH hosts, and previews a deterministic read-only host Plan. Its non-Laravel example workload lives separately in [`datashaman/provision-example-http`](https://github.com/datashaman/provision-example-http). This repository also includes a separate, privileged disposable-host bootstrap path. There is still **no** workload apply path; the installed host executor enables inspection only.
+The current Go increment validates a strict single-HTTP configuration, verifies supplied Artifact bytes against the Revision digest, inspects existing SSH hosts, previews a deterministic read-only host Plan, and persists exact-Plan approvals in a local SQLite State Backend. Its non-Laravel example workload lives separately in [`datashaman/provision-example-http`](https://github.com/datashaman/provision-example-http). This repository also includes a separate, privileged disposable-host bootstrap path. There is still **no** workload apply path; the installed host executor enables inspection only.
 
 ```sh
 go run ./cmd/provision config validate --file examples/host-http/root.yaml
 go run ./cmd/provision host inspect --address base.local --user marlinf
-go run ./cmd/provision plan preview --file examples/host-http/root.yaml
+mkdir -m 0700 .provision
+go run ./cmd/provision plan preview --file examples/host-http/root.yaml --state .provision/state.db
 ```
+
+Preview output contains the Plan digest needed by the approval flow. Supplying `--state` persists the exact preview as the Environment's current, initially unapproved Plan. See [Plan approval and status](docs/plan-approval.md) for the durable SQLite workflow and its local OS trust boundary.
 
 Download the example application from its own release and pass it to validation to verify its actual bytes:
 
@@ -54,6 +57,7 @@ The product should let a user describe:
 - [Domain language](CONTEXT.md)
 - [Open questions](docs/OPEN_QUESTIONS.md)
 - [Disposable host bootstrap](docs/host-bootstrap.md)
+- [Plan approval and status](docs/plan-approval.md)
 - [Decision records](docs/adr/)
 - [Exploratory material](docs/explorations/README.md)
 

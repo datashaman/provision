@@ -349,3 +349,17 @@ func digest(value any) (string, error) {
 	sum := sha256.Sum256(canonical)
 	return "sha256:" + hex.EncodeToString(sum[:]), nil
 }
+
+func (p Plan) VerifyIdentity() error {
+	want := p.ID
+	copy := p
+	copy.ID = ""
+	actual, err := digest(copy)
+	if err != nil {
+		return err
+	}
+	if want == "" || actual != want {
+		return errors.New("Plan identity does not match its canonical contents")
+	}
+	return nil
+}

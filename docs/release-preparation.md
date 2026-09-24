@@ -60,9 +60,9 @@ go run ./cmd/provision deployment execute \
   --signing-key .provision/host-authority.key
 ```
 
-Before contacting the executor, Provision atomically confirms that the Plan is still current and approved, acquires the Environment's lease, assigns a higher fencing token, and journals the intent. It then signs a maximum-five-minute one-use proof for the exact typed operation and observed local target. The executor accepts only the fixed `stageArtifact` schema and fixed cache root. It rejects a changed payload, wrong key, wrong executor, wrong Environment or operator, expired proof, replayed attempt, or stale fencing token.
+Before contacting the executor, Provision atomically confirms that the Plan is still current and approved, acquires a renewable fenced execution lease for the Environment mutation, assigns a higher fencing token, and journals the intent. This execution lease is not the product's optional team-member **Environment Lease**. It then signs a maximum-five-minute one-use proof for the exact typed operation and observed local target. The executor accepts only the fixed `stageArtifact` schema and fixed cache root. It rejects a changed payload, wrong key, wrong executor, wrong Environment or operator, expired proof, replayed attempt, or stale fencing token.
 
-If the digest-addressed Artifact is already present and valid, execution succeeds as `already-present`; otherwise it is downloaded over HTTPS to a temporary file, bounded to 512 MiB, verified, and committed without overwriting another cache entry. A failed or unverifiable executor response is recorded as `uncertain` when the lease still permits that durable commit. Do not infer failure from an uncertain result; inspect the journal and host state before retry or recovery work.
+If the digest-addressed Artifact is already present and valid, execution succeeds as `already-present`; otherwise it is downloaded over HTTPS to a temporary file, bounded to 512 MiB, verified, and committed without overwriting another cache entry. A known host failure is returned and journaled with its observation. After an interrupted or unverifiable response, the Operation Handler observes the cache before deciding whether the operation succeeded or remains `uncertain`; uncertain evidence includes the observed state and declared recovery mode. Do not infer failure from an uncertain result.
 
 ## 5. Read the durable journal
 
@@ -72,7 +72,7 @@ go run ./cmd/provision deployment status \
   --state .provision/state.db
 ```
 
-The output contains append-only intent and outcome events, including the attempt identity and fencing token. It survives process restart. The State Backend rejects a concurrent Environment mutation and refuses a late result from an expired or replaced lease.
+The output contains append-only intent and outcome events, including the attempt identity and fencing token. It survives process restart. The State Backend rejects a concurrent Environment mutation and refuses a late result from an expired or replaced execution lease. That rejected result cannot advance state or release the current lease, but its submitted observation is retained as a `rejected` audit event so the interrupted history does not disappear.
 
 ## Current boundary
 

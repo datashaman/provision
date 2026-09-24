@@ -85,7 +85,7 @@ func runDeploymentExecute(args []string) error {
 	operationID := flags.String("operation", "", "exact operation identity from the Plan")
 	statePath := flags.String("state", "", "SQLite State Backend path")
 	signingKey := flags.String("signing-key", "", "local authority private key path")
-	leaseDuration := flags.Duration("lease-duration", 2*time.Minute, "fenced Environment lease lifetime")
+	leaseDuration := flags.Duration("lease-duration", 2*time.Minute, "fenced execution lease lifetime")
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
@@ -111,12 +111,14 @@ func runDeploymentExecute(args []string) error {
 	result, err := engine.Execute(ctx, execution.Request{
 		PlanID: *planID, OperationID: *operationID, Holder: holder, LeaseDuration: *leaseDuration,
 	})
-	if err != nil {
-		return err
-	}
 	output := json.NewEncoder(os.Stdout)
 	output.SetIndent("", "  ")
-	return output.Encode(result)
+	if result.SchemaVersion != "" {
+		if encodeErr := output.Encode(result); encodeErr != nil {
+			return encodeErr
+		}
+	}
+	return err
 }
 
 func runDeploymentStatus(args []string) error {

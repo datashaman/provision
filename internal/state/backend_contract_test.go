@@ -96,6 +96,16 @@ func runBackendContract(t *testing.T, factory backendContractFactory) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	renewedUntil, err := backend.RenewExecutionLease(ctx, RenewExecutionLeaseRequest{
+		AttemptID: firstAttempt.AttemptID, Holder: firstAttempt.Holder, PlanID: first.ID, OperationID: "op-01",
+		FencingToken: firstAttempt.FencingToken, RenewedAt: now.Add(2*time.Minute + 30*time.Second), LeaseDuration: time.Minute,
+	})
+	if err != nil || !renewedUntil.Equal(now.Add(3*time.Minute+30*time.Second)) {
+		t.Fatalf("renewed lease expires at %v, %v", renewedUntil, err)
+	}
+	if _, err := backend.BeginOperation(ctx, BeginOperationRequest{PlanID: first.ID, OperationID: "op-01", Holder: "holder-b", StartedAt: now.Add(3 * time.Minute), LeaseDuration: time.Minute}); err == nil || !strings.Contains(err.Error(), "active mutating operation") {
+		t.Fatalf("renewed execution lease did not fence a concurrent operation: %v", err)
+	}
 	if _, err := backend.BeginOperation(ctx, BeginOperationRequest{PlanID: first.ID, OperationID: "op-01", Holder: "holder-b", StartedAt: now.Add(2 * time.Minute), LeaseDuration: time.Minute}); err == nil || !strings.Contains(err.Error(), "active mutating operation") {
 		t.Fatalf("concurrent lease was accepted: %v", err)
 	}
@@ -116,8 +126,11 @@ func runBackendContract(t *testing.T, factory backendContractFactory) {
 		t.Fatal(err)
 	}
 	journal, err := backend.LoadJournal(ctx, first.ID)
-	if err != nil || len(journal) != 3 || journal[0].Kind != JournalIntent || journal[2].Kind != JournalOutcome || journal[2].Outcome != ExecutionSucceeded {
+	if err != nil || len(journal) != 4 || journal[0].Kind != JournalIntent || journal[2].Kind != JournalRejected || journal[2].Outcome != ExecutionSucceeded || journal[3].Kind != JournalOutcome || journal[3].Outcome != ExecutionSucceeded {
 		t.Fatalf("journal = %+v, %v", journal, err)
+	}
+	if !strings.Contains(string(journal[2].Observation), `"status":"rejected"`) || !strings.Contains(string(journal[2].Observation), `"submittedObservation":{"status":"staged"}`) {
+		t.Fatalf("rejected stale result lost its evidence: %s", journal[2].Observation)
 	}
 	if err := backend.StoreCurrentPlan(ctx, second, now.Add(6*time.Minute)); err != nil {
 		t.Fatal(err)
@@ -150,7 +163,7 @@ func runBackendContract(t *testing.T, factory backendContractFactory) {
 		t.Fatalf("durable snapshot = %+v, %v", durable, err)
 	}
 	durableJournal, err := reopened.LoadJournal(ctx, first.ID)
-	if err != nil || len(durableJournal) != 3 || durableJournal[2].Outcome != ExecutionSucceeded {
+	if err != nil || len(durableJournal) != 4 || durableJournal[2].Kind != JournalRejected || durableJournal[3].Outcome != ExecutionSucceeded {
 		t.Fatalf("durable journal = %+v, %v", durableJournal, err)
 	}
 }

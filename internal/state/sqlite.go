@@ -173,7 +173,7 @@ func (b *sqliteBackend) initialize(ctx context.Context) error {
             updated_at TEXT NOT NULL,
             PRIMARY KEY (application, environment)
         ) STRICT`,
-		`CREATE TABLE IF NOT EXISTS environment_leases (
+		`CREATE TABLE IF NOT EXISTS execution_leases (
             application TEXT NOT NULL,
             environment TEXT NOT NULL,
             fencing_token INTEGER NOT NULL,
@@ -195,7 +195,7 @@ func (b *sqliteBackend) initialize(ctx context.Context) error {
             operation_id TEXT NOT NULL,
             attempt_id TEXT NOT NULL,
             fencing_token INTEGER NOT NULL,
-            kind TEXT NOT NULL CHECK (kind IN ('intent', 'outcome')),
+			kind TEXT NOT NULL CHECK (kind IN ('intent', 'outcome', 'rejected')),
             outcome TEXT NOT NULL CHECK (outcome IN ('', 'succeeded', 'failed', 'uncertain')),
             observation_json BLOB NOT NULL,
             occurred_at TEXT NOT NULL,
@@ -348,8 +348,8 @@ func (b *sqliteBackend) BeginOperation(ctx context.Context, request BeginOperati
 	if request.PlanID == "" || request.OperationID == "" || request.Holder == "" || request.Holder != strings.TrimSpace(request.Holder) || len(request.Holder) > 128 {
 		return OperationAttempt{}, errors.New("operation identity and lease holder are required")
 	}
-	if request.LeaseDuration <= 0 || request.LeaseDuration > 5*time.Minute {
-		return OperationAttempt{}, errors.New("operation lease duration must be between zero and five minutes")
+	if request.LeaseDuration < 5*time.Second || request.LeaseDuration > 5*time.Minute {
+		return OperationAttempt{}, errors.New("execution lease duration must be between five seconds and five minutes")
 	}
 	tx, err := b.db.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelSerializable})
 	if err != nil {
@@ -398,10 +398,10 @@ func (b *sqliteBackend) BeginOperation(ctx context.Context, request BeginOperati
 	var priorToken int64
 	var priorExpiry string
 	var priorReleased sql.NullString
-	err = tx.QueryRowContext(ctx, `SELECT fencing_token, expires_at, released_at FROM environment_leases WHERE application = ? AND environment = ?`, application, environment).
+	err = tx.QueryRowContext(ctx, `SELECT fencing_token, expires_at, released_at FROM execution_leases WHERE application = ? AND environment = ?`, application, environment).
 		Scan(&priorToken, &priorExpiry, &priorReleased)
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
-		return OperationAttempt{}, fmt.Errorf("read Environment lease: %w", err)
+		return OperationAttempt{}, fmt.Errorf("read fenced execution lease: %w", err)
 	}
 	if err == nil && !priorReleased.Valid {
 		parsedExpiry, parseErr := parseTime(priorExpiry)
@@ -418,7 +418,7 @@ func (b *sqliteBackend) BeginOperation(ctx context.Context, request BeginOperati
 		leaseExpiresAt = expiresAt
 	}
 	attemptID := operationAttemptID(request.PlanID, request.OperationID, request.Holder, token)
-	if _, err := tx.ExecContext(ctx, `INSERT INTO environment_leases(application, environment, fencing_token, holder, plan_id, operation_id, attempt_id, acquired_at, expires_at, released_at)
+	if _, err := tx.ExecContext(ctx, `INSERT INTO execution_leases(application, environment, fencing_token, holder, plan_id, operation_id, attempt_id, acquired_at, expires_at, released_at)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)
         ON CONFLICT(application, environment) DO UPDATE SET
             fencing_token = excluded.fencing_token,
@@ -430,7 +430,7 @@ func (b *sqliteBackend) BeginOperation(ctx context.Context, request BeginOperati
             expires_at = excluded.expires_at,
             released_at = NULL`,
 		application, environment, token, request.Holder, request.PlanID, request.OperationID, attemptID, formatTime(request.StartedAt), formatTime(leaseExpiresAt)); err != nil {
-		return OperationAttempt{}, fmt.Errorf("acquire Environment lease: %w", err)
+		return OperationAttempt{}, fmt.Errorf("acquire fenced execution lease: %w", err)
 	}
 	operationDigest, err := planner.OperationDigest(operation)
 	if err != nil {
@@ -462,6 +462,67 @@ func (b *sqliteBackend) BeginOperation(ctx context.Context, request BeginOperati
 	}, nil
 }
 
+func (b *sqliteBackend) RenewExecutionLease(ctx context.Context, request RenewExecutionLeaseRequest) (time.Time, error) {
+	request.RenewedAt = request.RenewedAt.UTC()
+	if request.AttemptID == "" || request.Holder == "" || request.PlanID == "" || request.OperationID == "" || request.FencingToken <= 0 {
+		return time.Time{}, errors.New("fenced execution lease identity is required")
+	}
+	if request.LeaseDuration < 5*time.Second || request.LeaseDuration > 5*time.Minute {
+		return time.Time{}, errors.New("execution lease duration must be between five seconds and five minutes")
+	}
+	tx, err := b.db.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelSerializable})
+	if err != nil {
+		return time.Time{}, fmt.Errorf("begin fenced execution lease renewal: %w", err)
+	}
+	defer tx.Rollback()
+	var application, environment string
+	if err := tx.QueryRowContext(ctx, `SELECT application, environment FROM plans WHERE id = ?`, request.PlanID).Scan(&application, &environment); err != nil {
+		return time.Time{}, errors.New("operation Plan is not present in the State Backend")
+	}
+	var token int64
+	var holder, planID, operationID, attemptID, expiresAt string
+	var releasedAt sql.NullString
+	if err := tx.QueryRowContext(ctx, `SELECT fencing_token, holder, plan_id, operation_id, attempt_id, expires_at, released_at FROM execution_leases WHERE application = ? AND environment = ?`, application, environment).
+		Scan(&token, &holder, &planID, &operationID, &attemptID, &expiresAt, &releasedAt); err != nil {
+		return time.Time{}, fmt.Errorf("read fenced execution lease for renewal: %w", err)
+	}
+	leaseExpiry, err := parseTime(expiresAt)
+	if err != nil {
+		return time.Time{}, err
+	}
+	if token != request.FencingToken || holder != request.Holder || planID != request.PlanID || operationID != request.OperationID || attemptID != request.AttemptID || releasedAt.Valid || !leaseExpiry.After(request.RenewedAt) {
+		return time.Time{}, errors.New("execution lease is stale or does not match its fencing authority")
+	}
+	var currentPlanID string
+	if err := tx.QueryRowContext(ctx, `SELECT plan_id FROM environment_heads WHERE application = ? AND environment = ?`, application, environment).Scan(&currentPlanID); err != nil || currentPlanID != request.PlanID {
+		return time.Time{}, errors.New("operation Plan is no longer current")
+	}
+	var decision, approvalExpiry string
+	if err := tx.QueryRowContext(ctx, `SELECT decision, expires_at FROM approval_decisions WHERE plan_id = ? ORDER BY sequence DESC LIMIT 1`, request.PlanID).Scan(&decision, &approvalExpiry); err != nil {
+		return time.Time{}, errors.New("Plan approval is not eligible for lease renewal")
+	}
+	approvedUntil, err := parseTime(approvalExpiry)
+	if err != nil || decision != string(DecisionApproved) || !approvedUntil.After(request.RenewedAt) {
+		return time.Time{}, errors.New("Plan approval is not eligible for lease renewal")
+	}
+	renewedUntil := request.RenewedAt.Add(request.LeaseDuration)
+	if approvedUntil.Before(renewedUntil) {
+		renewedUntil = approvedUntil
+	}
+	result, err := tx.ExecContext(ctx, `UPDATE execution_leases SET expires_at = ? WHERE application = ? AND environment = ? AND fencing_token = ? AND attempt_id = ? AND released_at IS NULL`,
+		formatTime(renewedUntil), application, environment, request.FencingToken, request.AttemptID)
+	if err != nil {
+		return time.Time{}, fmt.Errorf("renew fenced execution lease: %w", err)
+	}
+	if changed, _ := result.RowsAffected(); changed != 1 {
+		return time.Time{}, errors.New("fenced execution lease changed before renewal")
+	}
+	if err := tx.Commit(); err != nil {
+		return time.Time{}, fmt.Errorf("commit fenced execution lease renewal: %w", err)
+	}
+	return renewedUntil, nil
+}
+
 func (b *sqliteBackend) CompleteOperation(ctx context.Context, request CompleteOperationRequest) error {
 	request.CompletedAt = request.CompletedAt.UTC()
 	if request.Outcome != ExecutionSucceeded && request.Outcome != ExecutionFailed && request.Outcome != ExecutionUncertain {
@@ -479,36 +540,62 @@ func (b *sqliteBackend) CompleteOperation(ctx context.Context, request CompleteO
 	if err := tx.QueryRowContext(ctx, `SELECT application, environment FROM plans WHERE id = ?`, request.PlanID).Scan(&application, &environment); err != nil {
 		return errors.New("operation Plan is not present in the State Backend")
 	}
+	reject := func(reason string) error {
+		var intentCount int
+		if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM journal_events WHERE plan_id = ? AND operation_id = ? AND attempt_id = ? AND fencing_token = ? AND kind = 'intent'`,
+			request.PlanID, request.OperationID, request.AttemptID, request.FencingToken).Scan(&intentCount); err != nil || intentCount != 1 {
+			return errors.New(reason)
+		}
+		evidence, err := json.Marshal(struct {
+			Status               string           `json:"status"`
+			Reason               string           `json:"reason"`
+			SubmittedOutcome     ExecutionOutcome `json:"submittedOutcome"`
+			SubmittedObservation json.RawMessage  `json:"submittedObservation"`
+		}{"rejected", reason, request.Outcome, request.Observation})
+		if err != nil {
+			return errors.New(reason)
+		}
+		if _, err := tx.ExecContext(ctx, `INSERT INTO journal_events(schema_version, application, environment, plan_id, operation_id, attempt_id, fencing_token, kind, outcome, observation_json, occurred_at)
+            VALUES ('provision.dev/journal-event/v1alpha1', ?, ?, ?, ?, ?, ?, 'rejected', ?, ?, ?)
+            ON CONFLICT(attempt_id, kind) DO NOTHING`,
+			application, environment, request.PlanID, request.OperationID, request.AttemptID, request.FencingToken, request.Outcome, evidence, formatTime(request.CompletedAt)); err != nil {
+			return fmt.Errorf("journal rejected operation result: %w", err)
+		}
+		if err := tx.Commit(); err != nil {
+			return fmt.Errorf("commit rejected operation result: %w", err)
+		}
+		return errors.New(reason)
+	}
 	var token int64
 	var holder, planID, operationID, attemptID, expiresAt string
 	var releasedAt sql.NullString
-	if err := tx.QueryRowContext(ctx, `SELECT fencing_token, holder, plan_id, operation_id, attempt_id, expires_at, released_at FROM environment_leases WHERE application = ? AND environment = ?`, application, environment).
+	if err := tx.QueryRowContext(ctx, `SELECT fencing_token, holder, plan_id, operation_id, attempt_id, expires_at, released_at FROM execution_leases WHERE application = ? AND environment = ?`, application, environment).
 		Scan(&token, &holder, &planID, &operationID, &attemptID, &expiresAt, &releasedAt); err != nil {
-		return fmt.Errorf("read Environment lease for completion: %w", err)
+		return fmt.Errorf("read fenced execution lease for completion: %w", err)
 	}
 	leaseExpiry, err := parseTime(expiresAt)
 	if err != nil {
 		return err
 	}
 	if token != request.FencingToken || holder != request.Holder || planID != request.PlanID || operationID != request.OperationID || attemptID != request.AttemptID || releasedAt.Valid || !leaseExpiry.After(request.CompletedAt) {
-		return errors.New("operation lease is stale or does not match its fencing authority")
+		return reject("execution lease is stale or does not match its fencing authority")
 	}
 	var currentPlanID string
 	if err := tx.QueryRowContext(ctx, `SELECT plan_id FROM environment_heads WHERE application = ? AND environment = ?`, application, environment).Scan(&currentPlanID); err != nil || currentPlanID != request.PlanID {
-		return errors.New("operation Plan is no longer current")
+		return reject("operation Plan is no longer current")
 	}
 	if _, err := tx.ExecContext(ctx, `INSERT INTO journal_events(schema_version, application, environment, plan_id, operation_id, attempt_id, fencing_token, kind, outcome, observation_json, occurred_at)
         VALUES ('provision.dev/journal-event/v1alpha1', ?, ?, ?, ?, ?, ?, 'outcome', ?, ?, ?)`,
 		application, environment, request.PlanID, request.OperationID, request.AttemptID, request.FencingToken, request.Outcome, []byte(request.Observation), formatTime(request.CompletedAt)); err != nil {
 		return fmt.Errorf("journal operation outcome: %w", err)
 	}
-	result, err := tx.ExecContext(ctx, `UPDATE environment_leases SET released_at = ? WHERE application = ? AND environment = ? AND fencing_token = ? AND released_at IS NULL`,
+	result, err := tx.ExecContext(ctx, `UPDATE execution_leases SET released_at = ? WHERE application = ? AND environment = ? AND fencing_token = ? AND released_at IS NULL`,
 		formatTime(request.CompletedAt), application, environment, request.FencingToken)
 	if err != nil {
-		return fmt.Errorf("release Environment lease: %w", err)
+		return fmt.Errorf("release fenced execution lease: %w", err)
 	}
 	if changed, _ := result.RowsAffected(); changed != 1 {
-		return errors.New("operation lease changed before release")
+		return errors.New("execution lease changed before release")
 	}
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("commit operation outcome: %w", err)

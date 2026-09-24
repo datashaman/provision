@@ -94,6 +94,22 @@ func TestAuthorizedArtifactPreparationRejectsReplayAndStaleFence(t *testing.T) {
 	if _, err := executeAuthorized(context.Background(), expired, record, publicKey, paths, now); err == nil || !strings.Contains(err.Error(), "expired") {
 		t.Fatalf("expired authorization accepted: %v", err)
 	}
+
+	failedAttempt := "attempt-44444444444444444444444444444444"
+	if err := os.WriteFile(filepath.Join(artifactCache, "."+failedAttempt+".tmp"), []byte("collision"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	missingArtifact := planned
+	missingArtifact.Input.Artifact.Digest = "sha256:" + strings.Repeat("4", 64)
+	missingDigest, err := planner.OperationDigest(missingArtifact)
+	if err != nil {
+		t.Fatal(err)
+	}
+	failed := signedTestEnvelope(t, signer, missingArtifact, missingDigest, record, failedAttempt, 4, now, now.Add(time.Minute))
+	failedResult, err := executeAuthorized(context.Background(), failed, record, publicKey, paths, now)
+	if err != nil || failedResult.Outcome != operation.OutcomeFailed || !strings.Contains(string(failedResult.Observation), `"status":"failed"`) || !strings.Contains(string(failedResult.Observation), "temporary Artifact cache entry") {
+		t.Fatalf("known host failure was not structured: %+v, %v", failedResult, err)
+	}
 }
 
 func signedTestEnvelope(t *testing.T, signer authority.Signer, planned planner.Operation, operationDigest string, record bootstrapRecord, attempt string, token int64, issuedAt, expiresAt time.Time) operation.Envelope {

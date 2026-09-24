@@ -58,6 +58,7 @@ type artifactObservation struct {
 	Path   string `json:"path"`
 	Digest string `json:"digest"`
 	Size   int64  `json:"size"`
+	Reason string `json:"reason,omitempty"`
 }
 
 func runExecute(args []string) error {
@@ -159,7 +160,7 @@ func executeAuthorized(ctx context.Context, envelope operation.Envelope, record 
 	}
 
 	var result operation.Result
-	err = withHostFence(paths, claim, now, func() error {
+	actionErr, err := withHostFence(paths, claim, now, func() error {
 		observation, err := stageArtifact(ctx, paths.artifactCache, claim.AttemptID, *envelope.Operation.Input.Artifact)
 		if err != nil {
 			return err
@@ -182,6 +183,24 @@ func executeAuthorized(ctx context.Context, envelope operation.Envelope, record 
 	if err != nil {
 		return operation.Result{}, err
 	}
+	if actionErr != nil {
+		artifact := *envelope.Operation.Input.Artifact
+		encoded, encodeErr := json.Marshal(artifactObservation{
+			Status: "failed", Path: filepath.Join(paths.artifactCache, strings.TrimPrefix(artifact.Digest, "sha256:")), Digest: artifact.Digest, Reason: actionErr.Error(),
+		})
+		if encodeErr != nil {
+			return operation.Result{}, encodeErr
+		}
+		return operation.Result{
+			SchemaVersion: operation.ResultSchemaVersion,
+			PlanID:        claim.PlanID,
+			OperationID:   claim.OperationID,
+			AttemptID:     claim.AttemptID,
+			FencingToken:  claim.FencingToken,
+			Outcome:       operation.OutcomeFailed,
+			Observation:   encoded,
+		}, nil
+	}
 	return result, nil
 }
 
@@ -200,14 +219,14 @@ func validateStageArtifact(planned planner.Operation) error {
 	return nil
 }
 
-func withHostFence(paths executionPaths, claim authority.Claim, now time.Time, action func() error) error {
+func withHostFence(paths executionPaths, claim authority.Claim, now time.Time, action func() error) (error, error) {
 	lock, err := os.OpenFile(filepath.Join(paths.authorityState, "executor.lock"), os.O_CREATE|os.O_RDWR, 0600)
 	if err != nil {
-		return errors.New("open host authorization fence lock")
+		return nil, errors.New("open host authorization fence lock")
 	}
 	defer lock.Close()
 	if err := syscall.Flock(int(lock.Fd()), syscall.LOCK_EX); err != nil {
-		return errors.New("lock host authorization fence")
+		return nil, errors.New("lock host authorization fence")
 	}
 	defer syscall.Flock(int(lock.Fd()), syscall.LOCK_UN)
 
@@ -215,42 +234,42 @@ func withHostFence(paths executionPaths, claim authority.Claim, now time.Time, a
 	var fence hostFence
 	if data, err := os.ReadFile(fencePath); err == nil {
 		if json.Unmarshal(data, &fence) != nil || fence.FencingToken <= 0 || !attemptID.MatchString(fence.AttemptID) {
-			return errors.New("host authorization fence is invalid")
+			return nil, errors.New("host authorization fence is invalid")
 		}
 	} else if !errors.Is(err, os.ErrNotExist) {
-		return errors.New("read host authorization fence")
+		return nil, errors.New("read host authorization fence")
 	}
 	if claim.FencingToken < fence.FencingToken || claim.FencingToken == fence.FencingToken && claim.AttemptID != fence.AttemptID {
-		return errors.New("authorization fencing token is stale")
+		return nil, errors.New("authorization fencing token is stale")
 	}
 	if claim.FencingToken > fence.FencingToken {
 		if err := writeJSONAtomic(fencePath, hostFence{FencingToken: claim.FencingToken, AttemptID: claim.AttemptID}, 0600); err != nil {
-			return err
+			return nil, err
 		}
 	}
 	consumedPath := filepath.Join(paths.authorityState, claim.AttemptID+".json")
 	consumed := consumedAuthorization{SchemaVersion: "provision.dev/consumed-authorization/v1alpha1", Claim: claim, Outcome: "consumed", RecordedAt: now.UTC()}
 	encoded, err := json.Marshal(consumed)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	file, err := os.OpenFile(consumedPath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
 	if errors.Is(err, os.ErrExist) {
-		return errors.New("authorization has already been consumed")
+		return nil, errors.New("authorization has already been consumed")
 	}
 	if err != nil {
-		return errors.New("record consumed authorization")
+		return nil, errors.New("record consumed authorization")
 	}
 	if _, err := file.Write(encoded); err != nil {
 		_ = file.Close()
-		return errors.New("record consumed authorization")
+		return nil, errors.New("record consumed authorization")
 	}
 	if err := file.Sync(); err != nil {
 		_ = file.Close()
-		return errors.New("sync consumed authorization")
+		return nil, errors.New("sync consumed authorization")
 	}
 	if err := file.Close(); err != nil {
-		return errors.New("close consumed authorization")
+		return nil, errors.New("close consumed authorization")
 	}
 
 	actionErr := action()
@@ -261,12 +280,12 @@ func withHostFence(paths executionPaths, claim authority.Claim, now time.Time, a
 		consumed.Outcome = "succeeded"
 	}
 	if !journalOutcome.MatchString(consumed.Outcome) {
-		return errors.New("authorization outcome is invalid")
+		return actionErr, errors.New("authorization outcome is invalid")
 	}
 	if err := writeJSONAtomic(consumedPath, consumed, 0600); err != nil {
-		return err
+		return actionErr, err
 	}
-	return actionErr
+	return actionErr, nil
 }
 
 func stageArtifact(ctx context.Context, cacheRoot, attempt string, artifact planner.ArtifactInput) (artifactObservation, error) {

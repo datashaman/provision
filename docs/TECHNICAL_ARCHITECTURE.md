@@ -58,7 +58,7 @@ Each environment has an append-only execution journal and immutable state snapsh
 
 The initial architecture includes two adapters because this seam has real variation: SQLite for personal or local environments and a DynamoDB-and-S3 adapter for shared AWS environments.
 
-### Fenced environment leases
+### Fenced execution leases
 
 Only one mutating operation may execute against an environment at a time. A renewable lease carries a monotonically increasing fencing token; every conditional journal append verifies the token. Reads and planning may occur concurrently, but execution revalidates state after acquiring the lease. Expired work may be resumed or explicitly superseded, while a stale executor cannot commit further progress.
 
@@ -236,7 +236,7 @@ One stable trigger serves each logical Schedule. Its occurrence ledger records t
 
 ### Plan-bound host authority
 
-The deployment principal may invoke only the root-owned host executor entrypoint. The implemented direct-local path acquires a monotonic fenced Environment lease, journals intent, and signs an Ed25519 authorization with a maximum five-minute lifetime. That proof binds the exact approved and current Plan, Application, Environment, local Host Target, operator, observed executor digest, typed operation digest, attempt, and fencing token. The executor verifies the root-owned public key and bootstrap record, rejects replays and stale fencing tokens durably, and currently permits only the dependency-free `stageArtifact` operation into a fixed digest-addressed cache. It accepts no arbitrary shell command or caller-selected filesystem path. The State Backend commits the verified outcome and releases the lease atomically; a missing or unverifiable response is journaled as uncertain when the lease is still valid.
+The deployment principal may invoke only the root-owned host executor entrypoint. The implemented direct-local path acquires a renewable fenced execution lease for the Environment mutation, journals intent, and signs an Ed25519 authorization with a maximum five-minute lifetime. This is separate from the optional team-member Environment Lease in the product model. The proof binds the exact approved and current Plan, Application, Environment, local Host Target, operator, observed executor digest, typed operation digest, attempt, and fencing token. The executor verifies the root-owned public key and bootstrap record, rejects replays and stale fencing tokens durably, and currently permits only the dependency-free `stageArtifact` operation into a fixed digest-addressed cache. It accepts no arbitrary shell command or caller-selected filesystem path. The Operation Handler observes the fixed cache before apply or resumption, verifies structured results, and exposes the operation's declared recovery mode. The State Backend conditionally commits an authoritative outcome and releases the execution lease atomically; a rejected late result is retained only as non-authoritative audit evidence.
 
 Initial bootstrap remains a separate explicit operation with elevated privilege. SSH transport for the same operation envelope and host checks is deferred to the remote-host slice; SSH authentication will not replace Plan authorization.
 

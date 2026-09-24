@@ -36,6 +36,10 @@ func (f *backendFake) BeginOperation(context.Context, state.BeginOperationReques
 	return state.OperationAttempt{}, errors.New("not used")
 }
 
+func (f *backendFake) RenewExecutionLease(context.Context, state.RenewExecutionLeaseRequest) (time.Time, error) {
+	return time.Time{}, errors.New("not used")
+}
+
 func (f *backendFake) CompleteOperation(context.Context, state.CompleteOperationRequest) error {
 	return errors.New("not used")
 }

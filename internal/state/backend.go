@@ -16,6 +16,7 @@ type Backend interface {
 	RecordApproval(context.Context, string, ApprovalRecord) error
 	LoadPlanSnapshot(context.Context, string) (PlanSnapshot, error)
 	BeginOperation(context.Context, BeginOperationRequest) (OperationAttempt, error)
+	RenewExecutionLease(context.Context, RenewExecutionLeaseRequest) (time.Time, error)
 	CompleteOperation(context.Context, CompleteOperationRequest) error
 	LoadJournal(context.Context, string) ([]JournalEvent, error)
 	Close() error
@@ -56,6 +57,16 @@ type OperationAttempt struct {
 	Operation      planner.Operation `json:"operation"`
 }
 
+type RenewExecutionLeaseRequest struct {
+	AttemptID     string
+	Holder        string
+	PlanID        string
+	OperationID   string
+	FencingToken  int64
+	RenewedAt     time.Time
+	LeaseDuration time.Duration
+}
+
 type ExecutionOutcome string
 
 const (
@@ -78,8 +89,9 @@ type CompleteOperationRequest struct {
 type JournalEventKind string
 
 const (
-	JournalIntent  JournalEventKind = "intent"
-	JournalOutcome JournalEventKind = "outcome"
+	JournalIntent   JournalEventKind = "intent"
+	JournalOutcome  JournalEventKind = "outcome"
+	JournalRejected JournalEventKind = "rejected"
 )
 
 type JournalEvent struct {

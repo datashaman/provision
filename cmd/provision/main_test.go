@@ -135,8 +135,13 @@ func TestProvisionSudoHelper(t *testing.T) {
 			"schemaVersion": "provision.dev/host-operation-result/v1alpha1",
 			"planId":        claim.PlanID, "operationId": claim.OperationID,
 			"attemptId": claim.AttemptID, "fencingToken": claim.FencingToken,
-			"outcome":     "succeeded",
-			"observation": map[string]any{"status": "staged", "digest": "sha256:bac304a885179a21fc889fef25cf09f12d8af19e30aa49c1c05e719d10f031b5"},
+			"outcome": "succeeded",
+			"observation": map[string]any{
+				"status": "staged",
+				"path":   "/var/lib/provision/artifacts/sha256/bac304a885179a21fc889fef25cf09f12d8af19e30aa49c1c05e719d10f031b5",
+				"digest": "sha256:bac304a885179a21fc889fef25cf09f12d8af19e30aa49c1c05e719d10f031b5",
+				"size":   123,
+			},
 		})
 		os.Exit(0)
 	}

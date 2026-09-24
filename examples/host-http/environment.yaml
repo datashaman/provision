@@ -1,7 +1,7 @@
 schemaVersion: provision.dev/v1alpha1
 kind: Environment
 name: lab
-application: hello
+application: provision-example-http
 targets:
   base:
     kind: host

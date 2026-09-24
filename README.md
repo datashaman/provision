@@ -16,14 +16,21 @@ The **product model is agreed**, with explicit later amendments recorded in deci
 
 The current goal is to turn the agreed model into executable acceptance cases and an end-to-end host deployment slice without weakening its guarantees.
 
-The current Go increment validates a strict single-HTTP configuration, can verify supplied Artifact bytes against the Revision digest, and inspects existing local or SSH hosts. It includes a non-Laravel Go HTTP fixture and a separate, privileged disposable-host bootstrap path. There is still **no** executable deployment Plan or workload apply path; the installed host executor enables inspection only.
+The current Go increment validates a strict single-HTTP configuration, can verify supplied Artifact bytes against the Revision digest, and inspects existing local or SSH hosts. Its non-Laravel example workload lives separately in [`datashaman/provision-example-http`](https://github.com/datashaman/provision-example-http). This repository also includes a separate, privileged disposable-host bootstrap path. There is still **no** executable deployment Plan or workload apply path; the installed host executor enables inspection only.
 
 ```sh
 go run ./cmd/provision config validate --file examples/host-http/root.yaml
 go run ./cmd/provision host inspect --address base.local --user marlinf
 ```
 
-Build the fixture bundle with `examples/host-http/build.sh amd64`, then pass its output to `config validate --artifact-file examples/host-http/dist/hello-linux-amd64.tar.gz` to verify its actual bytes. The bundle source in the Revision must be an external HTTPS or OCI location; the local file is a read-only verification input, not a deployment-source override. The `v0.1.0-alpha.1` Provision pre-release contains the external fixture asset used by this example. See the [host bootstrap guide](docs/host-bootstrap.md) before preparing a disposable machine. Never apply the bootstrap to the Gimme-managed `base.local` until the user has completed its separate reset.
+Download the example application from its own release and pass it to validation to verify its actual bytes:
+
+```sh
+gh release download v0.1.0 --repo datashaman/provision-example-http --pattern provision-example-http-linux-amd64.tar.gz --dir /tmp/provision-example-http
+go run ./cmd/provision config validate --file examples/host-http/root.yaml --artifact-file /tmp/provision-example-http/provision-example-http-linux-amd64.tar.gz
+```
+
+The local file is a read-only verification input, not a deployment-source override. See the [host bootstrap guide](docs/host-bootstrap.md) before preparing a disposable machine. Never apply the bootstrap to the Gimme-managed `base.local` until the user has completed its separate reset.
 
 Development uses an optional exact Go tool pin in `mise.toml`; mise is not a runtime dependency of Provision or deployed applications.
 

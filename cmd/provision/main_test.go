@@ -22,7 +22,7 @@ func TestConfigValidateVerifiesArtifactBytesWithoutChangingHost(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	artifact := filepath.Join(dir, "hello.tar.gz")
+	artifact := filepath.Join(dir, "provision-example-http.tar.gz")
 	content := []byte("fixture artifact bytes\n")
 	if err := os.WriteFile(artifact, content, 0600); err != nil {
 		t.Fatal(err)
@@ -34,7 +34,7 @@ func TestConfigValidateVerifiesArtifactBytesWithoutChangingHost(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	data = []byte(strings.Replace(string(data), "sha256:40817b0fcd85923742d5c16718c413d1dd832e94da54cff6b4aea44bc2df91b0", digest, 1))
+	data = []byte(strings.Replace(string(data), "sha256:bac304a885179a21fc889fef25cf09f12d8af19e30aa49c1c05e719d10f031b5", digest, 1))
 	if err := os.WriteFile(revision, data, 0600); err != nil {
 		t.Fatal(err)
 	}

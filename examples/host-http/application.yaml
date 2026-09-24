@@ -1,6 +1,6 @@
 schemaVersion: provision.dev/v1alpha1
 kind: Application
-name: hello
+name: provision-example-http
 components:
   web:
     role: http

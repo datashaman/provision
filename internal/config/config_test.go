@@ -23,7 +23,7 @@ func TestLoadExampleDeterministically(t *testing.T) {
 	if first.Digest != second.Digest || !strings.HasPrefix(first.Digest, "sha256:") {
 		t.Fatalf("non-deterministic digest: %q / %q", first.Digest, second.Digest)
 	}
-	if first.Application.Name != "hello" || first.Environment.Name != "lab" || first.Revision.Name != "hello-v1" {
+	if first.Application.Name != "provision-example-http" || first.Environment.Name != "lab" || first.Revision.Name != "provision-example-http-v1" {
 		t.Fatalf("unexpected compiled configuration: %+v", first)
 	}
 }
@@ -58,16 +58,16 @@ func TestRejectsUnsafeOrInvalidDocuments(t *testing.T) {
 	}{
 		{"unknown field", "application.yaml", "kind: Application", "kind: Application\nunknown: true", "field unknown not found"},
 		{"unknown nested field", "application.yaml", "role: http", "role: http\n    command: arbitrary", "field command not found"},
-		{"duplicate key", "application.yaml", "name: hello", "name: hello\nname: second", "duplicate YAML key"},
-		{"alias", "application.yaml", "name: hello", "name: &app hello", "aliases and anchors"},
+		{"duplicate key", "application.yaml", "name: provision-example-http", "name: provision-example-http\nname: second", "duplicate YAML key"},
+		{"alias", "application.yaml", "name: provision-example-http", "name: &app provision-example-http", "aliases and anchors"},
 		{"multiple documents", "revision.yaml", "kind: Revision", "kind: Revision\n---\nkind: Revision", "multiple YAML documents"},
-		{"wrong application", "environment.yaml", "application: hello", "application: other", "same application"},
+		{"wrong application", "environment.yaml", "application: provision-example-http", "application: other", "same application"},
 		{"unsupported component", "application.yaml", "role: http", "role: worker", "must be an HTTP service"},
 		{"unsafe health path", "application.yaml", "path: /live", "path: /live check", "liveness health path"},
 		{"unsafe host", "environment.yaml", "address: base.local", "address: -oProxyCommand=evil", "existing remote host"},
 		{"artifact credential", "revision.yaml", "https://github.com", "https://user:secret@github.com", "immutable artifact source"},
-		{"artifact query", "revision.yaml", "hello-linux-amd64.tar.gz", "hello-linux-amd64.tar.gz?token=secret", "immutable artifact source"},
-		{"bad digest", "revision.yaml", "sha256:40817b0fcd85923742d5c16718c413d1dd832e94da54cff6b4aea44bc2df91b0", "sha256:bad", "sha256 digest"},
+		{"artifact query", "revision.yaml", "provision-example-http-linux-amd64.tar.gz", "provision-example-http-linux-amd64.tar.gz?token=secret", "immutable artifact source"},
+		{"bad digest", "revision.yaml", "sha256:bac304a885179a21fc889fef25cf09f12d8af19e30aa49c1c05e719d10f031b5", "sha256:bad", "sha256 digest"},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {

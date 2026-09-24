@@ -2,7 +2,7 @@
 
 This is the explicit, privileged preparation step for the first native HTTP tracer. It is not a Deployment or a substitute for a Plan. It uses a small audited shell script rather than Ansible; no runtime component depends on Ansible. The script currently supports Ubuntu only. It refuses to run if `/srv/gimme` or a Gimme systemd unit is present.
 
-Bootstrap creates a non-login `provision-<environment>` account, a private Environment directory, and a root-owned immutable release root. It installs a root-owned nonresident executor and one public verification key, then gives one existing operator account passwordless `sudo` access to that executable alone. The executor supports inspection plus four Plan-authorized typed operations: Artifact staging, Generation installation, candidate systemd start, and candidate Health Contract verification. It accepts no arbitrary command or route operation. An operator's other host privileges, if any, are outside this restricted path.
+Bootstrap creates a non-login `provision-<environment>` runtime account plus root-owned Environment and immutable release directories that the account cannot modify. It installs a root-owned nonresident executor and one public verification key, then gives one existing operator account passwordless `sudo` access to that executable alone. The executor supports inspection plus four Plan-authorized typed operations: Artifact staging, Generation installation, candidate systemd start, and candidate Health Contract verification. It accepts no arbitrary command or route operation. An operator's other host privileges, if any, are outside this restricted path.
 
 ## Before touching a host
 

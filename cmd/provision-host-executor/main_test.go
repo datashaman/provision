@@ -31,6 +31,23 @@ func TestExecutorRejectsDeploymentAndArbitraryCommands(t *testing.T) {
 	}
 }
 
+func TestEnvironmentAccountIdentityDoesNotRequireWritableHome(t *testing.T) {
+	fields := strings.Split("provision-lab:x:104:107::/var/lib/provision/environments/lab:/usr/sbin/nologin", ":")
+	if !validEnvironmentAccount(fields, "/var/lib/provision/environments/lab") {
+		t.Fatal("valid non-login system account rejected")
+	}
+
+	for _, invalid := range []string{
+		"provision-lab:x:1000:107::/var/lib/provision/environments/lab:/usr/sbin/nologin",
+		"provision-lab:x:104:107::/tmp/writable:/usr/sbin/nologin",
+		"provision-lab:x:104:107::/var/lib/provision/environments/lab:/bin/sh",
+	} {
+		if validEnvironmentAccount(strings.Split(invalid, ":"), "/var/lib/provision/environments/lab") {
+			t.Fatalf("unsafe account identity accepted: %s", invalid)
+		}
+	}
+}
+
 func TestAuthorizedArtifactPreparationRejectsReplayAndStaleFence(t *testing.T) {
 	dir := t.TempDir()
 	privatePath := filepath.Join(dir, "authority.key")

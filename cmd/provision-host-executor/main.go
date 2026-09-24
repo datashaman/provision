@@ -145,7 +145,8 @@ func inspect(environment, operator string) host.BootstrapStatus {
 	}
 	_, err := os.Stat("/sys/fs/cgroup/cgroup.controllers")
 	result.CgroupV2 = err == nil
-	result.GenerationStorageReady = hasAccount(account, "/var/lib/provision/environments/"+environment) && rootOwned("/var/lib/provision/environments/"+environment+"/releases", 0755)
+	environmentHome := "/var/lib/provision/environments/" + environment
+	result.GenerationStorageReady = hasAccount(account, environmentHome) && rootOwned(environmentHome, 0755) && rootOwned(environmentHome+"/releases", 0755)
 	if !result.GenerationStorageReady {
 		result.Findings = append(result.Findings, "dedicated Environment account is missing or changed")
 	}
@@ -366,20 +367,19 @@ func hasAccount(name, home string) bool {
 	for _, line := range strings.Split(string(data), "\n") {
 		fields := strings.Split(line, ":")
 		if len(fields) >= 7 && fields[0] == name {
-			uid, uidErr := strconv.Atoi(fields[2])
-			gid, gidErr := strconv.Atoi(fields[3])
-			if uidErr != nil || gidErr != nil || uid <= 0 || uid >= 1000 || fields[5] != home || fields[6] != "/usr/sbin/nologin" {
-				return false
-			}
-			info, err := os.Lstat(home)
-			if err != nil || !info.IsDir() || info.Mode().Perm() != 0750 {
-				return false
-			}
-			stat, ok := info.Sys().(*syscall.Stat_t)
-			return ok && stat.Uid == uint32(uid) && stat.Gid == uint32(gid)
+			return validEnvironmentAccount(fields, home)
 		}
 	}
 	return false
+}
+
+func validEnvironmentAccount(fields []string, home string) bool {
+	if len(fields) < 7 {
+		return false
+	}
+	uid, uidErr := strconv.Atoi(fields[2])
+	gid, gidErr := strconv.Atoi(fields[3])
+	return uidErr == nil && gidErr == nil && uid > 0 && uid < 1000 && gid > 0 && fields[5] == home && fields[6] == "/usr/sbin/nologin"
 }
 
 func rootOwned(path string, mode os.FileMode) bool {

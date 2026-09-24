@@ -114,7 +114,7 @@ if getent passwd "$account" >/dev/null; then
   [[ "$existing_uid" =~ ^[0-9]+$ && "$existing_uid" -gt 0 && "$existing_uid" -lt 1000 && "$existing_home" == "$environment_home" && "$existing_shell" == /usr/sbin/nologin ]] || {
     echo "Environment account differs from requested identity" >&2; exit 1;
   }
-  expect_existing_path "$environment_home" directory "$(id -u "$account"):$(id -g "$account"):750"
+  expect_existing_path "$environment_home" directory 0:0:755
 elif [[ -e "$environment_home" ]]; then
   echo "Environment home exists without its account; refusing bootstrap" >&2
   exit 1
@@ -154,7 +154,7 @@ if ! getent passwd "$account" >/dev/null; then
 fi
 install -d -o root -g root -m 0755 /usr/local/libexec /etc/provision /etc/provision/bootstrap /etc/provision/authority /var/lib/provision /var/lib/provision/environments /var/lib/provision/artifacts "$artifact_cache"
 install -d -o root -g root -m 0700 /var/lib/provision/authority "$authority_state"
-install -d -o "$account" -g "$account" -m 0750 "$environment_home"
+install -d -o root -g root -m 0755 "$environment_home"
 install -d -o root -g root -m 0755 "$release_root"
 if [[ ! -e "$executor_path" ]]; then
   install -o root -g root -m 0755 "$binary" "$executor_path"

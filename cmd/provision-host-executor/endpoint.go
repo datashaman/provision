@@ -50,7 +50,11 @@ func newAdminCaddyController() caddyController {
 }
 
 func (controller adminCaddyController) Read(ctx context.Context, path string) ([]byte, error) {
-	return controller.request(ctx, http.MethodGet, path, nil)
+	data, err := controller.request(ctx, http.MethodGet, path, nil)
+	if err == nil && bytes.Equal(bytes.TrimSpace(data), []byte("null")) {
+		return nil, errCaddyPathNotFound
+	}
+	return data, err
 }
 
 func (controller adminCaddyController) Replace(ctx context.Context, path string, body []byte) error {

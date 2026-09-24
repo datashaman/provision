@@ -130,6 +130,10 @@ func TestAuthorizedCandidateLifecyclePreservesActiveAndCleansFailedCandidate(t *
 	defer server.Close()
 	health := planner.HealthInput{GenerationReference: generation.GenerationReference, Unit: systemd.Unit, LivenessPath: "/live", ReadinessPath: "/ready", CandidateVerifyPath: "/verify", Port: systemd.Port}
 	verify := planner.Operation{ID: "op-04", Kind: planner.VerifyCandidate, DependsOn: []string{"op-03"}, Input: planner.OperationInput{Health: &health}}
+	preflight, err := observeCandidateOperation(context.Background(), verify, record, paths)
+	if err != nil || preflight.State != "pending" || !strings.Contains(string(preflight.Evidence), `"switchEligible":true`) {
+		t.Fatalf("healthy verification preflight = %+v, %v; want pending evidence so signed verification executes", preflight, err)
+	}
 	verifyResult, _ := executeCandidateOperation(t, paths, record, signer, publicKey, verify, 3)
 	if verifyResult.Outcome != operation.OutcomeSucceeded || !strings.Contains(string(verifyResult.Observation), `"candidateActive":true`) || !strings.Contains(string(verifyResult.Observation), `"switchEligible":true`) {
 		t.Fatalf("authorized candidate verification = %+v", verifyResult)

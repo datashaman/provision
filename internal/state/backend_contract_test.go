@@ -91,6 +91,15 @@ func TestSQLiteBackendRequiresSuccessfulOperationDependencies(t *testing.T) {
 				Account: "provision-lab", ReleaseDirectory: "/var/lib/provision/environments/lab/releases/revision-a-333333333333"},
 		}},
 	})
+	plan.Operations = append(plan.Operations, planner.Operation{
+		ID: "op-05", Kind: planner.SwitchEndpoint, DependsOn: []string{"op-02"},
+		Input: planner.OperationInput{Endpoint: &planner.EndpointInput{
+			GenerationReference: planner.GenerationReference{ID: "revision-a-333333333333", Revision: "revision-a", ArtifactDigest: "sha256:" + strings.Repeat("3", 64),
+				Account: "provision-lab", ReleaseDirectory: "/var/lib/provision/environments/lab/releases/revision-a-333333333333"},
+			Unit: "provision-lab-web-333333333333.service", RouteID: "provision-lab-web", ListenPort: 18080,
+			Upstream: "127.0.0.1:28181", UpstreamPort: 28181, DrainPolicy: "caddy-graceful-config-reload",
+		}},
+	})
 	plan.ID = ""
 	encoded, err := json.Marshal(plan)
 	if err != nil {
@@ -115,8 +124,15 @@ func TestSQLiteBackendRequiresSuccessfulOperationDependencies(t *testing.T) {
 	if err := backend.CompleteOperation(context.Background(), CompleteOperationRequest{AttemptID: first.AttemptID, Holder: first.Holder, PlanID: plan.ID, OperationID: "op-01", FencingToken: first.FencingToken, Outcome: ExecutionSucceeded, Observation: json.RawMessage(`{"status":"staged"}`), CompletedAt: now.Add(2*time.Minute + time.Second)}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := backend.BeginOperation(context.Background(), BeginOperationRequest{PlanID: plan.ID, OperationID: "op-02", Holder: "holder", StartedAt: now.Add(3 * time.Minute), LeaseDuration: time.Minute}); err != nil {
+	second, err := backend.BeginOperation(context.Background(), BeginOperationRequest{PlanID: plan.ID, OperationID: "op-02", Holder: "holder", StartedAt: now.Add(3 * time.Minute), LeaseDuration: time.Minute})
+	if err != nil {
 		t.Fatalf("candidate did not begin after successful dependency: %v", err)
+	}
+	if err := backend.CompleteOperation(context.Background(), CompleteOperationRequest{AttemptID: second.AttemptID, Holder: second.Holder, PlanID: plan.ID, OperationID: "op-02", FencingToken: second.FencingToken, Outcome: ExecutionSucceeded, Observation: json.RawMessage(`{"status":"installed"}`), CompletedAt: now.Add(3*time.Minute + time.Second)}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := backend.BeginOperation(context.Background(), BeginOperationRequest{PlanID: plan.ID, OperationID: "op-05", Holder: "holder", StartedAt: now.Add(4 * time.Minute), LeaseDuration: time.Minute}); err != nil {
+		t.Fatalf("Endpoint switch did not begin after successful dependency: %v", err)
 	}
 }
 

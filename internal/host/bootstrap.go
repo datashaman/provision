@@ -28,6 +28,7 @@ type BootstrapStatus struct {
 	JournaldActive         bool             `json:"journaldActive"`
 	CgroupV2               bool             `json:"cgroupV2"`
 	ExecutorDigest         string           `json:"executorDigest,omitempty"`
+	AuthorityKeyID         string           `json:"authorityKeyId,omitempty"`
 	GenerationStorageReady bool             `json:"generationStorageReady,omitempty"`
 	CaddyConfigValid       bool             `json:"caddyConfigValid,omitempty"`
 	CaddyAdminReachable    bool             `json:"caddyAdminReachable,omitempty"`
@@ -92,10 +93,10 @@ func CheckBootstrap(ctx context.Context, target Target, environment, operator st
 	if status.Environment != environment || status.Operator != operator || status.Account != "provision-"+environment {
 		return BootstrapStatus{}, errors.New("host bootstrap check returned mismatched identity")
 	}
-	if len(status.AllowedOperations) != 1 || status.AllowedOperations[0] != "inspect" {
+	if len(status.AllowedOperations) != 2 || status.AllowedOperations[0] != "inspect" || status.AllowedOperations[1] != "stageArtifact" {
 		return BootstrapStatus{}, errors.New("unexpected host executor operation is enabled")
 	}
-	if status.Ready && (status.OS != "ubuntu" || status.Architecture == "" || !strings.HasPrefix(status.SystemdVersion, "systemd ") || status.SSHServerVersion == "" || status.CaddyVersion == "" || !status.CaddyActive || !status.JournaldActive || !strings.HasPrefix(status.ExecutorDigest, "sha256:") || len(status.Findings) != 0) {
+	if status.Ready && (status.OS != "ubuntu" || status.Architecture == "" || !strings.HasPrefix(status.SystemdVersion, "systemd ") || status.SSHServerVersion == "" || status.CaddyVersion == "" || !status.CaddyActive || !status.JournaldActive || !strings.HasPrefix(status.ExecutorDigest, "sha256:") || !strings.HasPrefix(status.AuthorityKeyID, "sha256:") || len(status.Findings) != 0) {
 		return BootstrapStatus{}, errors.New("host bootstrap check returned incomplete readiness evidence")
 	}
 	return status, nil

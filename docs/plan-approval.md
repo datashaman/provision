@@ -31,6 +31,6 @@ go run ./cmd/provision plan status \
   --state .provision/state.db
 ```
 
-Status opens an existing backend read-only. It reports the immutable Plan, approval actor and times, decision, and eligibility. A persisted preview begins as `unapproved`. An approval is eligible only while it is approved, unexpired, and still the Environment's current Plan head. Persisting a different preview for that Environment marks the older Plan `superseded` without deleting either its Plan bytes or approval history.
+Status opens an existing backend and applies any supported schema migration before reading it. It reports the immutable Plan, approval actor and times, decision, and eligibility. A persisted preview begins as `unapproved`. An approval is eligible only while it is approved, unexpired, and still the Environment's current Plan head. Persisting a different preview for that Environment marks the older Plan `superseded` without deleting either its Plan bytes or approval history.
 
-Eligibility is not execution authorization. Issue #6 adds Plan-bound operation authorization, a fenced Environment lease, and journaling; until then the host executor continues to expose inspection only.
+Eligibility is necessary but is not itself host execution authorization. Execution acquires a fenced execution lease for the Environment mutation, journals its intent, and sends a separate short-lived signed authorization for one exact operation to the restricted host executor. This is distinct from the optional team-member **Environment Lease** in the product model. See [Authorized release preparation](release-preparation.md).

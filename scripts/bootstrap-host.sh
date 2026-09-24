@@ -6,7 +6,7 @@ PATH=/usr/sbin:/usr/bin:/sbin:/bin
 export PATH
 
 usage() {
-  echo "usage: $0 (--dry-run|--apply) --environment NAME --operator USER --binary LINUX_EXECUTOR" >&2
+  echo "usage: $0 (--dry-run|--apply) --environment NAME --operator USER --binary LINUX_EXECUTOR --authority-public-key FILE" >&2
   exit 2
 }
 
@@ -14,22 +14,27 @@ mode=""
 environment=""
 operator=""
 binary=""
+authority_public_key=""
 while (($#)); do
   case "$1" in
     --dry-run|--apply) [[ -z "$mode" ]] || usage; mode="$1"; shift ;;
     --environment) (($# >= 2)) || usage; environment="$2"; shift 2 ;;
     --operator) (($# >= 2)) || usage; operator="$2"; shift 2 ;;
     --binary) (($# >= 2)) || usage; binary="$2"; shift 2 ;;
+    --authority-public-key) (($# >= 2)) || usage; authority_public_key="$2"; shift 2 ;;
     *) usage ;;
   esac
 done
-[[ -n "$mode" && "$environment" =~ ^[a-z][a-z0-9-]{0,19}$ && "$operator" =~ ^[a-z_][a-z0-9_-]*$ && "$operator" != root && -f "$binary" && ! -L "$binary" ]] || usage
+[[ -n "$mode" && "$environment" =~ ^[a-z][a-z0-9-]{0,19}$ && "$operator" =~ ^[a-z_][a-z0-9_-]*$ && "$operator" != root && -f "$binary" && ! -L "$binary" && -f "$authority_public_key" && ! -L "$authority_public_key" ]] || usage
 
 account="provision-$environment"
 executor_path="/usr/local/libexec/provision-host-executor"
 record_path="/etc/provision/bootstrap/$environment.json"
 sudoers_path="/etc/sudoers.d/provision-$environment"
 environment_home="/var/lib/provision/environments/$environment"
+authority_path="/etc/provision/authority/$environment.pub"
+authority_state="/var/lib/provision/authority/$environment"
+artifact_cache="/var/lib/provision/artifacts/sha256"
 
 sha256_file() {
   if command -v sha256sum >/dev/null 2>&1; then
@@ -39,14 +44,26 @@ sha256_file() {
   fi
 }
 
+sha256_stdin() {
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum | cut -d ' ' -f1
+  else
+    shasum -a 256 | cut -d ' ' -f1
+  fi
+}
+
 digest="sha256:$(sha256_file "$binary")"
+authority_key="$(tr -d '\n' < "$authority_public_key")"
+[[ "$authority_key" =~ ^[0-9a-f]{64}$ ]] || { echo "authority public key is invalid" >&2; exit 1; }
+authority_key_id="sha256:$(printf '%s' "$authority_key" | sha256_stdin)"
 if [[ "$mode" == --dry-run ]]; then
   printf 'Host bootstrap preview only:\n'
   printf '  Environment: %s\n  Account: %s (nologin)\n  Operator: %s\n' "$environment" "$account" "$operator"
   printf '  Executor: %s (%s)\n' "$executor_path" "$digest"
+  printf '  Authorization verifier: %s (%s)\n' "$authority_path" "$authority_key_id"
   printf '  Record: %s\n  Restricted sudoers: %s\n' "$record_path" "$sudoers_path"
   printf '  Required services: systemd, Caddy\n'
-  printf '  Deployment operations remain disabled until Plan-bound authorization exists.\nNo changes made.\n'
+  printf '  Enabled mutation: signed, Plan-bound Artifact staging only.\nNo changes made.\n'
   exit 0
 fi
 
@@ -59,10 +76,10 @@ if find /etc/systemd/system -maxdepth 1 -name 'gimme-*' -print -quit | grep -q .
   exit 1
 fi
 id -u "$operator" >/dev/null 2>&1 || { echo "operator user does not exist" >&2; exit 1; }
-for path in /usr/local/libexec /etc/provision /etc/provision/bootstrap /var/lib/provision /var/lib/provision/environments; do
+for path in /usr/local/libexec /etc/provision /etc/provision/bootstrap /etc/provision/authority /var/lib/provision /var/lib/provision/environments /var/lib/provision/authority /var/lib/provision/artifacts "$artifact_cache" "$authority_state"; do
   [[ ! -L "$path" ]] || { echo "symlink at $path; refusing bootstrap" >&2; exit 1; }
 done
-for path in "$executor_path" "$record_path" "$sudoers_path" "$environment_home"; do
+for path in "$executor_path" "$record_path" "$sudoers_path" "$environment_home" "$authority_path"; do
   [[ ! -L "$path" ]] || { echo "symlink at $path; refusing bootstrap" >&2; exit 1; }
 done
 expect_existing_path() {
@@ -76,12 +93,16 @@ expect_existing_path() {
   actual="$(stat -c '%u:%g:%a' "$path")"
   [[ "$actual" == "$expected" ]] || { echo "ownership or mode drift at $path ($actual, expected $expected); refusing bootstrap" >&2; exit 1; }
 }
-for path in /usr/local/libexec /etc/provision /etc/provision/bootstrap /var/lib/provision /var/lib/provision/environments; do
+for path in /usr/local/libexec /etc/provision /etc/provision/bootstrap /etc/provision/authority /var/lib/provision /var/lib/provision/environments /var/lib/provision/artifacts "$artifact_cache"; do
   expect_existing_path "$path" directory 0:0:755
+done
+for path in /var/lib/provision/authority "$authority_state"; do
+  expect_existing_path "$path" directory 0:0:700
 done
 expect_existing_path "$executor_path" file 0:0:755
 expect_existing_path "$record_path" file 0:0:644
 expect_existing_path "$sudoers_path" file 0:0:440
+expect_existing_path "$authority_path" file 0:0:644
 if [[ -e "$executor_path" && "sha256:$(sha256_file "$executor_path")" != "$digest" ]]; then
   echo "an existing executor has different bytes; refusing bootstrap" >&2
   exit 1
@@ -100,9 +121,11 @@ fi
 
 record_tmp="$(mktemp)"
 sudoers_tmp="$(mktemp)"
-trap 'rm -f "$record_tmp" "$sudoers_tmp"' EXIT
-printf '{"schemaVersion":"provision.dev/bootstrap/v1","environment":"%s","operator":"%s","account":"%s","executorDigest":"%s"}\n' \
-  "$environment" "$operator" "$account" "$digest" > "$record_tmp"
+authority_tmp="$(mktemp)"
+trap 'rm -f "$record_tmp" "$sudoers_tmp" "$authority_tmp"' EXIT
+printf '%s\n' "$authority_key" > "$authority_tmp"
+printf '{"schemaVersion":"provision.dev/bootstrap/v2","environment":"%s","operator":"%s","account":"%s","executorDigest":"%s","authorityKeyId":"%s"}\n' \
+  "$environment" "$operator" "$account" "$digest" "$authority_key_id" > "$record_tmp"
 printf '%s ALL=(root) NOPASSWD: %s\n' "$operator" "$executor_path" > "$sudoers_tmp"
 visudo -cf "$sudoers_tmp" >/dev/null
 if [[ -e "$record_path" ]] && ! cmp -s "$record_tmp" "$record_path"; then
@@ -111,6 +134,10 @@ if [[ -e "$record_path" ]] && ! cmp -s "$record_tmp" "$record_path"; then
 fi
 if [[ -e "$sudoers_path" ]] && ! cmp -s "$sudoers_tmp" "$sudoers_path"; then
   echo "executor sudoers rule differs; refusing to overwrite" >&2
+  exit 1
+fi
+if [[ -e "$authority_path" ]] && ! cmp -s "$authority_tmp" "$authority_path"; then
+  echo "authorization public key differs; refusing to overwrite" >&2
   exit 1
 fi
 
@@ -123,12 +150,14 @@ systemctl enable --now caddy
 if ! getent passwd "$account" >/dev/null; then
   adduser --system --group --no-create-home --home "$environment_home" --shell /usr/sbin/nologin "$account"
 fi
-install -d -o root -g root -m 0755 /usr/local/libexec /etc/provision /etc/provision/bootstrap /var/lib/provision /var/lib/provision/environments
+install -d -o root -g root -m 0755 /usr/local/libexec /etc/provision /etc/provision/bootstrap /etc/provision/authority /var/lib/provision /var/lib/provision/environments /var/lib/provision/artifacts "$artifact_cache"
+install -d -o root -g root -m 0700 /var/lib/provision/authority "$authority_state"
 install -d -o "$account" -g "$account" -m 0750 "$environment_home"
 if [[ ! -e "$executor_path" ]]; then
   install -o root -g root -m 0755 "$binary" "$executor_path"
 fi
 install -o root -g root -m 0644 "$record_tmp" "$record_path"
+install -o root -g root -m 0644 "$authority_tmp" "$authority_path"
 install -o root -g root -m 0440 "$sudoers_tmp" "$sudoers_path"
 visudo -cf "$sudoers_path" >/dev/null
 inspection="$(sudo -n -u "$operator" -- sudo -n "$executor_path" inspect --environment "$environment" --operator "$operator")"

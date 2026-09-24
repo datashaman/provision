@@ -11,7 +11,9 @@ import (
 	"time"
 
 	"provision/internal/approval"
+	"provision/internal/authority"
 	"provision/internal/config"
+	"provision/internal/execution"
 	"provision/internal/host"
 	"provision/internal/planner"
 	"provision/internal/state"
@@ -41,13 +43,118 @@ func run(args []string) error {
 		return runPlanApprove(args[2:])
 	case args[0] == "plan" && args[1] == "status":
 		return runPlanStatus(args[2:])
+	case args[0] == "authority" && args[1] == "keygen":
+		return runAuthorityKeygen(args[2:])
+	case args[0] == "deployment" && args[1] == "execute":
+		return runDeploymentExecute(args[2:])
+	case args[0] == "deployment" && args[1] == "status":
+		return runDeploymentStatus(args[2:])
 	default:
 		return usage()
 	}
 }
 
 func usage() error {
-	return errors.New("usage: provision host inspect ... | provision host bootstrap check ... | provision config validate ... | provision plan preview --file ROOT.yaml [--state PATH] | provision plan approve --file ROOT.yaml --plan DIGEST --actor ACTOR --state PATH | provision plan status --plan DIGEST --state PATH")
+	return errors.New("usage: provision host inspect ... | provision host bootstrap check ... | provision config validate ... | provision plan ... | provision authority keygen ... | provision deployment execute ... | provision deployment status ...")
+}
+
+func runAuthorityKeygen(args []string) error {
+	flags := flag.NewFlagSet("authority keygen", flag.ContinueOnError)
+	flags.SetOutput(os.Stderr)
+	privatePath := flags.String("private-key", "", "new private signing key path")
+	publicPath := flags.String("public-key", "", "new public verification key path")
+	if err := flags.Parse(args); err != nil {
+		return err
+	}
+	if flags.NArg() != 0 || *privatePath == "" || *publicPath == "" {
+		return errors.New("usage: provision authority keygen --private-key PATH --public-key PATH")
+	}
+	info, err := authority.GenerateKeyPair(*privatePath, *publicPath)
+	if err != nil {
+		return err
+	}
+	output := json.NewEncoder(os.Stdout)
+	output.SetIndent("", "  ")
+	return output.Encode(info)
+}
+
+func runDeploymentExecute(args []string) error {
+	flags := flag.NewFlagSet("deployment execute", flag.ContinueOnError)
+	flags.SetOutput(os.Stderr)
+	planID := flags.String("plan", "", "approved current Plan identity")
+	operationID := flags.String("operation", "", "exact operation identity from the Plan")
+	statePath := flags.String("state", "", "SQLite State Backend path")
+	signingKey := flags.String("signing-key", "", "local authority private key path")
+	leaseDuration := flags.Duration("lease-duration", 2*time.Minute, "fenced execution lease lifetime")
+	if err := flags.Parse(args); err != nil {
+		return err
+	}
+	if flags.NArg() != 0 || *planID == "" || *operationID == "" || *statePath == "" || *signingKey == "" || *leaseDuration <= 0 {
+		return errors.New("usage: provision deployment execute --plan DIGEST --operation ID --state PATH --signing-key PATH [--lease-duration 2m]")
+	}
+	signer, err := authority.LoadSigner(*signingKey)
+	if err != nil {
+		return err
+	}
+	backend, err := state.OpenExistingSQLiteForUpdate(*statePath)
+	if err != nil {
+		return err
+	}
+	defer backend.Close()
+	holder, err := execution.NewLocalHolder()
+	if err != nil {
+		return err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+	engine := execution.Engine{Backend: backend, Signer: signer, Handler: execution.LocalHostHandler{}, Now: time.Now}
+	result, err := engine.Execute(ctx, execution.Request{
+		PlanID: *planID, OperationID: *operationID, Holder: holder, LeaseDuration: *leaseDuration,
+	})
+	output := json.NewEncoder(os.Stdout)
+	output.SetIndent("", "  ")
+	if result.SchemaVersion != "" {
+		if encodeErr := output.Encode(result); encodeErr != nil {
+			return encodeErr
+		}
+	}
+	return err
+}
+
+func runDeploymentStatus(args []string) error {
+	flags := flag.NewFlagSet("deployment status", flag.ContinueOnError)
+	flags.SetOutput(os.Stderr)
+	planID := flags.String("plan", "", "Plan identity")
+	statePath := flags.String("state", "", "SQLite State Backend path")
+	if err := flags.Parse(args); err != nil {
+		return err
+	}
+	if flags.NArg() != 0 || *planID == "" || *statePath == "" {
+		return errors.New("usage: provision deployment status --plan DIGEST --state PATH")
+	}
+	backend, err := state.OpenExistingSQLiteForUpdate(*statePath)
+	if err != nil {
+		return err
+	}
+	defer backend.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	events, err := backend.LoadJournal(ctx, *planID)
+	if err != nil {
+		return err
+	}
+	rejected, err := backend.LoadRejectedResults(ctx, *planID)
+	if err != nil {
+		return err
+	}
+	output := json.NewEncoder(os.Stdout)
+	output.SetIndent("", "  ")
+	return output.Encode(struct {
+		SchemaVersion   string                 `json:"schemaVersion"`
+		PlanID          string                 `json:"planId"`
+		Events          []state.JournalEvent   `json:"events"`
+		RejectedResults []state.RejectedResult `json:"rejectedResults"`
+	}{"provision.dev/deployment-status/v1alpha2", *planID, events, rejected})
 }
 
 func runPlanPreview(args []string) error {
@@ -147,7 +254,7 @@ func runPlanStatus(args []string) error {
 	if flags.NArg() != 0 || *planID == "" || *statePath == "" {
 		return errors.New("usage: provision plan status --plan DIGEST --state PATH")
 	}
-	backend, err := state.OpenExistingSQLite(*statePath)
+	backend, err := state.OpenExistingSQLiteForUpdate(*statePath)
 	if err != nil {
 		return err
 	}
@@ -172,7 +279,11 @@ func buildCurrentPlan(ctx context.Context, path string) (planner.Preview, error)
 	if err != nil {
 		return planner.Preview{}, err
 	}
-	observation, err := host.CheckBootstrap(ctx, host.Target{Address: selection.Target.Address, User: selection.Target.User}, compiled.Environment.Name, selection.Target.User)
+	target := host.Target{Local: selection.Target.Local, Address: selection.Target.Address, User: selection.Target.User}
+	if target.Local {
+		target.User = ""
+	}
+	observation, err := host.CheckBootstrap(ctx, target, compiled.Environment.Name, selection.Target.User)
 	if err != nil {
 		return planner.Preview{}, err
 	}

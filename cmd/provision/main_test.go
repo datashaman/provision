@@ -5,6 +5,8 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"os/user"
@@ -12,6 +14,140 @@ import (
 	"strings"
 	"testing"
 )
+
+func TestAuthorizedReleasePreparationIsJournaledAcrossRestart(t *testing.T) {
+	dir := t.TempDir()
+	configPath := writeLocalHostConfiguration(t, dir)
+	writeLocalExecutorSudo(t, dir)
+	statePath := filepath.Join(dir, "state.db")
+	privateKeyPath := filepath.Join(dir, "authority.key")
+	publicKeyPath := filepath.Join(dir, "authority.pub")
+	executionLog := filepath.Join(dir, "execution.json")
+
+	keygen := exec.Command("go", "run", ".", "authority", "keygen", "--private-key", privateKeyPath, "--public-key", publicKeyPath)
+	keyOutput, err := keygen.CombinedOutput()
+	if err != nil {
+		t.Fatalf("authority key generation failed: %v\n%s", err, keyOutput)
+	}
+	var key struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(keyOutput, &key); err != nil || !strings.HasPrefix(key.ID, "sha256:") {
+		t.Fatalf("invalid authority key result: %v\n%s", err, keyOutput)
+	}
+
+	commandEnv := append(os.Environ(),
+		"PATH="+dir+string(os.PathListSeparator)+os.Getenv("PATH"),
+		"FAKE_AUTHORITY_KEY_ID="+key.ID,
+		"FAKE_EXECUTION_LOG="+executionLog,
+	)
+	preview := exec.Command("go", "run", ".", "plan", "preview", "--file", configPath, "--state", statePath)
+	preview.Env = commandEnv
+	previewOutput, err := preview.CombinedOutput()
+	if err != nil {
+		t.Fatalf("local Plan preview failed: %v\n%s", err, previewOutput)
+	}
+	planID := decodePlanID(t, previewOutput)
+
+	approve := exec.Command("go", "run", ".", "plan", "approve",
+		"--file", configPath,
+		"--plan", planID,
+		"--actor", authenticatedActor(t),
+		"--state", statePath,
+	)
+	approve.Env = commandEnv
+	if output, err := approve.CombinedOutput(); err != nil {
+		t.Fatalf("local Plan approval failed: %v\n%s", err, output)
+	}
+
+	execute := exec.Command("go", "run", ".", "deployment", "execute",
+		"--plan", planID,
+		"--operation", "op-01",
+		"--state", statePath,
+		"--signing-key", privateKeyPath,
+	)
+	execute.Env = commandEnv
+	executeOutput, err := execute.CombinedOutput()
+	if err != nil || !strings.Contains(string(executeOutput), `"outcome": "succeeded"`) {
+		t.Fatalf("authorized preparation failed: %v\n%s", err, executeOutput)
+	}
+
+	status := exec.Command("go", "run", ".", "deployment", "status", "--plan", planID, "--state", statePath)
+	statusOutput, err := status.CombinedOutput()
+	if err != nil {
+		t.Fatalf("journal status after restart failed: %v\n%s", err, statusOutput)
+	}
+	for _, evidence := range []string{`"kind": "intent"`, `"kind": "outcome"`, `"outcome": "succeeded"`, `"status": "staged"`} {
+		if !strings.Contains(string(statusOutput), evidence) {
+			t.Fatalf("journal omitted %s:\n%s", evidence, statusOutput)
+		}
+	}
+	envelope, err := os.ReadFile(executionLog)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(envelope), `"kind":"stageArtifact"`) || strings.Contains(string(envelope), `"command"`) {
+		t.Fatalf("host received an untyped or command-bearing mutation: %s", envelope)
+	}
+}
+
+func TestProvisionSudoHelper(t *testing.T) {
+	if os.Getenv("GO_WANT_PROVISION_SUDO_HELPER") != "1" {
+		return
+	}
+	separator := 0
+	for i, arg := range os.Args {
+		if arg == "--" {
+			separator = i + 1
+			break
+		}
+	}
+	args := os.Args[separator:]
+	if len(args) >= 3 && args[0] == "-n" && args[2] == "inspect" {
+		operator := authenticatedActor(t)
+		keyID := os.Getenv("FAKE_AUTHORITY_KEY_ID")
+		fmt.Fprintf(os.Stdout, `{"schemaVersion":"provision.dev/host-inspection/v1alpha1","environment":"lab","operator":%q,"account":"provision-lab","os":"ubuntu","osVersion":"26.04","architecture":"x86_64","systemdVersion":"systemd 259 (259.5-0ubuntu3.4)","sshServerVersion":"OpenSSH_10.2p1","caddyVersion":"2.6.2","caddyActive":true,"journaldActive":true,"cgroupV2":true,"executorDigest":"sha256:e066cdc1a1b8a625dfc32db5ec74c1e4ba7bc459a3a3fc09ccc6488c44d606c5","authorityKeyId":%q,"generationStorageReady":true,"caddyConfigValid":true,"caddyAdminReachable":true,"listeningTcpPorts":[18080,28181],"deployment":{"active":{"id":"provision-example-http-v0-aaaaaaaaaaaa","revision":"provision-example-http-v0","systemdUnit":"provision-lab-web-aaaaaaaaaaaa.service","releaseDirectory":"/var/lib/provision/environments/lab/releases/provision-example-http-v0-aaaaaaaaaaaa","port":28181,"routeId":"provision-lab-web","unitActive":true,"unitMatches":true,"routeObserved":true,"routeUpstream":"127.0.0.1:28181","routeMatches":true}},"allowedOperations":["inspect","stageArtifact"],"ready":true,"findings":[]}`+"\n", operator, keyID)
+		os.Exit(0)
+	}
+	if len(args) >= 3 && args[0] == "-n" && args[2] == "execute" {
+		data, err := io.ReadAll(io.LimitReader(os.Stdin, 1<<20))
+		if err != nil {
+			os.Exit(2)
+		}
+		if err := os.WriteFile(os.Getenv("FAKE_EXECUTION_LOG"), data, 0600); err != nil {
+			os.Exit(2)
+		}
+		var envelope struct {
+			Authorization struct {
+				Claim struct {
+					PlanID       string `json:"planId"`
+					OperationID  string `json:"operationId"`
+					AttemptID    string `json:"attemptId"`
+					FencingToken int64  `json:"fencingToken"`
+				} `json:"claim"`
+			} `json:"authorization"`
+		}
+		if json.Unmarshal(data, &envelope) != nil {
+			os.Exit(2)
+		}
+		claim := envelope.Authorization.Claim
+		_ = json.NewEncoder(os.Stdout).Encode(map[string]any{
+			"schemaVersion": "provision.dev/host-operation-result/v1alpha1",
+			"planId":        claim.PlanID, "operationId": claim.OperationID,
+			"attemptId": claim.AttemptID, "fencingToken": claim.FencingToken,
+			"outcome": "succeeded",
+			"observation": map[string]any{
+				"status": "staged",
+				"path":   "/var/lib/provision/artifacts/sha256/bac304a885179a21fc889fef25cf09f12d8af19e30aa49c1c05e719d10f031b5",
+				"digest": "sha256:bac304a885179a21fc889fef25cf09f12d8af19e30aa49c1c05e719d10f031b5",
+				"size":   123,
+			},
+		})
+		os.Exit(0)
+	}
+	fmt.Fprintln(os.Stderr, "unexpected sudo helper invocation", args)
+	os.Exit(2)
+}
 
 func TestPlanPreviewIsDeterministicAndReadOnly(t *testing.T) {
 	dir := t.TempDir()
@@ -329,6 +465,53 @@ func authenticatedActor(t *testing.T) string {
 	return current.Username
 }
 
+func writeLocalHostConfiguration(t *testing.T, dir string) string {
+	t.Helper()
+	root := filepath.Join("..", "..", "examples", "host-http")
+	for _, name := range []string{"root.yaml", "application.yaml", "revision.yaml"} {
+		data, err := os.ReadFile(filepath.Join(root, name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, name), data, 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	environment := fmt.Sprintf(`schemaVersion: provision.dev/v1alpha1
+kind: Environment
+name: lab
+application: provision-example-http
+targets:
+  current:
+    kind: host
+    local: true
+    user: %s
+implementations:
+  web:
+    kind: systemd
+    target: current
+    rollout: required
+    endpoint:
+      port: 18080
+`, authenticatedActor(t))
+	if err := os.WriteFile(filepath.Join(dir, "environment.yaml"), []byte(environment), 0600); err != nil {
+		t.Fatal(err)
+	}
+	return filepath.Join(dir, "root.yaml")
+}
+
+func writeLocalExecutorSudo(t *testing.T, dir string) {
+	t.Helper()
+	testBinary, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	script := fmt.Sprintf("#!/bin/sh\nGO_WANT_PROVISION_SUDO_HELPER=1 exec %q -test.run=TestProvisionSudoHelper -- \"$@\"\n", testBinary)
+	if err := os.WriteFile(filepath.Join(dir, "sudo"), []byte(script), 0700); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func runPlanApprovalCommand(t *testing.T, dir, sshLog, statePath, planID, actor, expiresAfter string, extraEnv ...string) ([]byte, error) {
 	t.Helper()
 	cmd := exec.Command("go", "run", ".", "plan", "approve",
@@ -378,7 +561,7 @@ case "$*" in
     ports='18080,28181'
     if [ "${FAKE_CANDIDATE_BUSY:-0}" = 1 ]; then ports='18080,27811,28181'; fi
     executor_digest="${FAKE_EXECUTOR_DIGEST:-sha256:e066cdc1a1b8a625dfc32db5ec74c1e4ba7bc459a3a3fc09ccc6488c44d606c5}"
-    printf '{"schemaVersion":"provision.dev/host-inspection/v1alpha1","environment":"lab","operator":"marlinf","account":"provision-lab","os":"ubuntu","osVersion":"26.04","architecture":"x86_64","systemdVersion":"systemd 259 (259.5-0ubuntu3.4)","sshServerVersion":"OpenSSH_10.2p1","caddyVersion":"%s","caddyActive":true,"journaldActive":true,"cgroupV2":true,"executorDigest":"%s","generationStorageReady":true,"caddyConfigValid":true,"caddyAdminReachable":true,"listeningTcpPorts":[%s],"deployment":{"active":{"id":"provision-example-http-v0-aaaaaaaaaaaa","revision":"provision-example-http-v0","systemdUnit":"provision-lab-web-aaaaaaaaaaaa.service","releaseDirectory":"/var/lib/provision/environments/lab/releases/provision-example-http-v0-aaaaaaaaaaaa","port":28181,"routeId":"provision-lab-web","unitActive":true,"unitMatches":true,"routeObserved":true,"routeUpstream":"127.0.0.1:28181","routeMatches":true}},"allowedOperations":["inspect"],"ready":true,"findings":[]}\n' "${FAKE_CADDY_VERSION:-2.6.2}" "$executor_digest" "$ports"
+    printf '{"schemaVersion":"provision.dev/host-inspection/v1alpha1","environment":"lab","operator":"marlinf","account":"provision-lab","os":"ubuntu","osVersion":"26.04","architecture":"x86_64","systemdVersion":"systemd 259 (259.5-0ubuntu3.4)","sshServerVersion":"OpenSSH_10.2p1","caddyVersion":"%s","caddyActive":true,"journaldActive":true,"cgroupV2":true,"executorDigest":"%s","authorityKeyId":"sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc","generationStorageReady":true,"caddyConfigValid":true,"caddyAdminReachable":true,"listeningTcpPorts":[%s],"deployment":{"active":{"id":"provision-example-http-v0-aaaaaaaaaaaa","revision":"provision-example-http-v0","systemdUnit":"provision-lab-web-aaaaaaaaaaaa.service","releaseDirectory":"/var/lib/provision/environments/lab/releases/provision-example-http-v0-aaaaaaaaaaaa","port":28181,"routeId":"provision-lab-web","unitActive":true,"unitMatches":true,"routeObserved":true,"routeUpstream":"127.0.0.1:28181","routeMatches":true}},"allowedOperations":["inspect","stageArtifact"],"ready":true,"findings":[]}\n' "${FAKE_CADDY_VERSION:-2.6.2}" "$executor_digest" "$ports"
     ;;
   *) exit 23 ;;
 esac
@@ -474,11 +657,16 @@ func TestHostBootstrapCheckRejectsUnsafeEnvironment(t *testing.T) {
 }
 
 func TestHostBootstrapDryRunChangesNothing(t *testing.T) {
-	bin := filepath.Join(t.TempDir(), "provision-host-executor")
+	dir := t.TempDir()
+	bin := filepath.Join(dir, "provision-host-executor")
+	publicKey := filepath.Join(dir, "authority.pub")
 	if err := os.WriteFile(bin, []byte("test binary"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	cmd := exec.Command("bash", "../../scripts/bootstrap-host.sh", "--dry-run", "--environment", "lab", "--operator", "marlinf", "--binary", bin)
+	if err := os.WriteFile(publicKey, []byte(strings.Repeat("0", 64)+"\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command("bash", "../../scripts/bootstrap-host.sh", "--dry-run", "--environment", "lab", "--operator", "marlinf", "--binary", bin, "--authority-public-key", publicKey)
 	output, err := cmd.CombinedOutput()
 	if err != nil || !strings.Contains(string(output), "No changes made") || !strings.Contains(string(output), "provision-lab") {
 		t.Fatalf("bootstrap dry-run failed: %v\n%s", err, output)

@@ -1,5 +1,5 @@
-// provision-host-executor is a nonresident, root-owned host entrypoint. This
-// first increment exposes inspection only; Plan-bound mutations arrive in #6.
+// provision-host-executor is a nonresident, root-owned host entrypoint. It
+// exposes inspection and explicitly authorized typed operations only.
 package main
 
 import (
@@ -24,6 +24,7 @@ import (
 	"syscall"
 	"time"
 
+	"provision/internal/authority"
 	"provision/internal/host"
 )
 
@@ -40,6 +41,7 @@ type bootstrapRecord struct {
 	Operator       string `json:"operator"`
 	Account        string `json:"account"`
 	ExecutorDigest string `json:"executorDigest"`
+	AuthorityKeyID string `json:"authorityKeyId"`
 }
 
 func main() {
@@ -50,13 +52,24 @@ func main() {
 }
 
 func run(args []string) error {
-	if len(args) == 0 || args[0] != "inspect" {
-		return errors.New("no deployment operations are enabled; only inspect is available")
+	if len(args) == 0 {
+		return errors.New("only inspect and authorized typed execution are available")
 	}
+	switch args[0] {
+	case "inspect":
+		return runInspect(args[1:])
+	case "execute":
+		return runExecute(args[1:])
+	default:
+		return errors.New("only inspect and authorized typed execution are available")
+	}
+}
+
+func runInspect(args []string) error {
 	flags := flag.NewFlagSet("inspect", flag.ContinueOnError)
 	environment := flags.String("environment", "", "Environment identity")
 	operator := flags.String("operator", "", "bootstrap operator")
-	if err := flags.Parse(args[1:]); err != nil {
+	if err := flags.Parse(args); err != nil {
 		return err
 	}
 	if flags.NArg() != 0 || !identifier.MatchString(*environment) || !username.MatchString(*operator) {
@@ -70,7 +83,7 @@ func run(args []string) error {
 
 func inspect(environment, operator string) host.BootstrapStatus {
 	account := "provision-" + environment
-	result := host.BootstrapStatus{SchemaVersion: "provision.dev/host-inspection/v1alpha1", Environment: environment, Operator: operator, Account: account, AllowedOperations: []string{"inspect"}, Findings: []string{}}
+	result := host.BootstrapStatus{SchemaVersion: "provision.dev/host-inspection/v1alpha1", Environment: environment, Operator: operator, Account: account, AllowedOperations: []string{"inspect", "stageArtifact"}, Findings: []string{}}
 	result.Architecture = strings.TrimSpace(command("uname", "-m"))
 	if data, err := os.ReadFile("/etc/os-release"); err == nil {
 		for _, line := range strings.Split(string(data), "\n") {
@@ -178,8 +191,19 @@ func inspect(environment, operator string) host.BootstrapStatus {
 	} else {
 		result.Findings = append(result.Findings, "executor binary is missing")
 	}
+	authorityPath := "/etc/provision/authority/" + environment + ".pub"
+	if !rootOwned(authorityPath, 0644) {
+		result.Findings = append(result.Findings, "authorization public key permissions or ownership have changed")
+	} else if _, keyID, err := authority.LoadVerifier(authorityPath); err != nil {
+		result.Findings = append(result.Findings, "authorization public key is invalid")
+	} else {
+		result.AuthorityKeyID = keyID
+	}
+	if !rootOwned("/var/lib/provision/authority", 0700) || !rootOwned("/var/lib/provision/authority/"+environment, 0700) || !rootOwned("/var/lib/provision/artifacts", 0755) || !rootOwned("/var/lib/provision/artifacts/sha256", 0755) {
+		result.Findings = append(result.Findings, "authorization or Artifact cache directories have changed")
+	}
 	var record bootstrapRecord
-	if data, err := os.ReadFile("/etc/provision/bootstrap/" + environment + ".json"); err != nil || json.Unmarshal(data, &record) != nil || record.SchemaVersion != "provision.dev/bootstrap/v1" || record.Environment != environment || record.Operator != operator || record.Account != account || record.ExecutorDigest != result.ExecutorDigest {
+	if data, err := os.ReadFile("/etc/provision/bootstrap/" + environment + ".json"); err != nil || json.Unmarshal(data, &record) != nil || record.SchemaVersion != "provision.dev/bootstrap/v2" || record.Environment != environment || record.Operator != operator || record.Account != account || record.ExecutorDigest != result.ExecutorDigest || record.AuthorityKeyID != result.AuthorityKeyID {
 		result.Findings = append(result.Findings, "bootstrap record differs from installed executor or identities")
 	}
 	result.Ready = len(result.Findings) == 0

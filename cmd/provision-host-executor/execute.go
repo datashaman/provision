@@ -189,7 +189,7 @@ func loadExecutionAuthority(paths executionPaths, environment, operator string) 
 	if json.Unmarshal(data, &record) != nil || record.SchemaVersion != "provision.dev/bootstrap/v2" || record.Environment != environment || record.Operator != operator || record.Account != "provision-"+environment || record.ExecutorDigest != executorDigest {
 		return bootstrapRecord{}, nil, errors.New("bootstrap authority record does not match this executor and identity")
 	}
-	if !hasAccount(record.Account, paths.environmentHome) || !rootOwned(paths.environmentHome, 0755) || !rootOwned(filepath.Join(paths.environmentHome, "releases"), 0755) || !rootOwned(paths.systemdUnits, 0755) {
+	if !candidateStorageReady(record.Account, paths.environmentHome) || !rootOwned(paths.systemdUnits, 0755) {
 		return bootstrapRecord{}, nil, errors.New("candidate execution directories or Environment account are unsafe")
 	}
 	publicKey, keyID, err := authority.LoadVerifier(paths.publicKey)

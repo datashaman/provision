@@ -146,7 +146,7 @@ func inspect(environment, operator string) host.BootstrapStatus {
 	_, err := os.Stat("/sys/fs/cgroup/cgroup.controllers")
 	result.CgroupV2 = err == nil
 	environmentHome := "/var/lib/provision/environments/" + environment
-	result.GenerationStorageReady = hasAccount(account, environmentHome) && rootOwned(environmentHome, 0755) && rootOwned(environmentHome+"/releases", 0755)
+	result.GenerationStorageReady = candidateStorageReady(account, environmentHome)
 	if !result.GenerationStorageReady {
 		result.Findings = append(result.Findings, "dedicated Environment account is missing or changed")
 	}
@@ -380,6 +380,10 @@ func validEnvironmentAccount(fields []string, home string) bool {
 	uid, uidErr := strconv.Atoi(fields[2])
 	gid, gidErr := strconv.Atoi(fields[3])
 	return uidErr == nil && gidErr == nil && uid > 0 && uid < 1000 && gid > 0 && fields[5] == home && fields[6] == "/usr/sbin/nologin"
+}
+
+func candidateStorageReady(account, environmentHome string) bool {
+	return hasAccount(account, environmentHome) && rootOwned(environmentHome, 0755) && rootOwned(filepath.Join(environmentHome, "releases"), 0755)
 }
 
 func rootOwned(path string, mode os.FileMode) bool {

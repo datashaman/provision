@@ -14,9 +14,9 @@ The matching host executor digest was `sha256:c532f3b78d291c400761b187c1fe8c14e8
 
 | Provision build | Controller | Remote Host | SSH identity | Result |
 | --- | --- | --- | --- | --- |
-| commit `051460d7040ad6bae5cc0ac0c33ed2ef45daccd6`, binary `sha256:f467d84db5031f990a99770a8f20ed88afa08c35eeccfc78be8d1c02677eb862` | macOS, Darwin `24.6.0`, `arm64` | Ubuntu Server 26.04, kernel `7.0.0-34-generic`, `x86_64`; systemd `259 (259.5-0ubuntu3.4)`; Caddy `2.6.2`; OpenSSH `10.2p1 Ubuntu-2ubuntu3.6` | strict `known_hosts`; ED25519 `SHA256:Wncb+SL2zJfiTjCVKeOVuYqJIZ3zC9yhIfPiR2B9qIo` | Healthy rollout and all five remote failure classes passed in one repeatable run on `base`; see the [2026-09-25 evidence](evidence/2026-09-25-base-host-remote-ssh-matrix.md). |
+| commit `6598d23f0182d858713da1effb1462abee662b5c`, binary `sha256:caff13cd97adcfde3ea9b6573a59f8e601480cebd015f47c4520b7c1b4dfa349` | macOS, Darwin `24.6.0`, `arm64` | Ubuntu Server 26.04, kernel `7.0.0-34-generic`, `x86_64`; systemd `259 (259.5-0ubuntu3.4)`; Caddy `2.6.2`; OpenSSH `10.2p1 Ubuntu-2ubuntu3.6` | strict `known_hosts`; ED25519 `SHA256:E6M0uy67VlvnLBWjZhP+Ltk6v7wDS1yYo3eyqBOut6Y` | Healthy rollout plus all six remote failure classes passed in one repeatable run on `base`; see the [2026-09-25 evidence](evidence/2026-09-25-base-host-remote-ssh-matrix.md). |
 
-The matching remote executor digest was `sha256:d3e958df7d6814df3510ad875f3c5e53e7ad82936e4aaf9f01ec263916110f77`. The authority private key, approvals, and State Backend remained on the controller. The host received only observations and signed typed operations through a restricted one-shot executor.
+The matching remote executor digest was `sha256:e9c910de10f89045c98d426454c60a3e7e467e3ed7c12c6994bda91bc93f6c38`. The authority private key, approvals, and State Backend remained on the controller. The host received only observations and signed typed operations through a restricted one-shot executor.
 
 ## Guarantees exercised
 
@@ -29,6 +29,7 @@ The matching remote executor digest was `sha256:d3e958df7d6814df3510ad875f3c5e53
 - Only the expected Provision units and immutable release directories appear; Gimme-owned resources remain absent.
 - Over SSH, losing a completed operation's response does not become success or cause blind replay. A new Provision process and a new one-shot remote executor reconcile the journal against fresh host evidence.
 - Over SSH, a changed or unknown host key fails before the executor is invoked.
+- An in-flight SSH disconnect and killed Artifact-stage executor produce an uncertain journal outcome. Resume removes only temporary files proven to belong to an earlier signed attempt from the same Environment before safely restaging.
 
 ## Limits
 

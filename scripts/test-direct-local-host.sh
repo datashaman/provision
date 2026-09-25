@@ -449,11 +449,11 @@ assert_host_state interruption provision-example-http-v3 provision-example-http-
 
 echo "[6/6] stale executor attempt"
 plan_id="$stale_plan_id"
-for operation in op-01 op-02 op-03 op-04; do execute_success stale "$stale_state" "$operation"; done
-execute_failure stale "$stale_state" op-05 op-05-stale 'fencing token is stale'
-assert_contains "$work_dir/stale/op-05-stale.txt" 'outcome recorded as uncertain'
+for operation in op-01 op-02 op-03; do execute_success stale "$stale_state" "$operation"; done
+execute_failure stale "$stale_state" op-04 op-04-stale 'fencing token is stale'
+assert_contains "$work_dir/stale/op-04-stale.txt" 'outcome recorded as uncertain'
 write_status stale "$stale_state" final
-journal_assert_latest "$work_dir/stale/final-status.json" op-05 outcome uncertain
+journal_assert_latest "$work_dir/stale/final-status.json" op-04 outcome uncertain
 assert_host_state stale provision-example-http-v3 provision-example-http-v2 \
   provision-example-http-v0-3-0-fail-stable-b6f188a9b2f5 \
   provision-example-http-v1-bac304a88517 \

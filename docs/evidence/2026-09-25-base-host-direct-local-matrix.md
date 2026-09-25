@@ -22,9 +22,11 @@ Bootstrap inspection was ready before the run. The initial host had no Provision
 | Endpoint switch failure | Caddy was deliberately stopped for the v2 switch. Provision recorded uncertainty, Caddy was restored, and explicit resume completed the operation. |
 | Post-switch failure | The `fail-stable` candidate passed direct checks, failed through the stable Endpoint, and automatically restored the directly verified v2 Generation. |
 | Process interruption | The CLI was deliberately killed after switching to v3. The journal retained the intent, and resume proved the already-completed switch without replaying it. |
-| Stale executor | An isolated old lineage submitted fencing token `1` after the host had accepted token `30`. The executor rejected it as stale, its isolated journal recorded `op-05` as uncertain, and stable traffic remained on v3. |
+| Stale executor | An isolated old lineage submitted a lower fencing token after the host had accepted token `30`. The executor rejected it as stale, its isolated journal recorded an uncertain outcome, and stable traffic remained on v3. |
 
-The first aggregate run exposed an acceptance-harness ordering defect after the first five scenarios: it attempted to preview the stale lineage only after v3 was active, so planning correctly rejected the already-listening candidate port. The live stale-fence check was then completed against a copy of the durable State Backend by selecting the previously approved v1 Plan and lowering only the copied backend's lease token. The authoritative Deployment database and host were not altered by that setup. The harness was corrected to preview and approve the isolated stale lineage while the host is empty, reconcile its already-proved preparation steps later, and submit the still-pending Endpoint switch under the stale fence.
+The first aggregate run exposed an acceptance-harness ordering defect after the first five scenarios: it attempted to preview the stale lineage only after v3 was active, so planning correctly rejected the already-listening candidate port. The live stale-fence check was then completed against a copy of the durable State Backend by selecting the previously approved v1 Plan and lowering only the copied backend's lease token. The authoritative Deployment database and host were not altered by that setup.
+
+A second reset-host run previewed and approved the isolated stale lineage while the host was empty. Its Artifact, Generation, and running candidate were later re-observed as satisfied under tokens 1 through 3. Candidate health was also observable, but the stale Plan did not own the baseline Plan's host-side verification record; recording its own exact verification was therefore the first required host mutation. The executor rejected token 4 as stale, the isolated journal recorded `op-04` as uncertain, and stable traffic remained on v3. The harness now expects the rejection at that exact boundary.
 
 The rejected request reported:
 
@@ -32,7 +34,7 @@ The rejected request reported:
 provision-host-executor: authorization fencing token is stale; outcome recorded as uncertain
 ```
 
-The isolated journal's latest `op-05` event was `outcome: uncertain`. A subsequent stable request returned `{"revision":"provision-example-http-v3"}`.
+The second run's isolated journal retained successful outcomes for `op-01` through `op-03`, followed by `op-04` as `outcome: uncertain`. A subsequent stable request returned `{"revision":"provision-example-http-v3"}`.
 
 ## Final host invariants
 

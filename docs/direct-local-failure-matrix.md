@@ -28,7 +28,7 @@ The work directory must not exist before the run. The script obtains one `sudo` 
 | Endpoint switch failure | Caddy unavailable during `switchEndpoint` | Outcome is uncertain, Caddy is restored, and explicit resume completes the switch. |
 | Post-switch failure | stable-only health failure | Exact retained previous Generation is verified and restored; outcome remains failed with proved rollback. |
 | Process interruption | CLI killed after Caddy switched but before the result was committed | Journal retains intent; resume observes the completed switch and does not replay it. |
-| Stale executor | separately authorized old Plan attempts a switch after the main lineage advanced the host fence | Executor rejects the stale fencing token; the copied lineage records an uncertain outcome and stable traffic does not move. |
+| Stale executor | separately authorized old Plan attempts to record its own candidate verification after the main lineage advanced the host fence | Executor rejects the stale fencing token; the isolated lineage records an uncertain outcome and stable traffic does not move. |
 
 The shell's `Killed` diagnostic in the interruption scenario is expected evidence of the injected process termination. It is not a failed assertion.
 

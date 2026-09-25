@@ -399,7 +399,7 @@ for scenario in baseline pre-switch switch-failure drain post-switch interruptio
   esac
 done
 
-sudo -v
+sudo -n true
 assert_no_gimme
 "$provision" host bootstrap check --local --environment lab --operator "$operator" >"$work_dir/initial-host.json"
 json_assert "$work_dir/initial-host.json" ready true

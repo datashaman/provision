@@ -1,12 +1,12 @@
 # Complete HTTP host lifecycle evidence — 2026-09-25
 
-Issue #31 was exercised against the disposable `provision-acceptance` Ubuntu VM from reviewed source commit `8ddd3bdd0c2920cf93988125392620e22979b21b`. The VM was restored from the same stopped `clean` snapshot and bootstrapped independently before each run. The direct-local and remote-SSH harnesses each completed all seven scenarios and printed their respective success marker.
+Issue #31 was exercised against the disposable `provision-acceptance` Ubuntu VM from reviewed source commit `bcc9d3fb050512b432433822834b877eecaa6cfc`. The VM was restored from the same stopped `clean` snapshot and bootstrapped independently before each run. The direct-local and remote-SSH harnesses each completed all seven scenarios and printed their respective success marker.
 
 ## Tested combination
 
 | Property | Direct-local | Remote SSH |
 | --- | --- | --- |
-| Provision source | `8ddd3bdd0c2920cf93988125392620e22979b21b` | same |
+| Provision source | `bcc9d3fb050512b432433822834b877eecaa6cfc` | same |
 | Provision binary | Linux `x86_64`, `sha256:1542523d7461c68893de71863cfec4b43eaa7a55a098646c3ddbdaac3f0acd92` | macOS `arm64`, `sha256:5d1f3a67368fad6eab0ea22ee9324fe8c334c22c33f0cfd584dffd4d4e0efd01` |
 | Restricted executor | `sha256:a3dbdddb1b8a8c936a600219df66e983f988baa8ae834744c817645c7297964d` | same |
 | Authority key ID | `sha256:a24d89100b4b9ba9941796135eac7ea81d735dcd84d18f91041cdab88b753bb0` | same public verifier; private key remained on the controller |
@@ -19,7 +19,7 @@ Bootstrap inspection was `ready: true` with no findings before each matrix. It a
 
 ## Equivalent lifecycle proof
 
-Both transports used `plan preview`, exact-Plan approval, and the same deployment execute/resume/status engine. Each proved:
+Both transports used `config validate`, `plan preview`, exact-Plan approval, and the same deployment execute/resume/status engine. Each proved:
 
 - healthy first deployment;
 - candidate verification failure before traffic movement;
@@ -37,8 +37,8 @@ Both retention results bound the same deterministic operation digest `sha256:7ec
 
 | Transport | Switched | Retain until |
 | --- | --- | --- |
-| Direct-local | `2026-09-25T13:07:57.735710922Z` | `2026-09-25T13:37:57.735710922Z` |
-| Remote SSH | `2026-09-25T13:11:17.540073897Z` | `2026-09-25T13:41:17.540073897Z` |
+| Direct-local | `2026-09-25T13:18:59.89439797Z` | `2026-09-25T13:48:59.89439797Z` |
+| Remote SSH | `2026-09-25T13:22:30.832828147Z` | `2026-09-25T13:52:30.832828147Z` |
 
 Each result reported `stableRouteVerified: true`, the previous unit inactive but retained, all restart material retained, `restartable: true`, and `cleanupPerformed: false`.
 

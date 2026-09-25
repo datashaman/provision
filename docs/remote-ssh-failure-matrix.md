@@ -43,6 +43,6 @@ After every scenario, the harness checks the stable Endpoint, active and previou
 
 ## Evidence
 
-Success ends with `remote SSH failure matrix passed`. The work directory contains Plans, approvals, operation output, journals, remote host and Caddy observations, expected/actual inventories, retained-file checksums, and `support-observation.json`. That structured record includes the controller platform, remote OS and service versions, exact Provision and executor digests, SSH server version, pinned host fingerprint, and the completed drain and retention cases. The complete direct-local and SSH qualification is recorded in the [2026-09-25 lifecycle evidence](evidence/2026-09-25-acceptance-vm-complete-http-lifecycle.md).
+Success ends with `remote SSH failure matrix passed`. The work directory contains validation results, Plans, approvals, operation output, journals, remote host and Caddy observations, expected/actual inventories, retained-file checksums, and `support-observation.json`. That structured record includes the controller platform, remote OS and service versions, exact Provision and executor digests, SSH server version, pinned host fingerprint, and the completed drain and retention cases. The complete direct-local and SSH qualification is recorded in the [2026-09-25 lifecycle evidence](evidence/2026-09-25-acceptance-vm-complete-http-lifecycle.md).
 
 The harness does not reset or bootstrap the Host Target. Those remain explicit operator-controlled boundaries.

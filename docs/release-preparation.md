@@ -1,10 +1,10 @@
 # Authorized release preparation
 
-Provision can execute the first five operations of an approved Host Plan on either the current machine or a bootstrapped remote machine over SSH. `stageArtifact` downloads the Artifact URL already recorded in the Plan, verifies its SHA-256 digest, and stores it at `/var/lib/provision/artifacts/sha256/<digest>`. Dependency-gated operations then install that exact native bundle as an immutable candidate Generation, start a separate hardened systemd unit on a loopback-only port, evaluate the declared liveness, readiness, and revision-bound candidate-verification checks, and atomically route the stable Endpoint to the verified candidate through Caddy. A previously active Generation remains runnable.
+Provision can execute the first six operations of an approved Host Plan on either the current machine or a bootstrapped remote machine over SSH. `stageArtifact` downloads the Artifact URL already recorded in the Plan, verifies its SHA-256 digest, and stores it at `/var/lib/provision/artifacts/sha256/<digest>`. Dependency-gated operations then install that exact native bundle as an immutable candidate Generation, start a separate hardened systemd unit on a loopback-only port, evaluate the declared liveness, readiness, and revision-bound candidate-verification checks, atomically route the stable Endpoint to the verified candidate through Caddy, and evaluate the same Health Contract through that stable Endpoint. A previously active Generation remains runnable and is the bounded rollback target.
 
 Local and remote execution use the same Plan-bound authorization, fencing, journal, operation envelope, root-owned executor, and structured result. SSH is only the transport boundary; it does not create a second execution model or grant shell-shaped deployment authority.
 
-The first complete reset-host exercise, including both deliberate verification failure and successful switch eligibility without endpoint activation, is recorded in [the 2026-09-24 candidate preparation evidence](evidence/2026-09-24-base-host-candidate.md). The subsequent stable-route activation, retained previous Generation, in-flight HTTP drain, and Caddy restart exercise is recorded in [the 2026-09-25 Endpoint switch evidence](evidence/2026-09-25-base-host-endpoint-switch.md).
+The first complete reset-host exercise, including both deliberate verification failure and successful switch eligibility without endpoint activation, is recorded in [the 2026-09-24 candidate preparation evidence](evidence/2026-09-24-base-host-candidate.md). The subsequent stable-route activation, retained previous Generation, in-flight HTTP drain, and Caddy restart exercise is recorded in [the 2026-09-25 Endpoint switch evidence](evidence/2026-09-25-base-host-endpoint-switch.md). Stable-route verification and automatic recovery from a reproducible post-switch failure are recorded in [the 2026-09-25 rollback evidence](evidence/2026-09-25-base-host-post-switch-rollback.md).
 
 ## 1. Create the Environment authority
 
@@ -116,7 +116,25 @@ After Caddy reports the exact route and stable port, the executor atomically rec
 
 This guarantee is intentionally limited to ordinary HTTP requests. Caddy documents separate stream behavior for WebSockets and other long-lived streams, so this HTTP implementation does not claim realtime connection draining. See Caddy's [zero-downtime reload documentation](https://caddyserver.com/docs/getting-started#reloading-config) and [reverse-proxy streaming behavior](https://caddyserver.com/docs/caddyfile/directives/reverse_proxy#streaming).
 
-## 7. Read the durable journal
+## 7. Verify the switched Endpoint and recover safely
+
+Execute `op-06` only after `op-05` succeeds:
+
+```sh
+go run ./cmd/provision deployment execute \
+  --plan sha256:PLAN_DIGEST \
+  --operation op-06 \
+  --state .provision/state.db \
+  --signing-key .provision/host-authority.key
+```
+
+The executor binds this check to the signed candidate, stable Endpoint, and exact previous Generation from the Plan. It first confirms that the durable active-generation record, candidate unit, and Caddy route still agree with that Plan, then evaluates liveness, readiness, and revision identity through the stable port. A complete successful check records `healthy` without touching either retained unit.
+
+If stable-route health fails, the executor does not immediately move traffic. It first verifies the retained previous Generation directly on its private loopback port. Only a complete healthy result permits Caddy to restore that exact previous upstream. The executor then repeats the complete Health Contract through the stable Endpoint and atomically swaps the durable active and previous identities. The operation is recorded as failed with status `rolled-back`, the original post-switch failure reason, both sets of recovery checks, and the observed restored upstream. This deliberately prevents dependent drain and retention operations from proceeding as though the candidate deployment succeeded.
+
+If there is no signed previous Generation, the previous Generation is unhealthy, Caddy cannot establish the rollback route, stable-route recovery cannot be verified, or durable active state cannot be recorded, the executor returns a structured `uncertain` result with an explicit recovery action. Provision commits that result to the State Backend and requires operator inspection; it never converts ambiguity into success. Both Generations remain retained by this slice.
+
+## 8. Read the durable journal
 
 ```sh
 go run ./cmd/provision deployment status \
@@ -128,4 +146,4 @@ The output contains append-only authoritative intent and outcome events, includi
 
 ## Current boundary
 
-This is activation with retained rollback material, not yet the complete HTTP blue-green lifecycle. Later Plan operations remain unavailable: Provision cannot yet verify application health through the switched stable route, roll back a failed post-switch verification, declare drain completion, or apply the rollback-window retention decision. Those omissions are explicit capability failures rather than silent fallback behavior.
+This is switched-route verification with bounded automatic rollback, not yet the complete HTTP blue-green lifecycle. Later Plan operations remain unavailable: Provision cannot yet declare role-specific drain completion or apply the rollback-window retention decision. Those omissions are explicit capability failures rather than silent fallback behavior.

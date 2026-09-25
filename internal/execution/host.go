@@ -95,6 +95,9 @@ func verifyHostResult(envelope operation.Envelope, result operation.Result) erro
 	if err := result.ValidateAgainst(envelope); err != nil {
 		return err
 	}
+	if result.Outcome == operation.OutcomeUncertain && envelope.Operation.Kind != planner.VerifyActive {
+		return errors.New("host operation kind cannot return an uncertain structured outcome")
+	}
 	switch envelope.Operation.Kind {
 	case planner.StageArtifact:
 		return verifyArtifactResult(envelope, result)
@@ -106,6 +109,8 @@ func verifyHostResult(envelope operation.Envelope, result operation.Result) erro
 		return verifyHealthResult(envelope, result)
 	case planner.SwitchEndpoint:
 		return verifyEndpointResult(envelope, result)
+	case planner.VerifyActive:
+		return verifyActiveResult(envelope, result)
 	default:
 		return errors.New("host operation result kind is unsupported")
 	}
@@ -237,6 +242,57 @@ func verifyEndpointResult(envelope operation.Envelope, result operation.Result) 
 		return errors.New("host Endpoint failure observation is invalid")
 	}
 	return nil
+}
+
+func verifyActiveResult(envelope operation.Envelope, result operation.Result) error {
+	health := envelope.Operation.Input.Health
+	endpoint := envelope.Operation.Input.Endpoint
+	if health == nil || endpoint == nil {
+		return errors.New("host active verification observation has no planned Health Contract or Endpoint")
+	}
+	var observed host.ActiveVerificationObservation
+	if err := decodeObservation(result.Observation, &observed); err != nil {
+		return errors.New("host active verification observation is invalid")
+	}
+	if !endpointGenerationMatches(observed.Candidate, *endpoint) || envelope.Operation.Input.Previous == nil != (observed.Previous == nil) || observed.Previous != nil && !generationStatusIdentityMatches(*envelope.Operation.Input.Previous, *observed.Previous) {
+		return errors.New("host active verification observation does not match the Plan")
+	}
+	activeHealthy := exactHealthChecks(observed.ActiveChecks, *health)
+	switch result.Outcome {
+	case operation.OutcomeSucceeded:
+		if observed.Status != host.ActiveVerificationHealthy || !activeHealthy || observed.RollbackAttempted || observed.RollbackSucceeded || observed.Restored != nil || observed.Reason != "" || observed.RecoveryAction != "" || observed.ObservedUpstream != endpoint.Upstream {
+			return errors.New("host active verification success observation is invalid")
+		}
+	case operation.OutcomeFailed:
+		previous := envelope.Operation.Input.Previous
+		if observed.Status != host.ActiveVerificationRolledBack || activeHealthy || previous == nil || !observed.RollbackAttempted || !observed.RollbackSucceeded || observed.Restored == nil || !generationStatusIdentityMatches(*previous, *observed.Restored) || observed.ObservedUpstream != fmt.Sprintf("127.0.0.1:%d", previous.Port) || observed.Reason == "" || observed.RecoveryAction != "" {
+			return errors.New("host rolled-back verification observation is invalid")
+		}
+		previousHealth := planner.HealthInput{LivenessPath: health.LivenessPath, ReadinessPath: health.ReadinessPath, CandidateVerifyPath: health.CandidateVerifyPath}
+		if !exactHealthChecks(observed.PreviousChecks, previousHealth) || !exactHealthChecks(observed.RollbackChecks, previousHealth) {
+			return errors.New("host rolled-back verification health evidence is invalid")
+		}
+	case operation.OutcomeUncertain:
+		if observed.Status != host.ActiveVerificationUncertain || observed.RollbackSucceeded || observed.Reason == "" || observed.RecoveryAction == "" {
+			return errors.New("host uncertain verification observation is invalid")
+		}
+	default:
+		return errors.New("host active verification outcome is unsupported")
+	}
+	return nil
+}
+
+func exactHealthChecks(checks []host.HealthCheckObservation, input planner.HealthInput) bool {
+	expected := []struct{ name, path string }{{"liveness", input.LivenessPath}, {"readiness", input.ReadinessPath}, {"candidateVerification", input.CandidateVerifyPath}}
+	if len(checks) != len(expected) {
+		return false
+	}
+	for index, check := range checks {
+		if check.Name != expected[index].name || check.Path != expected[index].path || !check.Healthy || check.StatusCode < 200 || check.StatusCode >= 300 || check.Reason != "" {
+			return false
+		}
+	}
+	return true
 }
 
 func endpointGenerationMatches(observed host.GenerationStatus, input planner.EndpointInput) bool {

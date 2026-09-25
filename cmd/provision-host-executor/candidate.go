@@ -62,6 +62,11 @@ func validateCandidateOperation(planned planner.Operation, record bootstrapRecor
 			return errors.New("switchEndpoint requires only its typed Endpoint input, optional planned previous Generation, and candidate-verification dependency")
 		}
 		return validateEndpointInput(*planned.Input.Endpoint, planned.Input.Previous, record, paths)
+	case planner.VerifyActive:
+		if len(planned.DependsOn) != 1 || planned.DependsOn[0] != "op-05" || planned.Input.Health == nil || planned.Input.Endpoint == nil || planned.Input.Generation != nil || planned.Input.Systemd != nil {
+			return errors.New("verifyActive requires its typed stable Health Contract, Endpoint, optional previous Generation, and switch dependency")
+		}
+		return validateActiveVerificationInput(*planned.Input.Health, *planned.Input.Endpoint, planned.Input.Previous, record, paths)
 	default:
 		return errors.New("host executor does not allow this operation kind")
 	}
@@ -155,6 +160,11 @@ func observeCandidateOperation(ctx context.Context, planned planner.Operation, r
 		} else {
 			state = "unknown"
 		}
+	case planner.VerifyActive:
+		evidence = observeActiveVerification(ctx, paths, *planned.Input.Health, *planned.Input.Endpoint, planned.Input.Previous)
+		// Post-switch verification and any rollback must execute under the signed
+		// operation so their outcome is durably bound to this Plan and fence.
+		state = "pending"
 	}
 	encoded, err := json.Marshal(evidence)
 	if err != nil {
@@ -201,8 +211,8 @@ func applyCandidateOperation(ctx context.Context, planned planner.Operation, rec
 			return encoded, errors.New(observed.Reason)
 		}
 		return encoded, nil
-	case planner.SwitchEndpoint:
-		return nil, errors.New("switchEndpoint requires its signed Plan claim")
+	case planner.SwitchEndpoint, planner.VerifyActive:
+		return nil, errors.New(string(planned.Kind) + " requires its signed Plan claim")
 	default:
 		return nil, errors.New("host executor does not allow this operation kind")
 	}
@@ -556,6 +566,17 @@ func checkCandidateHealth(ctx context.Context, paths executionPaths, input plann
 		return result
 	}
 	result.CandidateActive = true
+	result.Checks, result.Reason = checkHTTPHealth(ctx, input, "private candidate endpoint is unavailable")
+	if result.Reason != "" {
+		return result
+	}
+	result.Status = host.CandidateHealthy
+	result.SwitchEligible = true
+	return result
+}
+
+func checkHTTPHealth(ctx context.Context, input planner.HealthInput, unavailableReason string) ([]host.HealthCheckObservation, string) {
+	result := []host.HealthCheckObservation{}
 	checks := []struct {
 		name           string
 		path           string
@@ -577,25 +598,22 @@ func checkCandidateHealth(ctx context.Context, paths executionPaths, input plann
 		request, err := http.NewRequestWithContext(ctx, http.MethodGet, fmt.Sprintf("http://127.0.0.1:%d%s", input.Port, check.path), nil)
 		if err != nil {
 			observed.Reason = "create health request"
-			result.Checks = append(result.Checks, observed)
-			result.Reason = check.name + " check could not be created"
-			return result
+			result = append(result, observed)
+			return result, check.name + " check could not be created"
 		}
 		response, err := client.Do(request)
 		if err != nil {
-			observed.Reason = "private candidate endpoint is unavailable"
-			result.Checks = append(result.Checks, observed)
-			result.Reason = check.name + " check failed"
-			return result
+			observed.Reason = unavailableReason
+			result = append(result, observed)
+			return result, check.name + " check failed"
 		}
 		data, readErr := io.ReadAll(io.LimitReader(response.Body, 64<<10+1))
 		_ = response.Body.Close()
 		observed.StatusCode = response.StatusCode
 		if readErr != nil || len(data) > 64<<10 || response.StatusCode < 200 || response.StatusCode >= 300 {
 			observed.Reason = "health response is not successful and bounded"
-			result.Checks = append(result.Checks, observed)
-			result.Reason = check.name + " check failed"
-			return result
+			result = append(result, observed)
+			return result, check.name + " check failed"
 		}
 		if check.verifyRevision {
 			var body struct {
@@ -603,17 +621,14 @@ func checkCandidateHealth(ctx context.Context, paths executionPaths, input plann
 			}
 			if json.Unmarshal(data, &body) != nil || body.Revision != input.Revision {
 				observed.Reason = "candidate verification did not report the planned Revision"
-				result.Checks = append(result.Checks, observed)
-				result.Reason = check.name + " check failed"
-				return result
+				result = append(result, observed)
+				return result, check.name + " check failed"
 			}
 		}
 		observed.Healthy = true
-		result.Checks = append(result.Checks, observed)
+		result = append(result, observed)
 	}
-	result.Status = host.CandidateHealthy
-	result.SwitchEligible = true
-	return result
+	return result, ""
 }
 
 func systemdInputFromHealth(input planner.HealthInput) planner.SystemdInput {

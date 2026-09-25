@@ -100,6 +100,9 @@ func TestSQLiteBackendRequiresSuccessfulOperationDependencies(t *testing.T) {
 			Upstream: "127.0.0.1:28181", UpstreamPort: 28181, DrainPolicy: "caddy-graceful-config-reload",
 		}},
 	})
+	plan.Operations = append(plan.Operations, planner.Operation{
+		ID: "op-06", Kind: planner.VerifyActive, DependsOn: []string{"op-05"},
+	})
 	plan.ID = ""
 	encoded, err := json.Marshal(plan)
 	if err != nil {
@@ -131,8 +134,15 @@ func TestSQLiteBackendRequiresSuccessfulOperationDependencies(t *testing.T) {
 	if err := backend.CompleteOperation(context.Background(), CompleteOperationRequest{AttemptID: second.AttemptID, Holder: second.Holder, PlanID: plan.ID, OperationID: "op-02", FencingToken: second.FencingToken, Outcome: ExecutionSucceeded, Observation: json.RawMessage(`{"status":"installed"}`), CompletedAt: now.Add(3*time.Minute + time.Second)}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := backend.BeginOperation(context.Background(), BeginOperationRequest{PlanID: plan.ID, OperationID: "op-05", Holder: "holder", StartedAt: now.Add(4 * time.Minute), LeaseDuration: time.Minute}); err != nil {
+	endpointAttempt, err := backend.BeginOperation(context.Background(), BeginOperationRequest{PlanID: plan.ID, OperationID: "op-05", Holder: "holder", StartedAt: now.Add(4 * time.Minute), LeaseDuration: time.Minute})
+	if err != nil {
 		t.Fatalf("Endpoint switch did not begin after successful dependency: %v", err)
+	}
+	if err := backend.CompleteOperation(context.Background(), CompleteOperationRequest{AttemptID: endpointAttempt.AttemptID, Holder: endpointAttempt.Holder, PlanID: plan.ID, OperationID: "op-05", FencingToken: endpointAttempt.FencingToken, Outcome: ExecutionSucceeded, Observation: json.RawMessage(`{"status":"active"}`), CompletedAt: now.Add(4*time.Minute + time.Second)}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := backend.BeginOperation(context.Background(), BeginOperationRequest{PlanID: plan.ID, OperationID: "op-06", Holder: "holder", StartedAt: now.Add(5 * time.Minute), LeaseDuration: time.Minute}); err != nil {
+		t.Fatalf("post-switch verification did not begin after successful Endpoint switch: %v", err)
 	}
 }
 
@@ -196,12 +206,12 @@ func runBackendContract(t *testing.T, factory backendContractFactory) {
 	}
 	if err := backend.CompleteOperation(ctx, CompleteOperationRequest{
 		AttemptID: secondAttempt.AttemptID, Holder: secondAttempt.Holder, PlanID: first.ID, OperationID: "op-01",
-		FencingToken: secondAttempt.FencingToken, Outcome: ExecutionSucceeded, Observation: json.RawMessage(`{"status":"staged"}`), CompletedAt: now.Add(4*time.Minute + time.Second),
+		FencingToken: secondAttempt.FencingToken, Outcome: ExecutionUncertain, Observation: json.RawMessage(`{"status":"uncertain","reason":"recovery requires inspection"}`), CompletedAt: now.Add(4*time.Minute + time.Second),
 	}); err != nil {
 		t.Fatal(err)
 	}
 	journal, err := backend.LoadJournal(ctx, first.ID)
-	if err != nil || len(journal) != 3 || journal[0].Kind != JournalIntent || journal[2].Kind != JournalOutcome || journal[2].Outcome != ExecutionSucceeded {
+	if err != nil || len(journal) != 3 || journal[0].Kind != JournalIntent || journal[2].Kind != JournalOutcome || journal[2].Outcome != ExecutionUncertain {
 		t.Fatalf("journal = %+v, %v", journal, err)
 	}
 	rejected, err := backend.LoadRejectedResults(ctx, first.ID)
@@ -239,7 +249,7 @@ func runBackendContract(t *testing.T, factory backendContractFactory) {
 		t.Fatalf("durable snapshot = %+v, %v", durable, err)
 	}
 	durableJournal, err := reopened.LoadJournal(ctx, first.ID)
-	if err != nil || len(durableJournal) != 3 || durableJournal[2].Outcome != ExecutionSucceeded {
+	if err != nil || len(durableJournal) != 3 || durableJournal[2].Outcome != ExecutionUncertain || !strings.Contains(string(durableJournal[2].Observation), "recovery requires inspection") {
 		t.Fatalf("durable journal = %+v, %v", durableJournal, err)
 	}
 	durableRejected, err := reopened.LoadRejectedResults(ctx, first.ID)

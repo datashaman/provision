@@ -88,6 +88,29 @@ type EndpointObservation struct {
 	Reason            string            `json:"reason,omitempty"`
 }
 
+type ActiveVerificationStatus string
+
+const (
+	ActiveVerificationHealthy    ActiveVerificationStatus = "healthy"
+	ActiveVerificationRolledBack ActiveVerificationStatus = "rolled-back"
+	ActiveVerificationUncertain  ActiveVerificationStatus = "uncertain"
+)
+
+type ActiveVerificationObservation struct {
+	Status            ActiveVerificationStatus `json:"status"`
+	Candidate         GenerationStatus         `json:"candidate"`
+	Previous          *GenerationStatus        `json:"previous,omitempty"`
+	ActiveChecks      []HealthCheckObservation `json:"activeChecks"`
+	PreviousChecks    []HealthCheckObservation `json:"previousChecks,omitempty"`
+	RollbackChecks    []HealthCheckObservation `json:"rollbackChecks,omitempty"`
+	ObservedUpstream  string                   `json:"observedUpstream,omitempty"`
+	RollbackAttempted bool                     `json:"rollbackAttempted"`
+	RollbackSucceeded bool                     `json:"rollbackSucceeded"`
+	Restored          *GenerationStatus        `json:"restored,omitempty"`
+	Reason            string                   `json:"reason,omitempty"`
+	RecoveryAction    string                   `json:"recoveryAction,omitempty"`
+}
+
 type OperationObservation struct {
 	State    string          `json:"state"`
 	Evidence json.RawMessage `json:"evidence"`

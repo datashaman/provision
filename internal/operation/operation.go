@@ -42,7 +42,7 @@ func (r Result) ValidateAgainst(envelope Envelope) error {
 	if r.SchemaVersion != ResultSchemaVersion || r.PlanID != claim.PlanID || r.OperationID != claim.OperationID || r.AttemptID != claim.AttemptID || r.FencingToken != claim.FencingToken {
 		return errors.New("host operation result does not match its authorization")
 	}
-	if r.Outcome != OutcomeSucceeded && r.Outcome != OutcomeFailed {
+	if r.Outcome != OutcomeSucceeded && r.Outcome != OutcomeFailed && r.Outcome != OutcomeUncertain {
 		return errors.New("host operation result has an invalid outcome")
 	}
 	if !json.Valid(r.Observation) {

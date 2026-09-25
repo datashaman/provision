@@ -28,7 +28,7 @@ var (
 	digestPattern  = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
 	operationID    = regexp.MustCompile(`^op-[0-9]{2}$`)
 	attemptID      = regexp.MustCompile(`^attempt-[0-9a-f]{32}$`)
-	journalOutcome = regexp.MustCompile(`^(consumed|succeeded|failed)$`)
+	journalOutcome = regexp.MustCompile(`^(consumed|succeeded|failed|uncertain)$`)
 )
 
 type executionPaths struct {
@@ -257,6 +257,8 @@ func executeAuthorized(ctx context.Context, envelope operation.Envelope, record 
 			}
 		} else if envelope.Operation.Kind == planner.SwitchEndpoint {
 			encoded, actionErr = applySwitchEndpoint(ctx, envelope.Operation, claim, record, paths, now)
+		} else if envelope.Operation.Kind == planner.VerifyActive {
+			encoded, actionErr = applyVerifyActive(ctx, envelope.Operation, claim, record, paths, now)
 		} else {
 			encoded, actionErr = applyCandidateOperation(ctx, envelope.Operation, record, paths, claim.AttemptID)
 		}
@@ -299,13 +301,17 @@ func executeAuthorized(ctx context.Context, envelope operation.Envelope, record 
 		if len(encoded) == 0 {
 			encoded = json.RawMessage(`{"status":"failed","reason":"host operation failed before producing a typed observation"}`)
 		}
+		outcome := operation.OutcomeFailed
+		if errors.Is(actionErr, errUncertainRecovery) {
+			outcome = operation.OutcomeUncertain
+		}
 		return operation.Result{
 			SchemaVersion: operation.ResultSchemaVersion,
 			PlanID:        claim.PlanID,
 			OperationID:   claim.OperationID,
 			AttemptID:     claim.AttemptID,
 			FencingToken:  claim.FencingToken,
-			Outcome:       operation.OutcomeFailed,
+			Outcome:       outcome,
 			Observation:   encoded,
 		}, nil
 	}
@@ -386,7 +392,11 @@ func withHostFence(paths executionPaths, claim authority.Claim, planned planner.
 		consumed.Observation = append(consumed.Observation[:0], (*observation)...)
 	}
 	if actionErr != nil {
-		consumed.Outcome = "failed"
+		if errors.Is(actionErr, errUncertainRecovery) {
+			consumed.Outcome = "uncertain"
+		} else {
+			consumed.Outcome = "failed"
+		}
 	} else {
 		consumed.Outcome = "succeeded"
 	}

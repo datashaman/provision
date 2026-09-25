@@ -22,6 +22,17 @@ The matching host executor digests were `sha256:c532f3b78d291c400761b187c1fe8c14
 
 The matching remote executor digests were `sha256:e9c910de10f89045c98d426454c60a3e7e467e3ed7c12c6994bda91bc93f6c38` for the historical row and `sha256:a3dbdddb1b8a8c936a600219df66e983f988baa8ae834744c817645c7297964d` for the complete-lifecycle row. The authority private key, approvals, and State Backend remained on the controller. The host received only observations and signed typed operations through a restricted one-shot executor.
 
+## Managed RabbitMQ Host packaging
+
+| Acceptance client | Host OS | Runtime identity | Service and topology | Result |
+| --- | --- | --- | --- | --- |
+| Linux `x86_64`, `sha256:9dd6ae1360318ed4b7b119486d29181b9f84ebaea3b9773e929ed213a6aefcfe` | Ubuntu Server 26.04 VM, kernel `7.0.0-34-generic`, `x86_64`; systemd `259 (259.5-0ubuntu3.4)` | Podman `5.7.0+ds2-3build1`; RabbitMQ `4.3.6`; image `docker.io/library/rabbitmq@sha256:34fc91a9de04d612a340507b8e7e19c0ee1ec9839e09dc5fc98f54991633ce91` | Rootless Environment account `provision-lab`; user unit `provision-lab-rabbitmq.service`; node `rabbit@provision-lab-rabbitmq`; one-member quorum Queue `provision-issue36` | Exact image and inventory, encrypted credential delivery, publisher confirms, manual acknowledgements, automatic restart, and confirmed-message survival passed across a full Host reboot; see the [qualification evidence](evidence/2026-09-25-rabbitmq-packaging-comparison.md). |
+
+This row qualifies packaging and the stated RabbitMQ semantics, not a
+production Queue executor. The one broker and one quorum member have zero
+Host-failure tolerance. The image digest binds executable identity but does not
+authorize automatic downgrade of the persisted Queue data.
+
 ## Guarantees exercised
 
 - An unverified candidate cannot receive stable traffic.
@@ -41,7 +52,7 @@ The matching remote executor digests were `sha256:e9c910de10f89045c98d426454c60a
 
 ## Limits
 
-- These rows cover a single native `x86_64` HTTP component on one systemd-managed host, exercised both directly on the host and remotely from an `arm64` macOS controller over SSH. They do not qualify OCI/Podman, EC2, ECS, Lambda, workers, schedules, databases, key-value stores, or realtime services.
+- The HTTP rows cover a single native `x86_64` HTTP component on one systemd-managed host, exercised both directly on the host and remotely from an `arm64` macOS controller over SSH. The RabbitMQ row separately qualifies only the exact rootless Podman/Quadlet packaging and Queue semantics stated above. No row qualifies EC2, ECS, Lambda, workers, schedules, databases, key-value stores, or realtime services.
 - The Endpoint guarantee covers ordinary HTTP requests. It does not promise WebSocket or other long-lived stream draining.
 - Caddy configuration reload preserves the prior route on a rejected load. An external Caddy outage can still make the Endpoint unavailable until Caddy is restored.
 - Remote mode adds a management-transport dependency, not a workload-availability dependency. If the controller cannot authenticate the host or cannot obtain enough fresh evidence after a lost connection, the operation remains interrupted or uncertain until an operator restores access and resumes it; stable traffic continues according to the last host state.

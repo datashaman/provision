@@ -1,0 +1,56 @@
+{
+  "capabilities": {
+    "consumerAcknowledgement": true,
+    "hostLossTolerance": false,
+    "persistentMessageSurvivedReboot": true,
+    "publisherConfirm": true,
+    "serviceSurvivedReboot": true,
+    "stableMessageIdentityAcrossReboot": true
+  },
+  "decision": "digest-pinned-rootless-oci-quadlet",
+  "environment": "lab",
+  "evidenceDigests": {
+    "containerObservation": "sha256:53d30f78ff5c83c8dd51ea4c04e01bf31e9160dab179e11bd882239e6971fd54",
+    "credentialEntrypoint": "3df779e3c24adf66862a9ad3a17f69ee488608b84eb931a9a533f06bbe24a0c2",
+    "imageObservation": "sha256:692b909a7ae98436789c6b2add931728105eb1b3924d7d0cd33497f0a424ce03",
+    "packageInventory": "sha256:a3aa18b493d54c44285dd23e83fb22244c56675a1e7d407f424c7572218da836",
+    "probeBinary": "9dd6ae1360318ed4b7b119486d29181b9f84ebaea3b9773e929ed213a6aefcfe",
+    "queueObservation": "sha256:e6972abb2ed2ce96ade9618f2f68c8b4b1d54508187640c7f88dd0581538f6ef",
+    "quorumStatus": "sha256:bff1cf0963b9c46390fe6a7a95e2e5f4a7c250b7be35584ba0051f8fe6c0dac6",
+    "unitDefinition": "sha256:ab4405fcea204fd1f30f9cc9b3819084a7d5c2a1b7b72b2b3d180ea57600bf6e"
+  },
+  "host": {
+    "architecture": "x86_64",
+    "bootIdChanged": true,
+    "kernel": "7.0.0-34-generic",
+    "os": "ubuntu",
+    "osVersion": "26.04",
+    "systemdVersion": "systemd 259 (259.5-0ubuntu3.4)"
+  },
+  "result": "passed",
+  "runtime": {
+    "image": "docker.io/library/rabbitmq@sha256:34fc91a9de04d612a340507b8e7e19c0ee1ec9839e09dc5fc98f54991633ce91",
+    "node": "'rabbit@provision-lab-rabbitmq'",
+    "podmanVersion": "5.7.0+ds2-3build1",
+    "rabbitmqVersion": "4.3.6"
+  },
+  "schemaVersion": "provision.dev/rabbitmq-packaging-qualification/v1alpha1",
+  "service": {
+    "activeAfterReboot": true,
+    "container": "provision-lab-rabbitmq",
+    "credential": "encrypted-user-scoped-systemd-credential",
+    "credentialCipherDigest": "5405d26d64fab64944428ff19c78bd9a07540d713dcdb81ebe06f83e02d78467",
+    "identity": "provision-lab",
+    "plaintextRecorded": false,
+    "rootless": true,
+    "uid": "999",
+    "unit": "provision-lab-rabbitmq.service"
+  },
+  "topology": {
+    "brokerNodes": 1,
+    "hostFailureTolerance": 0,
+    "queue": "provision-issue36",
+    "queueMembers": 1,
+    "queueType": "quorum"
+  }
+}

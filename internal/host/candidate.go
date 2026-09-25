@@ -69,9 +69,10 @@ type HealthObservation struct {
 type EndpointStatus string
 
 const (
-	EndpointPending EndpointStatus = "pending"
-	EndpointActive  EndpointStatus = "active"
-	EndpointFailed  EndpointStatus = "failed"
+	EndpointPending   EndpointStatus = "pending"
+	EndpointActive    EndpointStatus = "active"
+	EndpointFailed    EndpointStatus = "failed"
+	EndpointUncertain EndpointStatus = "uncertain"
 )
 
 type EndpointObservation struct {
@@ -86,6 +87,7 @@ type EndpointObservation struct {
 	PreviousRetained  bool              `json:"previousRetained"`
 	DrainPolicy       string            `json:"drainPolicy"`
 	Reason            string            `json:"reason,omitempty"`
+	RecoveryAction    string            `json:"recoveryAction,omitempty"`
 }
 
 type ActiveVerificationStatus string

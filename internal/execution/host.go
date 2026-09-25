@@ -95,7 +95,7 @@ func verifyHostResult(envelope operation.Envelope, result operation.Result) erro
 	if err := result.ValidateAgainst(envelope); err != nil {
 		return err
 	}
-	if result.Outcome == operation.OutcomeUncertain && envelope.Operation.Kind != planner.VerifyActive {
+	if result.Outcome == operation.OutcomeUncertain && envelope.Operation.Kind != planner.SwitchEndpoint && envelope.Operation.Kind != planner.VerifyActive {
 		return errors.New("host operation kind cannot return an uncertain structured outcome")
 	}
 	switch envelope.Operation.Kind {
@@ -240,6 +240,9 @@ func verifyEndpointResult(envelope operation.Envelope, result operation.Result) 
 	}
 	if result.Outcome == operation.OutcomeFailed && (observed.Status != host.EndpointFailed || observed.Reason == "" || observed.CandidateVerified || observed.GracefulReload) {
 		return errors.New("host Endpoint failure observation is invalid")
+	}
+	if result.Outcome == operation.OutcomeUncertain && (observed.Status != host.EndpointUncertain || observed.Reason == "" || observed.RecoveryAction == "" || observed.CandidateVerified || observed.GracefulReload) {
+		return errors.New("host Endpoint uncertain observation is invalid")
 	}
 	return nil
 }

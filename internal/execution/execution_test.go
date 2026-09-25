@@ -310,6 +310,133 @@ func TestEngineCancelsAndJournalsWhenLeaseRenewalFails(t *testing.T) {
 	}
 }
 
+func TestEngineResumesInterruptedOperationFromFreshSatisfiedObservation(t *testing.T) {
+	now := time.Date(2026, 9, 25, 8, 0, 0, 0, time.UTC)
+	applyCalled := false
+	handler := &handlerFake{observations: []HandlerObservation{{State: ObservationSatisfied, Evidence: json.RawMessage(`{"status":"already-present"}`)}}, apply: func(operation.Envelope) (operation.Result, error) {
+		applyCalled = true
+		return operation.Result{}, errors.New("must not replay a satisfied operation")
+	}}
+	engine, backend, plan := executionFixture(t, &now, handler)
+	defer backend.Close()
+	interrupted, err := backend.BeginOperation(context.Background(), state.BeginOperationRequest{
+		PlanID: plan.ID, OperationID: "op-01", Holder: "interrupted-holder", StartedAt: now, LeaseDuration: 5 * time.Second,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	now = now.Add(6 * time.Second)
+	result, err := engine.Resume(context.Background(), ResumeRequest{PlanID: plan.ID, Holder: "resume-holder", LeaseDuration: time.Minute})
+	if err != nil || result.Outcome != operation.OutcomeSucceeded || result.OperationID != "op-01" || result.AttemptID == interrupted.AttemptID || result.FencingToken <= interrupted.FencingToken || applyCalled {
+		t.Fatalf("resumed result = %+v, %v, applyCalled=%t", result, err, applyCalled)
+	}
+	events, err := backend.LoadJournal(context.Background(), plan.ID)
+	if err != nil || len(events) != 3 || events[1].Kind != state.JournalIntent || !strings.Contains(string(events[1].Observation), interrupted.AttemptID) || events[2].Outcome != state.ExecutionSucceeded {
+		t.Fatalf("resume journal = %+v, %v", events, err)
+	}
+	lateObservation := json.RawMessage(`{"status":"staged"}`)
+	lateErr := backend.CompleteOperation(context.Background(), state.CompleteOperationRequest{
+		AttemptID: interrupted.AttemptID, Holder: interrupted.Holder, PlanID: plan.ID, OperationID: "op-01",
+		FencingToken: interrupted.FencingToken, Outcome: state.ExecutionSucceeded, Observation: lateObservation, CompletedAt: now,
+	})
+	if lateErr == nil || !strings.Contains(lateErr.Error(), "stale") {
+		t.Fatalf("stale interrupted executor committed after resume: %v", lateErr)
+	}
+	rejected, err := backend.LoadRejectedResults(context.Background(), plan.ID)
+	if err != nil || len(rejected) != 1 || rejected[0].AttemptID != interrupted.AttemptID {
+		t.Fatalf("rejected interrupted result = %+v, %v", rejected, err)
+	}
+}
+
+func TestEngineResumePausesOnAmbiguousFreshObservation(t *testing.T) {
+	now := time.Date(2026, 9, 25, 8, 0, 0, 0, time.UTC)
+	applyCalled := false
+	handler := &handlerFake{observations: []HandlerObservation{{State: ObservationUnknown, Evidence: json.RawMessage(`{"status":"unknown","reason":"route drift"}`)}}, apply: func(operation.Envelope) (operation.Result, error) {
+		applyCalled = true
+		return operation.Result{}, errors.New("must not replay an ambiguous operation")
+	}}
+	engine, backend, plan := executionFixture(t, &now, handler)
+	defer backend.Close()
+	interrupted, err := backend.BeginOperation(context.Background(), state.BeginOperationRequest{
+		PlanID: plan.ID, OperationID: "op-01", Holder: "interrupted-holder", StartedAt: now, LeaseDuration: 5 * time.Second,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	now = now.Add(6 * time.Second)
+	_, err = engine.Resume(context.Background(), ResumeRequest{PlanID: plan.ID, Holder: "resume-holder", LeaseDuration: time.Minute})
+	if err == nil || !strings.Contains(err.Error(), "mutation was not replayed") || applyCalled {
+		t.Fatalf("ambiguous resume = %v, applyCalled=%t", err, applyCalled)
+	}
+	events, journalErr := backend.LoadJournal(context.Background(), plan.ID)
+	if journalErr != nil || len(events) != 3 || events[2].Outcome != state.ExecutionUncertain || !strings.Contains(string(events[2].Observation), interrupted.AttemptID) || !strings.Contains(string(events[2].Observation), "recoveryAction") || !strings.Contains(string(events[2].Observation), "route drift") {
+		t.Fatalf("ambiguous resume journal = %+v, %v", events, journalErr)
+	}
+	uncertainAttemptID := events[2].AttemptID
+	handler.observations = append(handler.observations, HandlerObservation{State: ObservationSatisfied, Evidence: json.RawMessage(`{"status":"already-present"}`)})
+	now = now.Add(time.Second)
+	result, err := engine.Resume(context.Background(), ResumeRequest{PlanID: plan.ID, Holder: "recovery-holder", LeaseDuration: time.Minute})
+	if err != nil || result.Outcome != operation.OutcomeSucceeded {
+		t.Fatalf("explicit recovery after uncertain observation = %+v, %v", result, err)
+	}
+	events, journalErr = backend.LoadJournal(context.Background(), plan.ID)
+	if journalErr != nil || len(events) != 5 || !strings.Contains(string(events[3].Observation), uncertainAttemptID) || events[4].Outcome != state.ExecutionSucceeded {
+		t.Fatalf("recovered uncertain journal = %+v, %v", events, journalErr)
+	}
+}
+
+func TestEngineResumeAppliesOnlyAfterFreshPendingObservation(t *testing.T) {
+	now := time.Date(2026, 9, 25, 8, 0, 0, 0, time.UTC)
+	applyCalled := false
+	handler := &handlerFake{observations: []HandlerObservation{{State: ObservationPending, Evidence: json.RawMessage(`{"status":"absent"}`)}}, apply: func(envelope operation.Envelope) (operation.Result, error) {
+		applyCalled = true
+		return matchingResult(envelope, operation.OutcomeSucceeded, `{"status":"staged"}`), nil
+	}}
+	engine, backend, plan := executionFixture(t, &now, handler)
+	defer backend.Close()
+	interrupted, err := backend.BeginOperation(context.Background(), state.BeginOperationRequest{
+		PlanID: plan.ID, OperationID: "op-01", Holder: "interrupted-holder", StartedAt: now, LeaseDuration: 5 * time.Second,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	now = now.Add(6 * time.Second)
+	result, err := engine.Resume(context.Background(), ResumeRequest{PlanID: plan.ID, Holder: "resume-holder", LeaseDuration: time.Minute})
+	if err != nil || result.Outcome != operation.OutcomeSucceeded || !applyCalled {
+		t.Fatalf("pending resume = %+v, %v, applyCalled=%t", result, err, applyCalled)
+	}
+	events, journalErr := backend.LoadJournal(context.Background(), plan.ID)
+	if journalErr != nil || len(events) != 3 || !strings.Contains(string(events[1].Observation), interrupted.AttemptID) || events[2].Outcome != state.ExecutionSucceeded {
+		t.Fatalf("pending resume journal = %+v, %v", events, journalErr)
+	}
+}
+
+func TestEngineResumeRequiresInterruptedOrUncertainJournalState(t *testing.T) {
+	now := time.Date(2026, 9, 25, 8, 0, 0, 0, time.UTC)
+	handler := &handlerFake{}
+	engine, backend, plan := executionFixture(t, &now, handler)
+	defer backend.Close()
+	if _, err := engine.Resume(context.Background(), ResumeRequest{PlanID: plan.ID, Holder: "resume-holder", LeaseDuration: time.Minute}); err == nil || !strings.Contains(err.Error(), "no interrupted") {
+		t.Fatalf("empty deployment resumed: %v", err)
+	}
+	attempt, err := backend.BeginOperation(context.Background(), state.BeginOperationRequest{
+		PlanID: plan.ID, OperationID: "op-01", Holder: "failed-holder", StartedAt: now, LeaseDuration: time.Minute,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := backend.CompleteOperation(context.Background(), state.CompleteOperationRequest{
+		AttemptID: attempt.AttemptID, Holder: attempt.Holder, PlanID: plan.ID, OperationID: "op-01",
+		FencingToken: attempt.FencingToken, Outcome: state.ExecutionFailed, Observation: json.RawMessage(`{"status":"failed"}`), CompletedAt: now.Add(time.Second),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	now = now.Add(2 * time.Second)
+	if _, err := engine.Resume(context.Background(), ResumeRequest{PlanID: plan.ID, Holder: "resume-holder", LeaseDuration: time.Minute}); err == nil || !strings.Contains(err.Error(), "known failed outcome") {
+		t.Fatalf("known failed operation resumed automatically: %v", err)
+	}
+}
+
 func executionFixture(t *testing.T, now *time.Time, handler Handler) (Engine, state.Backend, planner.Plan) {
 	t.Helper()
 	dir := t.TempDir()

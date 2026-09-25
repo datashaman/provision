@@ -205,35 +205,42 @@ func applySwitchEndpoint(ctx context.Context, planned planner.Operation, claim a
 		}
 	}
 	if err := activeMatchesPlannedPrevious(ctx, paths, record, current, planned.Input.Previous, input.RouteID); err != nil {
-		return encodeEndpointFailure(input, planned.Input.Previous, err.Error())
+		return encodeEndpointUncertain(input, planned.Input.Previous, err.Error())
 	}
 
 	serverPath := "/config/apps/http/servers/" + url.PathEscape(input.RouteID)
 	oldServer, readErr := paths.caddy.Read(ctx, serverPath)
 	if readErr != nil && !errors.Is(readErr, errCaddyPathNotFound) {
-		return encodeEndpointFailure(input, planned.Input.Previous, readErr.Error())
+		return encodeEndpointUncertain(input, planned.Input.Previous, readErr.Error())
 	}
-	if planned.Input.Previous == nil && readErr == nil {
-		return encodeEndpointFailure(input, nil, "Provision Caddy server already exists without a recorded active Generation")
-	}
-	if planned.Input.Previous != nil {
+	candidateRouteAlreadyLoaded := false
+	if readErr == nil {
 		upstream, listen, routeOK, routeErr := observeCaddyEndpoint(ctx, paths.caddy, input.RouteID)
-		if routeErr != nil || !routeOK || upstream != fmt.Sprintf("127.0.0.1:%d", planned.Input.Previous.Port) || listen != input.ListenPort {
-			return encodeEndpointFailure(input, planned.Input.Previous, "current Caddy route does not match the planned previous Generation")
+		if routeErr != nil || !routeOK || listen != input.ListenPort {
+			return encodeEndpointUncertain(input, planned.Input.Previous, "current Caddy route cannot be reconciled with the signed Plan")
 		}
+		candidateRouteAlreadyLoaded = upstream == input.Upstream
+		previousRouteMatches := planned.Input.Previous != nil && upstream == fmt.Sprintf("127.0.0.1:%d", planned.Input.Previous.Port)
+		if !candidateRouteAlreadyLoaded && !previousRouteMatches {
+			return encodeEndpointUncertain(input, planned.Input.Previous, "current Caddy route matches neither the candidate nor planned previous Generation")
+		}
+	} else if planned.Input.Previous != nil {
+		return encodeEndpointUncertain(input, planned.Input.Previous, "planned previous Caddy route is absent")
 	}
 
-	server, err := caddyServerConfiguration(input)
-	if err != nil {
-		return nil, err
-	}
-	if err := paths.caddy.Replace(ctx, serverPath, server); err != nil {
-		return encodeEndpointFailure(input, planned.Input.Previous, "atomic Caddy route load failed: "+err.Error())
-	}
-	upstream, listen, routeOK, routeErr := observeCaddyEndpoint(ctx, paths.caddy, input.RouteID)
-	if routeErr != nil || !routeOK || upstream != input.Upstream || listen != input.ListenPort {
-		_ = restoreCaddyServer(context.Background(), paths.caddy, serverPath, oldServer, readErr)
-		return encodeEndpointFailure(input, planned.Input.Previous, "Caddy did not expose the planned stable route")
+	if !candidateRouteAlreadyLoaded {
+		server, encodeErr := caddyServerConfiguration(input)
+		if encodeErr != nil {
+			return nil, encodeErr
+		}
+		if replaceErr := paths.caddy.Replace(ctx, serverPath, server); replaceErr != nil {
+			return encodeEndpointFailure(input, planned.Input.Previous, "atomic Caddy route load failed: "+replaceErr.Error())
+		}
+		upstream, listen, routeOK, routeErr := observeCaddyEndpoint(ctx, paths.caddy, input.RouteID)
+		if routeErr != nil || !routeOK || upstream != input.Upstream || listen != input.ListenPort {
+			_ = restoreCaddyServer(context.Background(), paths.caddy, serverPath, oldServer, readErr)
+			return encodeEndpointFailure(input, planned.Input.Previous, "Caddy did not expose the planned stable route")
+		}
 	}
 
 	active := generationStatusFromEndpoint(input)
@@ -247,7 +254,11 @@ func applySwitchEndpoint(ctx context.Context, planned planner.Operation, claim a
 		DrainPolicy: input.DrainPolicy, SwitchedAt: now.UTC(),
 	}
 	if err := writeJSONAtomic(activePath, recordValue, 0644); err != nil {
-		rollbackErr := restoreCaddyServer(context.Background(), paths.caddy, serverPath, oldServer, readErr)
+		rollbackServer, rollbackReadErr := oldServer, readErr
+		if candidateRouteAlreadyLoaded {
+			rollbackServer, rollbackReadErr = plannedPreviousServer(input, planned.Input.Previous)
+		}
+		rollbackErr := restoreCaddyServer(context.Background(), paths.caddy, serverPath, rollbackServer, rollbackReadErr)
 		reason := "record active Generation after Caddy switch"
 		if rollbackErr != nil {
 			reason += "; restore previous route: " + rollbackErr.Error()
@@ -263,6 +274,13 @@ func applySwitchEndpoint(ctx context.Context, planned planner.Operation, claim a
 		return encoded, errors.New("switched Endpoint failed exact post-load observation")
 	}
 	return encoded, nil
+}
+
+func plannedPreviousServer(input planner.EndpointInput, previous *host.GenerationStatus) ([]byte, error) {
+	if previous == nil {
+		return nil, errCaddyPathNotFound
+	}
+	return caddyServerConfiguration(endpointForGeneration(input, *previous))
 }
 
 func observeActiveVerification(ctx context.Context, paths executionPaths, health planner.HealthInput, endpoint planner.EndpointInput, previous *host.GenerationStatus) host.ActiveVerificationObservation {
@@ -312,6 +330,9 @@ func applyVerifyActive(ctx context.Context, planned planner.Operation, claim aut
 	observed := observeActiveVerification(ctx, paths, health, endpoint, planned.Input.Previous)
 	activePath := filepath.Join(paths.environmentHome, "active-generation.json")
 	current, err := readActiveGenerationRecord(activePath)
+	if err == nil && current != nil && planned.Input.Previous != nil && current.PlanID == claim.PlanID && sameGenerationIdentity(current.Active, *planned.Input.Previous) && current.Previous != nil && sameGenerationIdentity(*current.Previous, generationStatusFromEndpoint(endpoint)) && current.ListenPort == endpoint.ListenPort && current.DrainPolicy == endpoint.DrainPolicy {
+		return reconcileCompletedRollback(ctx, observed, health, endpoint, *planned.Input.Previous, paths)
+	}
 	if err != nil || current == nil || current.PlanID != claim.PlanID || !sameGenerationIdentity(current.Active, generationStatusFromEndpoint(endpoint)) || current.ListenPort != endpoint.ListenPort || current.DrainPolicy != endpoint.DrainPolicy || planned.Input.Previous == nil != (current.Previous == nil) || planned.Input.Previous != nil && !sameGenerationIdentity(*planned.Input.Previous, *current.Previous) {
 		return encodeUncertainActiveVerification(observed, "durable active Generation state does not match the signed post-switch Plan")
 	}
@@ -397,6 +418,38 @@ func applyVerifyActive(ctx context.Context, planned planner.Operation, claim aut
 		return nil, encodeErr
 	}
 	return encoded, errors.New("post-switch verification failed and the stable Endpoint was rolled back")
+}
+
+func reconcileCompletedRollback(ctx context.Context, observed host.ActiveVerificationObservation, health planner.HealthInput, endpoint planner.EndpointInput, previous host.GenerationStatus, paths executionPaths) (json.RawMessage, error) {
+	observed.RollbackAttempted = true
+	previousHealth := healthForGeneration(health, endpoint.Account, previous, previous.Port)
+	previousObserved := checkCandidateHealth(ctx, paths, previousHealth)
+	observed.PreviousChecks = previousObserved.Checks
+	upstream, listen, routeOK, routeErr := observeCaddyEndpoint(ctx, paths.caddy, endpoint.RouteID)
+	observed.ObservedUpstream = upstream
+	if previousObserved.Status != host.CandidateHealthy || !previousObserved.CandidateActive || !previousObserved.SwitchEligible || routeErr != nil || !routeOK || listen != endpoint.ListenPort || upstream != fmt.Sprintf("127.0.0.1:%d", previous.Port) {
+		return encodeUncertainActiveVerification(observed, "durable rollback state cannot be proved healthy during resumption")
+	}
+	rollbackHealth := healthForGeneration(health, endpoint.Account, previous, endpoint.ListenPort)
+	var rollbackReason string
+	observed.RollbackChecks, rollbackReason = checkHTTPHealth(ctx, rollbackHealth, "restored stable Endpoint is unavailable")
+	if rollbackReason != "" {
+		return encodeUncertainActiveVerification(observed, "restored previous Endpoint is not healthy during resumption: "+rollbackReason)
+	}
+	restored := previous
+	restored.UnitActive, restored.UnitMatches = true, true
+	restored.RouteObserved, restored.RouteMatches = true, true
+	restored.RouteUpstream = upstream
+	observed.Status = host.ActiveVerificationRolledBack
+	observed.RollbackSucceeded = true
+	observed.Restored = &restored
+	observed.Reason = "an interrupted attempt already restored the previous Generation"
+	observed.RecoveryAction = ""
+	encoded, err := json.Marshal(observed)
+	if err != nil {
+		return nil, err
+	}
+	return encoded, errors.New("interrupted post-switch verification had already rolled back the stable Endpoint")
 }
 
 func healthForGeneration(template planner.HealthInput, account string, generation host.GenerationStatus, port int) planner.HealthInput {
@@ -625,6 +678,20 @@ func encodeEndpointFailure(input planner.EndpointInput, previous *host.Generatio
 		return nil, err
 	}
 	return encoded, errors.New(reason)
+}
+
+func encodeEndpointUncertain(input planner.EndpointInput, previous *host.GenerationStatus, reason string) (json.RawMessage, error) {
+	observed := host.EndpointObservation{
+		Status: host.EndpointUncertain, RouteID: input.RouteID, ListenPort: input.ListenPort,
+		Upstream: input.Upstream, Active: generationStatusFromEndpoint(input),
+		Previous: copyGenerationStatus(previous), DrainPolicy: input.DrainPolicy, Reason: reason,
+		RecoveryAction: "inspect the stable Endpoint and active/previous Generations before choosing retry or rollback",
+	}
+	encoded, err := json.Marshal(observed)
+	if err != nil {
+		return nil, err
+	}
+	return encoded, fmt.Errorf("%w: %s", errUncertainRecovery, reason)
 }
 
 func decodeExactJSON(data []byte, target any) error {

@@ -47,6 +47,8 @@ func run(args []string) error {
 		return runAuthorityKeygen(args[2:])
 	case args[0] == "deployment" && args[1] == "execute":
 		return runDeploymentExecute(args[2:])
+	case args[0] == "deployment" && args[1] == "resume":
+		return runDeploymentResume(args[2:])
 	case args[0] == "deployment" && args[1] == "status":
 		return runDeploymentStatus(args[2:])
 	default:
@@ -55,7 +57,7 @@ func run(args []string) error {
 }
 
 func usage() error {
-	return errors.New("usage: provision host inspect ... | provision host bootstrap check ... | provision config validate ... | provision plan ... | provision authority keygen ... | provision deployment execute ... | provision deployment status ...")
+	return errors.New("usage: provision host inspect ... | provision host bootstrap check ... | provision config validate ... | provision plan ... | provision authority keygen ... | provision deployment execute ... | provision deployment resume ... | provision deployment status ...")
 }
 
 func runAuthorityKeygen(args []string) error {
@@ -118,6 +120,56 @@ func runDeploymentExecute(args []string) error {
 	engine := execution.Engine{Backend: backend, Signer: signer, Handler: handler, Now: time.Now}
 	result, err := engine.Execute(ctx, execution.Request{
 		PlanID: *planID, OperationID: *operationID, Holder: holder, LeaseDuration: *leaseDuration,
+	})
+	output := json.NewEncoder(os.Stdout)
+	output.SetIndent("", "  ")
+	if result.SchemaVersion != "" {
+		if encodeErr := output.Encode(result); encodeErr != nil {
+			return encodeErr
+		}
+	}
+	return err
+}
+
+func runDeploymentResume(args []string) error {
+	flags := flag.NewFlagSet("deployment resume", flag.ContinueOnError)
+	flags.SetOutput(os.Stderr)
+	planID := flags.String("plan", "", "approved current Plan identity")
+	statePath := flags.String("state", "", "SQLite State Backend path")
+	signingKey := flags.String("signing-key", "", "local authority private key path")
+	leaseDuration := flags.Duration("lease-duration", 2*time.Minute, "fenced execution lease lifetime")
+	if err := flags.Parse(args); err != nil {
+		return err
+	}
+	if flags.NArg() != 0 || *planID == "" || *statePath == "" || *signingKey == "" || *leaseDuration <= 0 {
+		return errors.New("usage: provision deployment resume --plan DIGEST --state PATH --signing-key PATH [--lease-duration 2m]")
+	}
+	signer, err := authority.LoadSigner(*signingKey)
+	if err != nil {
+		return err
+	}
+	backend, err := state.OpenExistingSQLiteForUpdate(*statePath)
+	if err != nil {
+		return err
+	}
+	defer backend.Close()
+	holder, err := execution.NewLocalHolder()
+	if err != nil {
+		return err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+	snapshot, err := backend.LoadPlanSnapshot(ctx, *planID)
+	if err != nil {
+		return err
+	}
+	handler, err := execution.NewHostHandler(snapshot.Plan.Target, snapshot.Plan.Environment)
+	if err != nil {
+		return err
+	}
+	engine := execution.Engine{Backend: backend, Signer: signer, Handler: handler, Now: time.Now}
+	result, err := engine.Resume(ctx, execution.ResumeRequest{
+		PlanID: *planID, Holder: holder, LeaseDuration: *leaseDuration,
 	})
 	output := json.NewEncoder(os.Stdout)
 	output.SetIndent("", "  ")

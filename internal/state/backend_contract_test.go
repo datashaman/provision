@@ -194,9 +194,15 @@ func runBackendContract(t *testing.T, factory backendContractFactory) {
 	if _, err := backend.BeginOperation(ctx, BeginOperationRequest{PlanID: first.ID, OperationID: "op-01", Holder: "holder-b", StartedAt: now.Add(2 * time.Minute), LeaseDuration: time.Minute}); err == nil || !strings.Contains(err.Error(), "active mutating operation") {
 		t.Fatalf("concurrent lease was accepted: %v", err)
 	}
-	secondAttempt, err := backend.BeginOperation(ctx, BeginOperationRequest{PlanID: first.ID, OperationID: "op-01", Holder: "holder-b", StartedAt: now.Add(4 * time.Minute), LeaseDuration: time.Minute})
+	if _, err := backend.BeginOperation(ctx, BeginOperationRequest{PlanID: first.ID, OperationID: "op-01", Holder: "holder-b", ResumeOfAttemptID: "attempt-not-the-latest", StartedAt: now.Add(4 * time.Minute), LeaseDuration: time.Minute}); err == nil || !strings.Contains(err.Error(), "latest resumable") {
+		t.Fatalf("resume of unrelated attempt was accepted: %v", err)
+	}
+	secondAttempt, err := backend.BeginOperation(ctx, BeginOperationRequest{PlanID: first.ID, OperationID: "op-01", Holder: "holder-b", ResumeOfAttemptID: firstAttempt.AttemptID, StartedAt: now.Add(4 * time.Minute), LeaseDuration: time.Minute})
 	if err != nil || secondAttempt.FencingToken <= firstAttempt.FencingToken {
 		t.Fatalf("replacement lease = %+v, %v", secondAttempt, err)
+	}
+	if secondAttempt.ResumeOfAttemptID != firstAttempt.AttemptID {
+		t.Fatalf("replacement attempt omitted resume provenance: %+v", secondAttempt)
 	}
 	if err := backend.CompleteOperation(ctx, CompleteOperationRequest{
 		AttemptID: firstAttempt.AttemptID, Holder: firstAttempt.Holder, PlanID: first.ID, OperationID: "op-01",

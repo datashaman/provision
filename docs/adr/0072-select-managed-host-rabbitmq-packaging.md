@@ -37,10 +37,13 @@ directory, and encrypted systemd credential delivery as explicit Host
 bootstrap capabilities. Pre-pull and verify the approved manifest before the
 service operation; service start must never select or update a mutable tag.
 
-Scope this first topology to one RabbitMQ node and one quorum member. It can
-prove durable restart behavior, publisher confirms, consumer acknowledgements,
-and at-least-once processing, but it has zero node- or host-failure tolerance.
-Planning must reject any availability intent that requires such tolerance.
+Scope this first topology to one RabbitMQ node and one quorum member. It proves
+durable restart behavior, publisher confirms, manual consumer acknowledgements,
+stable-ID redelivery after an unacknowledged channel close, and therefore the
+narrow at-least-once delivery claim exercised by that scenario. It has zero
+node- or host-failure tolerance. Retry policy, dead-lettering, retention,
+ordering, and deduplication remain unqualified. Planning must reject any
+availability or Queue semantic intent that exceeds those observations.
 
 An OCI digest makes the broker executable identity immutable; it does not make
 Queue data backward-compatible. Every RabbitMQ upgrade remains a separately
@@ -71,8 +74,9 @@ every affected Plan.
 - The accepted packaging path was qualified on a freshly restored acceptance
   VM. The proof bound the exact image, delivered an encrypted user-scoped
   systemd credential, asserted owned paths and strict inventory isolation,
-  exercised publisher confirms and manual acknowledgements, and survived a
-  full Host reboot with the same durable message identity.
+  exercised publisher confirms, manual acknowledgements, and stable-ID
+  redelivery, and survived a full Host reboot with the same durable message
+  identity.
 - The restricted executor receives only narrow typed operations for the
   approved Queue lifecycle. It does not receive arbitrary Podman access.
 - The support matrix records the exact Host OS, systemd, Podman, RabbitMQ image
@@ -92,8 +96,13 @@ implementation would require its own decision and qualification evidence.
 
 ## Acceptance evidence
 
-The operator approved the rootless OCI/Quadlet recommendation before any live
-mutation. The accepted path then passed the issue-specific proof on a freshly
+The operator approved the rootless OCI/Quadlet recommendation in the Codex task
+before any live mutation. A versioned, non-secret
+[approval record](../evidence/2026-09-25-rabbitmq-packaging-approval.json) now
+binds that decision to the exact image, Environment, operator, and topology.
+That record was added retrospectively after review found the approval existed
+only in task history; every future destructive run requires the record as an
+input. The accepted path then passed the issue-specific proof on a freshly
 restored Ubuntu 26.04 `x86_64` VM:
 
 - Podman `5.7.0+ds2-3build1` ran RabbitMQ `4.3.6` from Linux `amd64` manifest
@@ -101,15 +110,23 @@ restored Ubuntu 26.04 `x86_64` VM:
 - rootless service identity `provision-lab`, unit
   `provision-lab-rabbitmq.service`, and one-member quorum Queue
   `provision-issue36` matched the declared topology;
-- publisher confirms, manual consumer acknowledgements, encrypted credential
-  delivery, read-only credential mounting, tmpfs runtime handling, and absence
-  of a durable plaintext password all passed;
+- publisher confirms, manual consumer acknowledgements, stable-ID redelivery
+  after an unacknowledged close, encrypted credential delivery, read-only
+  credential mounting, tmpfs runtime handling, and absence of a durable
+  plaintext password all passed;
 - the unit restarted automatically after a real Host reboot and the same
-  confirmed message ID was consumed and acknowledged afterward; and
+  confirmed message ID was consumed and acknowledged afterward;
+- the running container's platform manifest and image configuration, systemd
+  unit and process UID, durable Queue, singleton quorum membership, and broker
+  disk/running/version node inventories matched exactly; and
 - package, image, container, and Quadlet inventories remained exact, while
   native RabbitMQ remained absent.
 
 The structured non-secret observation is retained with the
 [qualification evidence](../evidence/2026-09-25-rabbitmq-packaging-qualification.json).
+The independent [controller evidence](../evidence/2026-09-25-rabbitmq-acceptance-controller.json)
+records the exact clean snapshot, the pre-prepare clean observation, both
+restores, and the post-restore observation that Podman, the Environment account,
+and issue evidence were absent again.
 This acceptance selects packaging only; it does not enable a production Queue
 executor operation.

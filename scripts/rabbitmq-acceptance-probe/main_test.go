@@ -38,7 +38,7 @@ func TestCredentialsRejectMissingValues(t *testing.T) {
 }
 
 func TestValidateMode(t *testing.T) {
-	for _, mode := range []string{"roundtrip", "publish-only", "consume-existing"} {
+	for _, mode := range []string{"roundtrip", "redelivery", "publish-only", "consume-existing"} {
 		if err := validateMode(mode); err != nil {
 			t.Fatalf("mode %q rejected: %v", mode, err)
 		}

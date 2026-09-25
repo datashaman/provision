@@ -26,6 +26,7 @@ type result struct {
 	MessageID              string `json:"messageId"`
 	PublisherConfirmed     bool   `json:"publisherConfirmed"`
 	ConsumerAcknowledged   bool   `json:"consumerAcknowledged"`
+	Redelivered            bool   `json:"redelivered"`
 	MessagesAfterOperation int    `json:"messagesAfterOperation"`
 	CredentialsSource      string `json:"credentialsSource"`
 }
@@ -89,7 +90,7 @@ func run() error {
 	if err != nil {
 		return fmt.Errorf("open channel: %w", err)
 	}
-	defer channel.Close()
+	defer func() { _ = channel.Close() }()
 
 	queue, err := channel.QueueDeclare(
 		queueName,
@@ -141,8 +142,59 @@ func run() error {
 		}
 	}
 
-	var acknowledged bool
-	if mode != "publish-only" {
+	var acknowledged, redelivered bool
+	if mode == "redelivery" {
+		if err := channel.Qos(1, 0, false); err != nil {
+			return fmt.Errorf("set initial redelivery consumer prefetch: %w", err)
+		}
+		deliveries, err := channel.Consume(queue.Name, "provision-issue36-release", false, false, false, false, nil)
+		if err != nil {
+			return fmt.Errorf("start unacknowledged consumer: %w", err)
+		}
+		consumeDeadline := time.NewTimer(15 * time.Second)
+		select {
+		case delivery := <-deliveries:
+			if delivery.MessageId != messageID {
+				consumeDeadline.Stop()
+				return fmt.Errorf("received unexpected stable message identity %q before release", delivery.MessageId)
+			}
+		case <-consumeDeadline.C:
+			return errors.New("unacknowledged consumer did not receive the confirmed message")
+		}
+		consumeDeadline.Stop()
+		if err := channel.Close(); err != nil {
+			return fmt.Errorf("close channel with unacknowledged delivery: %w", err)
+		}
+		channel, err = connection.Channel()
+		if err != nil {
+			return fmt.Errorf("open redelivery channel: %w", err)
+		}
+		if err := channel.Qos(1, 0, false); err != nil {
+			return fmt.Errorf("set redelivery consumer prefetch: %w", err)
+		}
+		redeliveries, err := channel.Consume(queue.Name, "provision-issue36-redelivery", false, false, false, false, nil)
+		if err != nil {
+			return fmt.Errorf("start redelivery consumer: %w", err)
+		}
+		redeliveryDeadline := time.NewTimer(15 * time.Second)
+		defer redeliveryDeadline.Stop()
+		select {
+		case delivery := <-redeliveries:
+			if delivery.MessageId != messageID {
+				return fmt.Errorf("redelivery changed stable message identity to %q", delivery.MessageId)
+			}
+			if !delivery.Redelivered {
+				return errors.New("released delivery was not marked as redelivered")
+			}
+			if err := delivery.Ack(false); err != nil {
+				return fmt.Errorf("acknowledge redelivery: %w", err)
+			}
+			acknowledged = true
+			redelivered = true
+		case <-redeliveryDeadline.C:
+			return errors.New("released delivery was not redelivered")
+		}
+	} else if mode != "publish-only" {
 		if err := channel.Qos(1, 0, false); err != nil {
 			return fmt.Errorf("set consumer prefetch: %w", err)
 		}
@@ -186,6 +238,7 @@ func run() error {
 		MessageID:              messageID,
 		PublisherConfirmed:     confirmed,
 		ConsumerAcknowledged:   acknowledged,
+		Redelivered:            redelivered,
 		MessagesAfterOperation: queue.Messages,
 		CredentialsSource:      "systemd-encrypted-credential",
 	})
@@ -193,7 +246,7 @@ func run() error {
 
 func validateMode(mode string) error {
 	switch mode {
-	case "roundtrip", "publish-only", "consume-existing":
+	case "roundtrip", "redelivery", "publish-only", "consume-existing":
 		return nil
 	default:
 		return fmt.Errorf("unsupported proof mode %q", mode)

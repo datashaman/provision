@@ -1,0 +1,22 @@
+{
+  "schemaVersion": "provision.dev/rabbitmq-packaging-approval/v1alpha1",
+  "issue": 36,
+  "decision": "digest-pinned-rootless-oci-quadlet",
+  "environment": "lab",
+  "operator": "marlinf",
+  "product": {
+    "name": "RabbitMQ",
+    "version": "4.3.6"
+  },
+  "image": "docker.io/library/rabbitmq@sha256:34fc91a9de04d612a340507b8e7e19c0ee1ec9839e09dc5fc98f54991633ce91",
+  "topology": {
+    "brokerNodes": 1,
+    "queueType": "quorum",
+    "queueMembers": 1,
+    "hostFailureTolerance": 0
+  },
+  "source": {
+    "kind": "codex-thread",
+    "context": "The operator explicitly approved the proposed RabbitMQ 4.3.6 digest-pinned rootless OCI/Quadlet packaging in the Codex task before the issue 36 live acceptance mutation. This durable record was added retrospectively after code review identified that the approval existed only in the task history."
+  }
+}

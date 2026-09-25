@@ -1,0 +1,38 @@
+{
+  "baseTarget": "base.local",
+  "guestTarget": "provision-acceptance.local",
+  "instance": "provision-acceptance",
+  "postRestoreCleanObservation": {
+    "bootId": "4786a6ef-fe7e-40d0-ae95-0202b7a27c69",
+    "clean": true,
+    "environmentAccountPresent": false,
+    "issueEvidencePresent": false,
+    "podmanPresent": false,
+    "schemaVersion": "provision.dev/rabbitmq-clean-host-observation/v1alpha1"
+  },
+  "prePrepareCleanObservation": {
+    "bootId": "28df0f56-91ad-4ad6-a8a9-fff2802ae152",
+    "clean": true,
+    "environmentAccountPresent": false,
+    "issueEvidencePresent": false,
+    "podmanPresent": false,
+    "schemaVersion": "provision.dev/rabbitmq-clean-host-observation/v1alpha1"
+  },
+  "qualification": {
+    "observationDigest": "sha256:af41714b1aa2270ba6cd151bd24876ac117218e401e1e87515451a7081ac4c6d",
+    "result": "passed",
+    "schemaVersion": "provision.dev/rabbitmq-packaging-qualification/v1alpha2"
+  },
+  "restores": [
+    "before-prepare",
+    "after-evidence-capture"
+  ],
+  "result": "passed",
+  "schemaVersion": "provision.dev/rabbitmq-acceptance-controller/v1alpha1",
+  "snapshot": {
+    "createdAt": "2026-09-25T12:59:14.631056345Z",
+    "name": "clean",
+    "rawObservationDigest": "sha256:7a23463634e12ea70b2751555a81d41d97a45ca02d4b0a41d4cbd5104a898e03",
+    "stateful": false
+  }
+}

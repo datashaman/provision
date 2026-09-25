@@ -26,12 +26,15 @@ The matching remote executor digests were `sha256:e9c910de10f89045c98d426454c60a
 
 | Acceptance client | Host OS | Runtime identity | Service and topology | Result |
 | --- | --- | --- | --- | --- |
-| Linux `x86_64`, `sha256:9dd6ae1360318ed4b7b119486d29181b9f84ebaea3b9773e929ed213a6aefcfe` | Ubuntu Server 26.04 VM, kernel `7.0.0-34-generic`, `x86_64`; systemd `259 (259.5-0ubuntu3.4)` | Podman `5.7.0+ds2-3build1`; RabbitMQ `4.3.6`; image `docker.io/library/rabbitmq@sha256:34fc91a9de04d612a340507b8e7e19c0ee1ec9839e09dc5fc98f54991633ce91` | Rootless Environment account `provision-lab`; user unit `provision-lab-rabbitmq.service`; node `rabbit@provision-lab-rabbitmq`; one-member quorum Queue `provision-issue36` | Exact image and inventory, encrypted credential delivery, publisher confirms, manual acknowledgements, automatic restart, and confirmed-message survival passed across a full Host reboot; see the [qualification evidence](evidence/2026-09-25-rabbitmq-packaging-comparison.md). |
+| Linux `x86_64`, `sha256:6e5000d43a0b03014706d2cb08ec2a4babae01750dd3f31db7c59f9cbfd7ab73` | Ubuntu Server 26.04 VM, kernel `7.0.0-34-generic`, `x86_64`; systemd `259 (259.5-0ubuntu3.4)` | Podman `5.7.0+ds2-3build1`; RabbitMQ `4.3.6`; image `docker.io/library/rabbitmq@sha256:34fc91a9de04d612a340507b8e7e19c0ee1ec9839e09dc5fc98f54991633ce91` | Rootless Environment account `provision-lab`; user unit `provision-lab-rabbitmq.service`; node `rabbit@provision-lab-rabbitmq`; one durable member in quorum Queue `provision-issue36` | Exact manifest/config, service identity, Queue/node/inventory, encrypted credential delivery, publisher confirms, manual acknowledgements, stable-ID redelivery after unacknowledged close, automatic restart, and confirmed-message survival passed across a full Host reboot; see the [qualification](evidence/2026-09-25-rabbitmq-packaging-qualification.json) and [clean-restore controller evidence](evidence/2026-09-25-rabbitmq-acceptance-controller.json). |
 
 This row qualifies packaging and the stated RabbitMQ semantics, not a
 production Queue executor. The one broker and one quorum member have zero
 Host-failure tolerance. The image digest binds executable identity but does not
-authorize automatic downgrade of the persisted Queue data.
+authorize automatic downgrade of the persisted Queue data. Retry policy,
+dead-lettering, retention, ordering, and deduplication remain unqualified;
+alarm, feature, and health fields are observed state rather than broader
+guarantees.
 
 ## Guarantees exercised
 

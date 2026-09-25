@@ -82,10 +82,15 @@ previously unproved properties are resolved by the live result below.
 ## Approved decision
 
 The operator approved the digest-pinned rootless OCI/Quadlet option for the
-managed Host implementation. It best preserves Environment-scoped ownership,
-immutable runtime identity, independent version selection, and auditable
-upgrades. It also follows the existing rootless Podman/Quadlet architecture
-decision.
+managed Host implementation in the Codex task before live mutation. The
+versioned [approval record](2026-09-25-rabbitmq-packaging-approval.json) binds
+that decision to RabbitMQ `4.3.6`, the exact platform manifest, Environment
+`lab`, operator `marlinf`, and the one-node/one-member topology. The record was
+added retrospectively when review found the original approval existed only in
+task history; the proof now requires it before `--prepare`. The option best
+preserves Environment-scoped ownership, immutable runtime identity,
+independent version selection, and auditable upgrades. It also follows the
+existing rootless Podman/Quadlet architecture decision.
 
 Approval authorized only the issue-specific acceptance proof on a freshly
 restored VM:
@@ -117,7 +122,10 @@ only the approved RabbitMQ platform manifest, and started rootless unit
 The broker reported RabbitMQ `4.3.6`, node
 `rabbit@provision-lab-rabbitmq`, and one durable quorum Queue named
 `provision-issue36`. The client proved a persistent publish with a publisher
-confirm and a separately manual-acknowledged delivery. It then left confirmed
+confirm and a separately manual-acknowledged delivery. It closed a channel with
+an unacknowledged stable-ID message, then observed RabbitMQ redeliver that same
+message with its redelivery flag set before acknowledging it. This qualifies
+only the exercised at-least-once delivery scenario. It then left confirmed
 message `issue36-reboot-survival` queued, rebooted the Host, and consumed and
 acknowledged that exact message ID after the rootless unit restarted healthy.
 
@@ -127,6 +135,11 @@ The proof also asserted that:
   `sha256:34fc91a9de04d612a340507b8e7e19c0ee1ec9839e09dc5fc98f54991633ce91`
   and image configuration
   `sha256:5e82332c48dd5c5fe3299ab7ed6550d860801cf9a0330d262d57cadee1ac7899`;
+- the exact systemd unit was active, its main process ran as the observed
+  `provision-lab` UID, and RabbitMQ's disk-node, running-node, and version-node
+  inventories each contained only `rabbit@provision-lab-rabbitmq`;
+- the exact Queue inventory contained only the durable quorum Queue, whose
+  machine-read quorum observation contained exactly that one member;
 - the Environment account owned exactly one image and one container, with one
   root-owned Quadlet definition and no native `rabbitmq-server` package;
 - the systemd credential was encrypted for the Environment user, mounted
@@ -137,12 +150,21 @@ The proof also asserted that:
   surviving an orderly restart.
 
 The generated acceptance client was Linux `x86_64` binary
-`sha256:9dd6ae1360318ed4b7b119486d29181b9f84ebaea3b9773e929ed213a6aefcfe`.
+`sha256:6e5000d43a0b03014706d2cb08ec2a4babae01750dd3f31db7c59f9cbfd7ab73`.
 The complete non-secret result is the versioned
-[`provision.dev/rabbitmq-packaging-qualification/v1alpha1` observation](2026-09-25-rabbitmq-packaging-qualification.json).
-Raw evidence was copied to the ignored local work area before the VM was
-restored. A clean-host check afterward confirmed that Podman, the
-`provision-lab` account, and issue evidence were absent again.
+[`provision.dev/rabbitmq-packaging-qualification/v1alpha2` observation](2026-09-25-rabbitmq-packaging-qualification.json).
+It explicitly records publisher confirms, manual acknowledgements, stable-ID
+redelivery, and restart identity as qualified; retry, dead-lettering, retention,
+ordering, and deduplication are unqualified. Alarm state, enabled features, and
+healthy diagnostics are observations, not broader semantic guarantees.
+
+The controller restored exact snapshot `provision-acceptance/clean` before
+prepare, observed Podman, the `provision-lab` account, and issue evidence absent,
+ran the proof and reboot, copied raw evidence, restored the same snapshot again,
+and repeated that clean observation. The versioned
+[controller provenance](2026-09-25-rabbitmq-acceptance-controller.json) records
+the snapshot creation identity, raw snapshot-observation digest, both restore
+phases, qualification digest, and the two non-secret clean-host observations.
 
 The selected image identity does not make persisted RabbitMQ data safe to
 downgrade. Upgrades still require an explicit data-compatibility decision and

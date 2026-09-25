@@ -10,7 +10,9 @@ usage() {
   cat >&2 <<'EOF'
 usage: prove-rabbitmq-quadlet-host.sh (--preview|--prepare|--verify-after-reboot) \
   --environment NAME --oci-image NAME@sha256:DIGEST --probe-binary FILE \
+  --qualification-validator FILE \
   --expected-podman-version VERSION --confirm-disposable-host HOSTNAME \
+  --approval-record FILE --operator NAME \
   [--evidence-dir DIRECTORY]
 EOF
   exit 2
@@ -25,8 +27,11 @@ mode=""
 environment=""
 oci_image=""
 probe_binary=""
+qualification_validator=""
 expected_podman_version=""
 confirmed_host=""
+approval_record=""
+operator=""
 evidence_dir="/var/lib/provision/evidence/issue36"
 while (($#)); do
   case "$1" in
@@ -34,8 +39,11 @@ while (($#)); do
     --environment) (($# >= 2)) || usage; environment="$2"; shift 2 ;;
     --oci-image) (($# >= 2)) || usage; oci_image="$2"; shift 2 ;;
     --probe-binary) (($# >= 2)) || usage; probe_binary="$2"; shift 2 ;;
+    --qualification-validator) (($# >= 2)) || usage; qualification_validator="$2"; shift 2 ;;
     --expected-podman-version) (($# >= 2)) || usage; expected_podman_version="$2"; shift 2 ;;
     --confirm-disposable-host) (($# >= 2)) || usage; confirmed_host="$2"; shift 2 ;;
+    --approval-record) (($# >= 2)) || usage; approval_record="$2"; shift 2 ;;
+    --operator) (($# >= 2)) || usage; operator="$2"; shift 2 ;;
     --evidence-dir) (($# >= 2)) || usage; evidence_dir="$2"; shift 2 ;;
     *) usage ;;
   esac
@@ -46,6 +54,11 @@ done
   die "the OCI image must be a fully qualified digest reference"
 [[ "$expected_podman_version" =~ ^[A-Za-z0-9.+:~_-]+$ ]] || usage
 [[ "$confirmed_host" =~ ^[A-Za-z0-9][A-Za-z0-9.-]*$ ]] || usage
+[[ "$operator" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$ ]] || usage
+[[ -f "$approval_record" && ! -L "$approval_record" ]] || \
+  die "a regular, non-symlink approval record is required"
+[[ -f "$qualification_validator" && ! -L "$qualification_validator" ]] || \
+  die "a regular, non-symlink qualification validator is required"
 [[ "$evidence_dir" == /* && "$evidence_dir" =~ ^/var/lib/provision/evidence/[a-zA-Z0-9._/-]+$ ]] || \
   die "the evidence directory must be below /var/lib/provision/evidence"
 
@@ -58,8 +71,44 @@ home="/var/lib/provision/runtime/$environment"
 service_root="/var/lib/provision/environments/$environment/services/rabbitmq"
 data_dir="$service_root/data"
 installed_probe="/usr/local/libexec/provision-rabbitmq-acceptance-probe"
+installed_validator="/usr/local/libexec/provision-rabbitmq-qualification-validator"
 credential_entrypoint="$service_root/credential-entrypoint"
 credential_name="rabbitmq-config"
+
+approval_source="$(python3 - "$approval_record" "$environment" "$operator" "$oci_image" <<'PY'
+import json
+import sys
+
+path, environment, operator, image = sys.argv[1:]
+with open(path, encoding="utf-8") as handle:
+    approval = json.load(handle)
+
+expected = {
+    "schemaVersion": "provision.dev/rabbitmq-packaging-approval/v1alpha1",
+    "issue": 36,
+    "decision": "digest-pinned-rootless-oci-quadlet",
+    "environment": environment,
+    "operator": operator,
+    "product": {"name": "RabbitMQ", "version": "4.3.6"},
+    "image": image,
+    "topology": {
+        "brokerNodes": 1,
+        "queueType": "quorum",
+        "queueMembers": 1,
+        "hostFailureTolerance": 0,
+    },
+}
+for key, value in expected.items():
+    if approval.get(key) != value:
+        raise SystemExit(f"approval record does not bind expected {key}")
+source = approval.get("source")
+if not isinstance(source, dict) or not isinstance(source.get("kind"), str) or not source["kind"]:
+    raise SystemExit("approval record lacks source kind")
+if not isinstance(source.get("context"), str) or not source["context"]:
+    raise SystemExit("approval record lacks source context")
+print(source["kind"])
+PY
+)" || die "approval record validation failed"
 
 if [[ "$mode" == --preview ]]; then
   printf 'RabbitMQ rootless Quadlet proof preview:\n'
@@ -71,6 +120,7 @@ if [[ "$mode" == --preview ]]; then
   printf '  Queue: %s (quorum, one member, zero Host-failure tolerance)\n' "$queue"
   printf '  Durable state: %s\n' "$data_dir"
   printf '  Credentials: encrypted user-scoped systemd credential %s\n' "$credential_name"
+  printf '  Approval: %s via %s\n' "$operator" "$approval_source"
   printf '  Evidence: %s\n' "$evidence_dir"
   printf 'No changes made.\n'
   exit 0
@@ -129,16 +179,54 @@ run_probe() {
 }
 
 record_observation() {
-  local prefix="$1"
+  local prefix="$1" main_pid
   as_account systemctl --user show "$unit" \
     -p ActiveState -p SubState -p FragmentPath -p LoadCredential -p MainPID > "$evidence_dir/$prefix-unit.txt"
+  as_account systemctl --user show "$unit" -p Id --value > "$evidence_dir/$prefix-unit-name.txt"
+  main_pid="$(as_account systemctl --user show "$unit" -p MainPID --value)"
+  stat -c %u "/proc/$main_pid" > "$evidence_dir/$prefix-main-pid-owner.txt"
+  getent passwd "$account" > "$evidence_dir/$prefix-account.txt"
   as_account systemctl --user cat "$unit" > "$evidence_dir/$prefix-unit-definition.txt"
   as_account podman image inspect "$oci_image" > "$evidence_dir/$prefix-image.json"
   as_account podman inspect "$container" > "$evidence_dir/$prefix-container.json"
+  dpkg-query -W -f='${Version}\n' podman > "$evidence_dir/$prefix-podman-version.txt"
   as_account podman exec "$container" rabbitmqctl version > "$evidence_dir/$prefix-rabbitmq-version.txt"
   as_account podman exec "$container" rabbitmqctl eval 'node().' > "$evidence_dir/$prefix-node.txt"
   as_account podman exec "$container" rabbitmqctl list_queues -q name type durable messages --formatter json > "$evidence_dir/$prefix-queues.json"
   as_account podman exec "$container" rabbitmq-queues quorum_status --vhost / "$queue" > "$evidence_dir/$prefix-quorum-status.txt"
+  as_account podman exec "$container" rabbitmqctl cluster_status --formatter json > "$evidence_dir/$prefix-cluster.json"
+  as_account podman exec "$container" rabbitmqctl list_feature_flags name state --formatter json > "$evidence_dir/$prefix-features.json"
+  if as_account podman exec "$container" rabbitmq-diagnostics -q check_local_alarms >/dev/null; then
+    printf '{"localAlarmCheckPassed":true}\n' > "$evidence_dir/$prefix-alarms.json"
+  else
+    printf '{"localAlarmCheckPassed":false}\n' > "$evidence_dir/$prefix-alarms.json"
+  fi
+  if as_account podman exec "$container" rabbitmq-diagnostics -q ping >/dev/null; then
+    printf '{"diagnosticsPingPassed":true}\n' > "$evidence_dir/$prefix-ping.json"
+  else
+    printf '{"diagnosticsPingPassed":false}\n' > "$evidence_dir/$prefix-ping.json"
+  fi
+  python3 - "$evidence_dir/$prefix-quorum-status.txt" "$queue" "$evidence_dir/$prefix-quorum-members.json" <<'PY'
+import json
+import re
+import sys
+
+source, queue, destination = sys.argv[1:]
+with open(source, encoding="utf-8") as handle:
+    text = handle.read()
+text = re.sub(r"\x1b(?:\[[0-?]*[ -/]*[@-~]|\([0-9A-Za-z])", "", text)
+members = []
+for line in text.splitlines():
+    if "leader" not in line and "follower" not in line:
+        continue
+    members.extend(re.findall(r"rabbit@[A-Za-z0-9._-]+", line))
+members = sorted(set(members))
+if not members:
+    raise SystemExit("quorum status contained no machine-readable member identity")
+with open(destination, "w", encoding="utf-8") as handle:
+    json.dump({"queue": queue, "members": members}, handle, indent=2, sort_keys=True)
+    handle.write("\n")
+PY
   as_account podman ps --format json > "$evidence_dir/$prefix-containers.json"
   as_account podman images --format json > "$evidence_dir/$prefix-images.json"
   find "/etc/containers/systemd/users/$uid" -maxdepth 1 -type f -printf '%M %u:%g %p\n' | LC_ALL=C sort > "$evidence_dir/$prefix-quadlet-files.txt"
@@ -154,6 +242,14 @@ verify_exact_inventory() {
   [[ "$(as_account podman images --format '{{.Repository}}@{{.Digest}}' | wc -l)" -eq 1 ]] || \
     die "the Environment account has an unexpected image set"
   as_account podman image exists "$oci_image" || die "the approved OCI digest is absent"
+  approved_manifest="${oci_image##*@}"
+  observed_manifest="$(as_account podman inspect --format '{{.ImageDigest}}' "$container")"
+  [[ "$observed_manifest" == "$approved_manifest" ]] || \
+    die "the running container does not use the approved platform manifest"
+  observed_config="$(as_account podman inspect --format '{{.Image}}' "$container")"
+  image_config="$(as_account podman image inspect --format '{{.Id}}' "$oci_image")"
+  [[ "${observed_config#sha256:}" == "${image_config#sha256:}" ]] || \
+    die "the running container does not use the observed image configuration"
   [[ "$(find "/etc/containers/systemd/users/$uid" -maxdepth 1 -type f -printf '%f\n')" == "$container.container" ]] || \
     die "the root-owned Quadlet inventory is not exact"
   dpkg-query -W rabbitmq-server >/dev/null 2>&1 && die "native RabbitMQ was unexpectedly installed"
@@ -167,6 +263,10 @@ verify_exact_inventory() {
     die "plaintext RabbitMQ credentials were written to durable service storage"
   fi
   [[ "$(as_account systemctl --user is-active "$unit")" == active ]] || die "$unit is not active"
+  main_pid="$(as_account systemctl --user show "$unit" -p MainPID --value)"
+  [[ "$main_pid" =~ ^[1-9][0-9]*$ && -d "/proc/$main_pid" ]] || die "$unit has no live main process"
+  [[ "$(stat -c %u "/proc/$main_pid")" == "$uid" ]] || \
+    die "$unit main process does not run as the Environment account"
 }
 
 if [[ "$mode" == --prepare ]]; then
@@ -177,6 +277,7 @@ if [[ "$mode" == --prepare ]]; then
   getent passwd "$account" >/dev/null && die "$account already exists; restore the clean snapshot first"
 
   install -d -o root -g root -m 0755 "$evidence_dir"
+  install -o root -g root -m 0644 "$approval_record" "$evidence_dir/approval-record.json"
   record_packages "$evidence_dir/packages-before.txt"
   cat /proc/sys/kernel/random/boot_id > "$evidence_dir/before-reboot-boot-id.txt"
 
@@ -271,6 +372,7 @@ EOF
   trap - EXIT
 
   install -o root -g root -m 0755 "$probe_binary" "$installed_probe"
+  install -o root -g root -m 0755 "$qualification_validator" "$installed_validator"
   as_account podman pull "$oci_image"
   as_account podman image inspect "$oci_image" >/dev/null
   as_account systemctl --user daemon-reload
@@ -279,6 +381,7 @@ EOF
   verify_exact_inventory
 
   run_probe roundtrip issue36-before-reboot-roundtrip "$evidence_dir/before-reboot-roundtrip.json"
+  run_probe redelivery issue36-redelivery "$evidence_dir/before-reboot-redelivery.json"
   run_probe publish-only issue36-reboot-survival "$evidence_dir/before-reboot-persistent.json"
   record_observation before-reboot
   record_packages "$evidence_dir/packages-after.txt"
@@ -294,7 +397,10 @@ getent passwd "$account" >/dev/null || die "$account is absent; run --prepare fi
 uid="$(id -u "$account")"
 gid="$(id -g "$account")"
 [[ -f "$evidence_dir/before-reboot-boot-id.txt" ]] || die "pre-reboot evidence is absent"
+cmp -s "$approval_record" "$evidence_dir/approval-record.json" || \
+  die "post-reboot approval record differs from the approved prepare input"
 [[ -x "$installed_probe" ]] || die "the installed acceptance probe is absent"
+[[ -x "$installed_validator" ]] || die "the installed qualification validator is absent"
 before_boot="$(cat "$evidence_dir/before-reboot-boot-id.txt")"
 after_boot="$(cat /proc/sys/kernel/random/boot_id)"
 [[ "$before_boot" != "$after_boot" ]] || die "the Host has not rebooted since prepare"
@@ -307,108 +413,16 @@ record_packages "$evidence_dir/packages-after-reboot.txt"
 cmp -s "$evidence_dir/packages-after.txt" "$evidence_dir/packages-after-reboot.txt" || \
   die "the installed package inventory changed across reboot"
 
-python3 - "$evidence_dir" "$environment" "$account" "$uid" "$oci_image" "$expected_podman_version" "$unit" "$container" "$queue" <<'PY'
-import hashlib
-import json
-import os
-import platform
-import sys
-
-root, environment, account, uid, image, podman_version, unit, container, queue = sys.argv[1:]
-
-def read(name):
-    with open(os.path.join(root, name), encoding="utf-8") as handle:
-        return handle.read().strip()
-
-def read_json(name):
-    with open(os.path.join(root, name), encoding="utf-8") as handle:
-        return json.load(handle)
-
-def digest(name):
-    value = hashlib.sha256()
-    with open(os.path.join(root, name), "rb") as handle:
-        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-            value.update(chunk)
-    return "sha256:" + value.hexdigest()
-
-roundtrip = read_json("before-reboot-roundtrip.json")
-persistent = read_json("before-reboot-persistent.json")
-consumed = read_json("after-reboot-consume.json")
-queue_observation = read_json("after-reboot-queues.json")
-matching_queue = [item for item in queue_observation if item.get("name") == queue]
-if len(matching_queue) != 1 or matching_queue[0].get("type") != "quorum":
-    raise SystemExit("the final Queue topology is not the expected quorum Queue")
-
-result = {
-    "schemaVersion": "provision.dev/rabbitmq-packaging-qualification/v1alpha1",
-    "result": "passed",
-    "decision": "digest-pinned-rootless-oci-quadlet",
-    "environment": environment,
-    "host": {
-        "os": "ubuntu",
-        "osVersion": "26.04",
-        "architecture": platform.machine(),
-        "kernel": platform.release(),
-        "systemdVersion": os.popen("systemctl --version").read().splitlines()[0],
-        "bootIdChanged": read("before-reboot-boot-id.txt") != read("after-reboot-boot-id.txt"),
-    },
-    "runtime": {
-        "podmanVersion": podman_version,
-        "image": image,
-        "rabbitmqVersion": read("after-reboot-rabbitmq-version.txt"),
-        "node": read("after-reboot-node.txt"),
-    },
-    "service": {
-        "identity": account,
-        "uid": uid,
-        "unit": unit,
-        "container": container,
-        "rootless": True,
-        "activeAfterReboot": True,
-        "credential": "encrypted-user-scoped-systemd-credential",
-        "credentialCipherDigest": read("encrypted-credential.sha256").split()[0],
-        "plaintextRecorded": False,
-    },
-    "topology": {
-        "brokerNodes": 1,
-        "queue": queue,
-        "queueType": "quorum",
-        "queueMembers": 1,
-        "hostFailureTolerance": 0,
-    },
-    "capabilities": {
-        "publisherConfirm": roundtrip["publisherConfirmed"] and persistent["publisherConfirmed"],
-        "consumerAcknowledgement": roundtrip["consumerAcknowledged"] and consumed["consumerAcknowledged"],
-        "stableMessageIdentityAcrossReboot": persistent["messageId"] == consumed["messageId"],
-        "persistentMessageSurvivedReboot": persistent["messagesAfterOperation"] == 1 and consumed["messagesAfterOperation"] == 0,
-        "serviceSurvivedReboot": True,
-        "hostLossTolerance": False,
-    },
-    "evidenceDigests": {
-        "packageInventory": digest("packages-after-reboot.txt"),
-        "unitDefinition": digest("after-reboot-unit-definition.txt"),
-        "imageObservation": digest("after-reboot-image.json"),
-        "containerObservation": digest("after-reboot-container.json"),
-        "queueObservation": digest("after-reboot-queues.json"),
-        "quorumStatus": digest("after-reboot-quorum-status.txt"),
-        "probeBinary": read("probe.sha256").split()[0],
-        "credentialEntrypoint": read("credential-entrypoint.sha256").split()[0],
-    },
-}
-
-if not all((
-    result["host"]["bootIdChanged"],
-    result["capabilities"]["publisherConfirm"],
-    result["capabilities"]["consumerAcknowledgement"],
-    result["capabilities"]["stableMessageIdentityAcrossReboot"],
-    result["capabilities"]["persistentMessageSurvivedReboot"],
-)):
-    raise SystemExit("one or more qualification assertions failed")
-
-with open(os.path.join(root, "support-observation.json"), "w", encoding="utf-8") as handle:
-    json.dump(result, handle, indent=2, sort_keys=True)
-    handle.write("\n")
-PY
+"$installed_validator" \
+  --evidence-dir "$evidence_dir" \
+  --approval-record "$evidence_dir/approval-record.json" \
+  --environment "$environment" \
+  --operator "$operator" \
+  --image "$oci_image" \
+  --expected-podman-version "$expected_podman_version" \
+  --unit "$unit" \
+  --container "$container" \
+  --queue "$queue" > "$evidence_dir/support-observation.json"
 
 printf 'RabbitMQ rootless Quadlet proof passed\n'
 printf 'evidence: %s\n' "$evidence_dir"

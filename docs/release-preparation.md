@@ -184,7 +184,7 @@ go run ./cmd/provision deployment execute \
 
 The deterministic Plan contains the exact active Endpoint, exact previous Generation, `rollback-window` rule, and duration; it deliberately contains no wall-clock deadline. During execution the host independently proves the successful exact signed drain, stable route, stopped previous unit, immutable Generation directory and manifest, and digest-addressed Artifact. It derives `retainUntil` as the trusted switch time plus the declared window, then records the operation digest and timestamps in root-owned state. The result reports `policy: rollback-window`, `status: retained`, `restartable: true`, and `cleanupPerformed: false`.
 
-This operation is a retention declaration, not garbage collection. It never starts, stops, deletes, or disables a unit and never removes a release, manifest, or Artifact. Replays, stale authorizations, mismatched identities, route drift, missing material, and attempts to shorten an existing window fail closed. If the response is lost after the marker is durable, resume re-observes the exact state and records success without replaying the mutation.
+This operation records a rollback window; it is not garbage collection. It never starts, stops, deletes, or disables a unit and never removes a Generation directory, manifest, or Artifact. Replays, stale authorizations, mismatched identities, route drift, missing material, and attempts to shorten an existing window fail closed. If the response is lost after the marker is durable, resume re-observes the exact state and records success without replaying the mutation.
 
 ## 10. Resume an interrupted or uncertain operation
 

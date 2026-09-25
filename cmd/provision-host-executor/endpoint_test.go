@@ -213,7 +213,7 @@ func TestAuthorizedRollbackWindowRetentionFailsWhenArtifactIsMissing(t *testing.
 		t.Fatalf("failed retention changed durable state: %+v, %v", current, err)
 	}
 	if _, err := os.Stat(previous.ReleaseDirectory); err != nil {
-		t.Fatalf("failed retention removed the previous release: %v", err)
+		t.Fatalf("failed rollback-window recording removed the previous Generation directory: %v", err)
 	}
 }
 

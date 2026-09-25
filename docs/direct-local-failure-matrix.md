@@ -33,7 +33,7 @@ The work directory must not exist before the run. The script obtains one `sudo` 
 
 The shell's `Killed` diagnostics in the drain/retention and interruption scenarios are expected evidence of the injected process terminations. They are not failed assertions.
 
-Every scenario checks the stable revision and the latest journal state. The final checks also require the expected active and previous identities, the exact Provision-owned unit and release sets, active Caddy, and the continued absence of `/srv/gimme` and `gimme-*` units. Drain status is explicitly `mode: bounded-http`. Retention status is explicitly `retained` under `policy: rollback-window`, with no cleanup and a deadline derived from the trusted switch time. The harness does not qualify WebSocket or other long-lived streams.
+Every scenario checks the stable Revision and the latest journal state. The final checks also require the expected active and previous identities, the exact Provision-owned unit and Generation-directory sets, active Caddy, and the continued absence of `/srv/gimme` and `gimme-*` units. Drain status is explicitly `mode: bounded-http`. Rollback-window status is explicitly `retained` under `policy: rollback-window`, with no cleanup and a deadline derived from the trusted switch time. The harness does not qualify WebSocket or other long-lived streams.
 
 ## Evidence
 

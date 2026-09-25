@@ -282,43 +282,43 @@ func buildAsync(compiled config.Compiled, observation host.BootstrapStatus) (Pre
 }
 
 func composeAsyncOperations(transitions hostasync.TransitionSet) []Operation {
-	operations := []Operation{
-		orderedOperation(transitions.QueuePreparation, "op-01"),
-		orderedOperation(transitions.WorkerArtifact, "op-02", "op-01"),
-		orderedOperation(transitions.TaskArtifact, "op-03", "op-01"),
-		orderedOperation(transitions.TaskInstallation, "op-04", "op-03"),
-		orderedOperation(transitions.TaskVerification, "op-04-verify", "op-04"),
-		orderedOperation(transitions.WorkerInstallation, "op-05", "op-02", "op-01"),
-		orderedOperation(transitions.WorkerStart, "op-06", "op-05"),
-		orderedOperation(transitions.WorkerVerification, "op-07", "op-06"),
-	}
-	workerActivationDependency := "op-07"
-	if transitions.WorkerFence != nil && transitions.WorkerDrain != nil {
-		operations = append(operations,
-			orderedOperation(*transitions.WorkerFence, "op-08", "op-07"),
-			orderedOperation(*transitions.WorkerDrain, "op-09", "op-08"),
-		)
-		workerActivationDependency = "op-09"
-	}
-	operations = append(operations,
-		orderedOperation(transitions.WorkerActivation, "op-10", workerActivationDependency),
-		orderedOperation(transitions.WorkerActiveVerify, "op-11", "op-10"),
-		orderedOperation(transitions.ScheduleRuntime, "op-12", "op-04-verify"),
-		orderedOperation(transitions.ScheduleHandoff, "op-13", "op-11", "op-12", "op-04-verify"),
-		orderedOperation(transitions.ScheduleVerify, "op-14", "op-13"),
-	)
+	workerArtifact := withDependencies(transitions.WorkerArtifact, transitions.QueuePreparation.ID)
+	taskArtifact := withDependencies(transitions.TaskArtifact, transitions.QueuePreparation.ID)
+	taskOperations := withExternalDependencies(transitions.Task.Operations, transitions.Task.EntryID, taskArtifact.ID)
+	workerOperations := withExternalDependencies(transitions.Worker.Operations, transitions.Worker.EntryID, workerArtifact.ID, transitions.QueuePreparation.ID)
+	scheduleOperations := withExternalDependencies(transitions.Schedule.Operations, transitions.Schedule.RuntimeID, transitions.Task.ReadyID)
+	scheduleOperations = withExternalDependencies(scheduleOperations, transitions.Schedule.ActivationID, transitions.Worker.ReadyID, transitions.Task.ReadyID)
+
+	operations := []Operation{transitions.QueuePreparation, workerArtifact, taskArtifact}
+	operations = append(operations, taskOperations...)
+	operations = append(operations, workerOperations...)
+	operations = append(operations, scheduleOperations...)
 	if transitions.PreviousWorkerStore != nil {
-		operations = append(operations, orderedOperation(*transitions.PreviousWorkerStore, "op-15", "op-11", "op-14"))
+		retention := withDependencies(*transitions.PreviousWorkerStore, transitions.Worker.ReadyID, transitions.Schedule.ReadyID)
+		operations = append(operations, retention)
 	}
 	return operations
 }
 
-func orderedOperation(operation Operation, id string, dependencies ...string) Operation {
-	operation.ID = id
-	operation.DependsOn = dependencies
-	return operation
+func withExternalDependencies(operations []Operation, targetID string, dependencies ...string) []Operation {
+	result := append([]Operation(nil), operations...)
+	for index := range result {
+		if result[index].ID == targetID {
+			result[index] = withDependencies(result[index], dependencies...)
+			break
+		}
+	}
+	return result
 }
 
+func withDependencies(operation Operation, dependencies ...string) Operation {
+	for _, dependency := range dependencies {
+		if !slices.Contains(operation.DependsOn, dependency) {
+			operation.DependsOn = append(operation.DependsOn, dependency)
+		}
+	}
+	return operation
+}
 func capabilityIssues(observation host.BootstrapStatus, selection config.HostSelection) []string {
 	issues := append([]string{}, observation.Findings...)
 	if observation.SchemaVersion != "provision.dev/host-inspection/v1alpha1" {

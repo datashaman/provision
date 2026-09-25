@@ -18,19 +18,23 @@ type TransitionSet struct {
 	QueuePreparation    planmodel.Operation
 	WorkerArtifact      planmodel.Operation
 	TaskArtifact        planmodel.Operation
-	TaskInstallation    planmodel.Operation
-	TaskVerification    planmodel.Operation
-	WorkerInstallation  planmodel.Operation
-	WorkerStart         planmodel.Operation
-	WorkerVerification  planmodel.Operation
-	WorkerFence         *planmodel.Operation
-	WorkerDrain         *planmodel.Operation
-	WorkerActivation    planmodel.Operation
-	WorkerActiveVerify  planmodel.Operation
-	ScheduleRuntime     planmodel.Operation
-	ScheduleHandoff     planmodel.Operation
-	ScheduleVerify      planmodel.Operation
+	Task                TransitionChain
+	Worker              TransitionChain
+	Schedule            ScheduleTransitionChain
 	PreviousWorkerStore *planmodel.Operation
+}
+
+type TransitionChain struct {
+	Operations []planmodel.Operation
+	EntryID    string
+	ReadyID    string
+}
+
+type ScheduleTransitionChain struct {
+	Operations   []planmodel.Operation
+	RuntimeID    string
+	ActivationID string
+	ReadyID      string
 }
 
 // Plan translates the qualified Host/RabbitMQ implementation into typed,
@@ -102,31 +106,49 @@ func Plan(compiled config.Compiled, observation host.BootstrapStatus) PlanningOu
 	}
 
 	transitions := TransitionSet{
-		QueuePreparation:   planmodel.Operation{Kind: planmodel.PrepareQueue, Input: planmodel.OperationInput{Async: &planmodel.AsyncOperationInput{Queue: queueInput}}, Preconditions: conditions("rabbitmq-qualification", QualificationDigest, "matched"), ExpectedObservations: conditions("queue-generation", queueInput.LogicalID, "ready-single-member-quorum"), Recovery: planmodel.RetainQueue},
-		WorkerArtifact:     planmodel.Operation{Kind: planmodel.StageArtifact, Input: planmodel.OperationInput{Async: &planmodel.AsyncOperationInput{Artifact: workerArtifactInput}}, Preconditions: conditions("artifact-digest", workerArtifact.Source, workerArtifact.Digest), ExpectedObservations: conditions("artifact-cache", workerArtifact.Digest, "verified"), Recovery: planmodel.DiscardAsyncArtifact},
-		TaskArtifact:       planmodel.Operation{Kind: planmodel.StageArtifact, Input: planmodel.OperationInput{Async: &planmodel.AsyncOperationInput{Artifact: taskArtifactInput}}, Preconditions: conditions("artifact-digest", taskArtifact.Source, taskArtifact.Digest), ExpectedObservations: conditions("artifact-cache", taskArtifact.Digest, "verified"), Recovery: planmodel.DiscardAsyncArtifact},
-		TaskInstallation:   planmodel.Operation{Kind: planmodel.InstallTaskGeneration, Input: planmodel.OperationInput{Async: &planmodel.AsyncOperationInput{Task: taskInput}}, Preconditions: conditions("artifact-cache", taskArtifact.Digest, "verified"), ExpectedObservations: conditions("task-generation", taskGenerationID, "installed"), Recovery: planmodel.RemoveTaskCandidate},
-		TaskVerification:   planmodel.Operation{Kind: planmodel.VerifyTaskGeneration, Input: planmodel.OperationInput{Async: &planmodel.AsyncOperationInput{Task: taskInput}}, Preconditions: conditions("task-generation", taskGenerationID, "installed"), ExpectedObservations: conditions("task-generation", taskGenerationID, "verified-runnable"), Recovery: planmodel.RemoveTaskCandidate},
-		WorkerInstallation: planmodel.Operation{Kind: planmodel.InstallWorkerGeneration, Input: planmodel.OperationInput{Async: &planmodel.AsyncOperationInput{Worker: workerInput}}, Preconditions: conditions("queue-generation", queueInput.LogicalID, "ready"), ExpectedObservations: conditions("worker-generation", workerGenerationID, "installed-gated"), Recovery: planmodel.RemoveWorkerCandidate},
-		WorkerStart:        planmodel.Operation{Kind: planmodel.StartWorkerCandidate, Input: planmodel.OperationInput{Async: &planmodel.AsyncOperationInput{Worker: workerInput}}, Preconditions: conditions("worker-admission", workerGenerationID, "closed"), ExpectedObservations: conditions("systemd-unit", workerUnit, "active-gated"), Recovery: planmodel.KeepCandidateGated},
-		WorkerVerification: planmodel.Operation{Kind: planmodel.VerifyWorkerCandidate, Input: planmodel.OperationInput{Async: &planmodel.AsyncOperationInput{Worker: workerInput}}, Preconditions: conditions("worker-admission", workerGenerationID, "closed"), ExpectedObservations: conditions("worker-candidate", workerGenerationID, "gated-queue-connected"), Recovery: planmodel.KeepCandidateGated},
-		WorkerActivation:   planmodel.Operation{Kind: planmodel.ActivateWorkerIntake, Input: planmodel.OperationInput{Async: &planmodel.AsyncOperationInput{Worker: workerInput}}, Preconditions: conditions("worker-candidate", workerGenerationID, "verified"), ExpectedObservations: conditions("worker-admission", workerGenerationID, "open"), Recovery: planmodel.RestorePreviousWorkerIntake},
-		WorkerActiveVerify: planmodel.Operation{Kind: planmodel.VerifyWorkerActive, Input: planmodel.OperationInput{Async: &planmodel.AsyncOperationInput{Worker: workerInput}}, Preconditions: conditions("worker-admission", workerGenerationID, "open"), ExpectedObservations: conditions("worker-processing", workerGenerationID, "verified-at-least-once"), Recovery: planmodel.RestorePreviousWorkerIntake},
-		ScheduleRuntime:    planmodel.Operation{Kind: planmodel.InstallScheduleRuntime, Input: planmodel.OperationInput{Async: &planmodel.AsyncOperationInput{Runtime: runtimeInput}}, Preconditions: conditions("runtime-asset", runtimeInput.AppletDigest, "verified"), ExpectedObservations: conditions("schedule-runtime", runtimeInput.AppletDigest, "installed"), Recovery: planmodel.RetainQueue},
-		ScheduleHandoff:    planmodel.Operation{Kind: planmodel.HandoffSchedule, Input: planmodel.OperationInput{Async: &planmodel.AsyncOperationInput{Schedule: scheduleInput}}, Preconditions: conditions("previous-schedule-generation", previousSchedule, "fenced-or-absent"), ExpectedObservations: conditions("schedule-task-generation", taskGenerationID, "active-with-new-fence"), Recovery: planmodel.RestorePreviousScheduleFence},
-		ScheduleVerify:     planmodel.Operation{Kind: planmodel.VerifySchedule, Input: planmodel.OperationInput{Async: &planmodel.AsyncOperationInput{Schedule: scheduleInput}}, Preconditions: conditions("schedule-task-generation", taskGenerationID, "active"), ExpectedObservations: conditions("schedule-occurrence", scheduleName, "recorded-before-invocation"), Recovery: planmodel.RestorePreviousScheduleFence},
+		QueuePreparation: planmodel.Operation{ID: "op-01", Kind: planmodel.PrepareQueue, DependsOn: []string{}, Input: planmodel.OperationInput{Async: &planmodel.AsyncOperationInput{Queue: queueInput}}, Preconditions: conditions("rabbitmq-qualification", QualificationDigest, "matched"), ExpectedObservations: conditions("queue-generation", queueInput.LogicalID, "ready-single-member-quorum"), Recovery: planmodel.RetainQueue},
+		WorkerArtifact:   planmodel.Operation{ID: "op-02", Kind: planmodel.StageArtifact, DependsOn: []string{}, Input: planmodel.OperationInput{Async: &planmodel.AsyncOperationInput{Artifact: workerArtifactInput}}, Preconditions: conditions("artifact-digest", workerArtifact.Source, workerArtifact.Digest), ExpectedObservations: conditions("artifact-cache", workerArtifact.Digest, "verified"), Recovery: planmodel.DiscardAsyncArtifact},
+		TaskArtifact:     planmodel.Operation{ID: "op-03", Kind: planmodel.StageArtifact, DependsOn: []string{}, Input: planmodel.OperationInput{Async: &planmodel.AsyncOperationInput{Artifact: taskArtifactInput}}, Preconditions: conditions("artifact-digest", taskArtifact.Source, taskArtifact.Digest), ExpectedObservations: conditions("artifact-cache", taskArtifact.Digest, "verified"), Recovery: planmodel.DiscardAsyncArtifact},
+		Task: TransitionChain{
+			EntryID: "op-04",
+			ReadyID: "op-04-verify",
+			Operations: []planmodel.Operation{
+				{ID: "op-04", Kind: planmodel.InstallTaskGeneration, DependsOn: []string{}, Input: planmodel.OperationInput{Async: &planmodel.AsyncOperationInput{Task: taskInput}}, Preconditions: conditions("artifact-cache", taskArtifact.Digest, "verified"), ExpectedObservations: conditions("task-generation", taskGenerationID, "installed"), Recovery: planmodel.RemoveTaskCandidate},
+				{ID: "op-04-verify", Kind: planmodel.VerifyTaskGeneration, DependsOn: []string{"op-04"}, Input: planmodel.OperationInput{Async: &planmodel.AsyncOperationInput{Task: taskInput}}, Preconditions: conditions("task-generation", taskGenerationID, "installed"), ExpectedObservations: conditions("task-generation", taskGenerationID, "verified-runnable"), Recovery: planmodel.RemoveTaskCandidate},
+			},
+		},
+		Schedule: ScheduleTransitionChain{
+			RuntimeID:    "op-12",
+			ActivationID: "op-13",
+			ReadyID:      "op-14",
+			Operations: []planmodel.Operation{
+				{ID: "op-12", Kind: planmodel.InstallScheduleRuntime, DependsOn: []string{}, Input: planmodel.OperationInput{Async: &planmodel.AsyncOperationInput{Runtime: runtimeInput}}, Preconditions: conditions("runtime-asset", runtimeInput.AppletDigest, "verified"), ExpectedObservations: conditions("schedule-runtime", runtimeInput.AppletDigest, "installed"), Recovery: planmodel.RetainQueue},
+				{ID: "op-13", Kind: planmodel.HandoffSchedule, DependsOn: []string{"op-12"}, Input: planmodel.OperationInput{Async: &planmodel.AsyncOperationInput{Schedule: scheduleInput}}, Preconditions: conditions("previous-schedule-generation", previousSchedule, "fenced-or-absent"), ExpectedObservations: conditions("schedule-task-generation", taskGenerationID, "active-with-new-fence"), Recovery: planmodel.RestorePreviousScheduleFence},
+				{ID: "op-14", Kind: planmodel.VerifySchedule, DependsOn: []string{"op-13"}, Input: planmodel.OperationInput{Async: &planmodel.AsyncOperationInput{Schedule: scheduleInput}}, Preconditions: conditions("schedule-task-generation", taskGenerationID, "active"), ExpectedObservations: conditions("schedule-occurrence", scheduleName, "recorded-before-invocation"), Recovery: planmodel.RestorePreviousScheduleFence},
+			},
+		},
+	}
+	workerOperations := []planmodel.Operation{
+		{ID: "op-05", Kind: planmodel.InstallWorkerGeneration, DependsOn: []string{}, Input: planmodel.OperationInput{Async: &planmodel.AsyncOperationInput{Worker: workerInput}}, Preconditions: conditions("queue-generation", queueInput.LogicalID, "ready"), ExpectedObservations: conditions("worker-generation", workerGenerationID, "installed-gated"), Recovery: planmodel.RemoveWorkerCandidate},
+		{ID: "op-06", Kind: planmodel.StartWorkerCandidate, DependsOn: []string{"op-05"}, Input: planmodel.OperationInput{Async: &planmodel.AsyncOperationInput{Worker: workerInput}}, Preconditions: conditions("worker-admission", workerGenerationID, "closed"), ExpectedObservations: conditions("systemd-unit", workerUnit, "active-gated"), Recovery: planmodel.KeepCandidateGated},
+		{ID: "op-07", Kind: planmodel.VerifyWorkerCandidate, DependsOn: []string{"op-06"}, Input: planmodel.OperationInput{Async: &planmodel.AsyncOperationInput{Worker: workerInput}}, Preconditions: conditions("worker-admission", workerGenerationID, "closed"), ExpectedObservations: conditions("worker-candidate", workerGenerationID, "gated-queue-connected"), Recovery: planmodel.KeepCandidateGated},
 	}
 	if workerInput.Previous == nil {
-		transitions.WorkerActivation.Recovery = planmodel.KeepCandidateGated
-		transitions.WorkerActiveVerify.Recovery = planmodel.KeepCandidateGated
+		workerOperations = append(workerOperations,
+			planmodel.Operation{ID: "op-10", Kind: planmodel.ActivateWorkerIntake, DependsOn: []string{"op-07"}, Input: planmodel.OperationInput{Async: &planmodel.AsyncOperationInput{Worker: workerInput}}, Preconditions: conditions("worker-candidate", workerGenerationID, "verified"), ExpectedObservations: conditions("worker-admission", workerGenerationID, "open"), Recovery: planmodel.KeepCandidateGated},
+			planmodel.Operation{ID: "op-11", Kind: planmodel.VerifyWorkerActive, DependsOn: []string{"op-10"}, Input: planmodel.OperationInput{Async: &planmodel.AsyncOperationInput{Worker: workerInput}}, Preconditions: conditions("worker-admission", workerGenerationID, "open"), ExpectedObservations: conditions("worker-processing", workerGenerationID, "verified-at-least-once"), Recovery: planmodel.KeepCandidateGated},
+		)
 	} else {
-		fence := planmodel.Operation{Kind: planmodel.FenceWorkerIntake, Input: planmodel.OperationInput{Async: &planmodel.AsyncOperationInput{Worker: workerInput}}, Preconditions: conditions("active-worker", previousWorker, "observed"), ExpectedObservations: conditions("previous-worker-admission", previousWorker, "closed"), Recovery: planmodel.RestorePreviousWorkerIntake}
-		drain := planmodel.Operation{Kind: planmodel.DrainWorkerPrevious, Input: planmodel.OperationInput{Async: &planmodel.AsyncOperationInput{Worker: workerInput}}, Preconditions: conditions("previous-worker-admission", previousWorker, "closed"), ExpectedObservations: conditions("previous-worker-in-flight", previousWorker, "drained-or-safely-released"), Recovery: planmodel.ReleaseInflight}
-		retention := planmodel.Operation{Kind: planmodel.RetainWorkerPrevious, Input: planmodel.OperationInput{Async: &planmodel.AsyncOperationInput{Worker: workerInput}}, Preconditions: conditions("worker-generation", workerGenerationID, "verified-active"), ExpectedObservations: conditions("previous-worker-generation", previousWorker, "retained-for-rollback-window"), Recovery: planmodel.RetainBothWorkerGenerations}
-		transitions.WorkerFence = &fence
-		transitions.WorkerDrain = &drain
+		workerOperations = append(workerOperations,
+			planmodel.Operation{ID: "op-08", Kind: planmodel.FenceWorkerIntake, DependsOn: []string{"op-07"}, Input: planmodel.OperationInput{Async: &planmodel.AsyncOperationInput{Worker: workerInput}}, Preconditions: conditions("active-worker", previousWorker, "observed"), ExpectedObservations: conditions("previous-worker-admission", previousWorker, "closed"), Recovery: planmodel.RestorePreviousWorkerIntake},
+			planmodel.Operation{ID: "op-09", Kind: planmodel.DrainWorkerPrevious, DependsOn: []string{"op-08"}, Input: planmodel.OperationInput{Async: &planmodel.AsyncOperationInput{Worker: workerInput}}, Preconditions: conditions("previous-worker-admission", previousWorker, "closed"), ExpectedObservations: conditions("previous-worker-in-flight", previousWorker, "drained-or-safely-released"), Recovery: planmodel.ReleaseInflight},
+			planmodel.Operation{ID: "op-10", Kind: planmodel.ActivateWorkerIntake, DependsOn: []string{"op-09"}, Input: planmodel.OperationInput{Async: &planmodel.AsyncOperationInput{Worker: workerInput}}, Preconditions: conditions("worker-candidate", workerGenerationID, "verified"), ExpectedObservations: conditions("worker-admission", workerGenerationID, "open"), Recovery: planmodel.RestorePreviousWorkerIntake},
+			planmodel.Operation{ID: "op-11", Kind: planmodel.VerifyWorkerActive, DependsOn: []string{"op-10"}, Input: planmodel.OperationInput{Async: &planmodel.AsyncOperationInput{Worker: workerInput}}, Preconditions: conditions("worker-admission", workerGenerationID, "open"), ExpectedObservations: conditions("worker-processing", workerGenerationID, "verified-at-least-once"), Recovery: planmodel.RestorePreviousWorkerIntake},
+		)
+		retention := planmodel.Operation{ID: "op-15", Kind: planmodel.RetainWorkerPrevious, DependsOn: []string{}, Input: planmodel.OperationInput{Async: &planmodel.AsyncOperationInput{Worker: workerInput}}, Preconditions: conditions("worker-generation", workerGenerationID, "verified-active"), ExpectedObservations: conditions("previous-worker-generation", previousWorker, "retained-for-rollback-window"), Recovery: planmodel.RetainBothWorkerGenerations}
 		transitions.PreviousWorkerStore = &retention
 	}
+	transitions.Worker = TransitionChain{Operations: workerOperations, EntryID: "op-05", ReadyID: "op-11"}
 	return PlanningOutput{
 		Transitions:              transitions,
 		SensitiveValueReferences: []string{queueImplementation.Credential},

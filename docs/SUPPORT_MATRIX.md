@@ -22,7 +22,7 @@ The matching host executor digest was `sha256:1fdf17dbecb277e8e1e6601f6eb3807a04
 
 ## Limits
 
-- This row covers a single native `x86_64` HTTP component on a direct-local, systemd-managed host. It does not qualify remote SSH transport, OCI/Podman, EC2, ECS, Lambda, workers, schedules, databases, caches, or realtime services.
+- This row covers a single native `x86_64` HTTP component on a direct-local, systemd-managed host. It does not qualify remote SSH transport, OCI/Podman, EC2, ECS, Lambda, workers, schedules, databases, key-value stores, or realtime services.
 - The Endpoint guarantee covers ordinary HTTP requests. It does not promise WebSocket or other long-lived stream draining.
 - Caddy configuration reload preserves the prior route on a rejected load. An external Caddy outage can still make the Endpoint unavailable until Caddy is restored.
 - Candidate verification, Endpoint switching, stable verification, and bounded rollback are implemented. Role-specific drain completion and rollback-window cleanup are not.

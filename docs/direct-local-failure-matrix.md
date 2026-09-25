@@ -36,6 +36,6 @@ Every scenario checks the stable revision and the latest journal state. The fina
 
 ## Evidence
 
-On success, the harness prints `direct-local failure matrix passed` and leaves all JSON, command output, expected/actual host inventories, and `support-observation.txt` in the work directory. Preserve that directory until the summarized evidence and [support matrix](SUPPORT_MATRIX.md) have been updated.
+On success, the harness prints `direct-local failure matrix passed` and leaves all JSON, command output, expected/actual host inventories, retained-file checksums, and `support-observation.json` in the work directory. The structured support observation records the supplied Provision source revision, exact binary and executor digests, and observed OS, kernel, architecture, systemd, and Caddy versions. Preserve that directory until the summarized evidence and [support matrix](SUPPORT_MATRIX.md) have been updated.
 
 The harness deliberately does not reset, bootstrap, or clean the machine. Those lifecycle boundaries remain explicit operator actions.

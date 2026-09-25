@@ -151,6 +151,100 @@ assert_no_gimme() {
   fi
 }
 
+assert_artifact_set() {
+  local label="$1"
+  local expected="$work_dir/$label-expected-artifacts.txt"
+  local actual="$work_dir/$label-actual-artifacts.txt"
+  case "$label" in
+    baseline)
+      printf '%s\n' bac304a885179a21fc889fef25cf09f12d8af19e30aa49c1c05e719d10f031b5 >"$expected"
+      ;;
+    pre-switch|switch-failure)
+      printf '%s\n' \
+        bac304a885179a21fc889fef25cf09f12d8af19e30aa49c1c05e719d10f031b5 \
+        f5d67ce429e0eedfd6d2a73be9b775b9a05025853d13c63a004164ce89bc9995 | sort >"$expected"
+      ;;
+    post-switch)
+      printf '%s\n' \
+        b6f188a9b2f582a28618c361aa1b9550a5eb7935bcd39933bae2412487e14ef7 \
+        bac304a885179a21fc889fef25cf09f12d8af19e30aa49c1c05e719d10f031b5 \
+        f5d67ce429e0eedfd6d2a73be9b775b9a05025853d13c63a004164ce89bc9995 | sort >"$expected"
+      ;;
+    interruption|stale)
+      printf '%s\n' \
+        4e775436b605b9e7ea71c1bdc0941e3f5e345eab05ae264f6cf9fbe56afd6485 \
+        b6f188a9b2f582a28618c361aa1b9550a5eb7935bcd39933bae2412487e14ef7 \
+        bac304a885179a21fc889fef25cf09f12d8af19e30aa49c1c05e719d10f031b5 \
+        f5d67ce429e0eedfd6d2a73be9b775b9a05025853d13c63a004164ce89bc9995 | sort >"$expected"
+      ;;
+    *) fail "unknown artifact expectation for $label" ;;
+  esac
+
+  find /var/lib/provision/artifacts/sha256 -mindepth 1 -maxdepth 1 -type f -printf '%f\n' | sort >"$actual"
+  cmp -s "$expected" "$actual" || fail "$label has an unexpected Provision Artifact set"
+  while IFS= read -r digest; do
+    [[ "$(sha256sum "/var/lib/provision/artifacts/sha256/$digest" | cut -d ' ' -f1)" == "$digest" ]] || fail "$label has a corrupt cached Artifact $digest"
+  done <"$expected"
+}
+
+assert_caddy_state() {
+  local label="$1" host_output="$2"
+  local current="$work_dir/$label-caddy-config.json"
+  curl --fail --silent --show-error --max-time 5 http://127.0.0.1:2019/config/ >"$current"
+  python3 - "$work_dir/initial-caddy-config.json" "$current" "$host_output" <<'PY'
+import json
+import sys
+
+initial_path, current_path, host_path = sys.argv[1:]
+with open(initial_path, encoding="utf-8") as handle:
+    initial = json.load(handle)
+with open(current_path, encoding="utf-8") as handle:
+    current = json.load(handle)
+with open(host_path, encoding="utf-8") as handle:
+    host = json.load(handle)
+
+servers = current.get("apps", {}).get("http", {}).get("servers", {})
+owned = servers.get("provision-lab-web")
+if owned is None:
+    raise SystemExit(f"{current_path}: Plan-owned Caddy server is missing")
+expected = {
+    "listen": [":18080"],
+    "routes": [{
+        "@id": "provision-lab-web",
+        "handle": [{
+            "handler": "reverse_proxy",
+            "upstreams": [{"dial": f"127.0.0.1:{host['deployment']['active']['port']}"}],
+        }],
+    }],
+}
+if owned != expected:
+    raise SystemExit(f"{current_path}: Plan-owned Caddy server differs from the active Generation")
+
+del servers["provision-lab-web"]
+if current != initial:
+    raise SystemExit(f"{current_path}: Caddy configuration outside the Plan-owned server changed")
+PY
+}
+
+assert_retained_files_immutable() {
+  local label="$1"
+  local current="$work_dir/$label-provision-files.sha256"
+  local previous="$work_dir/previous-provision-files.sha256"
+  {
+    find /etc/systemd/system -maxdepth 1 -type f -name 'provision-lab-web-*.service' -exec sha256sum {} +
+    find /etc/systemd/system/multi-user.target.wants -maxdepth 1 -type l -name 'provision-lab-web-*.service' -printf 'symlink %p -> %l\n'
+    find /var/lib/provision/artifacts/sha256 -mindepth 1 -maxdepth 1 -type f -exec sha256sum {} +
+    find /var/lib/provision/environments/lab/releases -type f -exec sha256sum {} +
+    find /var/lib/provision/environments/lab/releases -type d -printf 'directory %m %u %g %p\n'
+  } | sort >"$current"
+  if [[ -f "$previous" ]]; then
+    while IFS= read -r retained; do
+      grep -Fqx -- "$retained" "$current" || fail "$label changed or removed retained Provision material: $retained"
+    done <"$previous"
+  fi
+  cp "$current" "$previous"
+}
+
 assert_host_state() {
   local label="$1" active_revision="$2" previous_revision="$3"
   shift 3
@@ -186,6 +280,9 @@ PY
   find /var/lib/provision/environments/lab/releases -mindepth 1 -maxdepth 1 -type d -printf '%f\n' | sort >"$actual_releases"
   cmp -s "$expected_releases" "$actual_releases" || fail "$label has an unexpected Provision release set"
 
+  assert_artifact_set "$label"
+  assert_caddy_state "$label" "$host_output"
+  assert_retained_files_immutable "$label"
   assert_no_gimme
   systemctl is-active --quiet caddy || fail "$label left Caddy inactive"
 }
@@ -255,6 +352,7 @@ assert_no_gimme
 "$provision" host bootstrap check --local --environment lab --operator "$operator" >"$work_dir/initial-host.json"
 json_assert "$work_dir/initial-host.json" ready true
 json_assert "$work_dir/initial-host.json" deployment '{}'
+curl --fail --silent --show-error --max-time 5 http://127.0.0.1:2019/config/ >"$work_dir/initial-caddy-config.json"
 if curl --silent --max-time 1 http://127.0.0.1:18080/verify >/dev/null 2>&1; then
   fail "stable Endpoint already exists; reset and bootstrap the disposable host before running the matrix"
 fi
@@ -362,14 +460,37 @@ assert_host_state stale provision-example-http-v3 provision-example-http-v2 \
   provision-example-http-v2-f5d67ce429e0 \
   provision-example-http-v3-4e775436b605
 
-printf '%s\n' \
-  "Provision version: $provision_version" \
-  "Provision binary SHA-256: $(sha256sum "$provision" | cut -d ' ' -f1)" \
-  "Host: $actual_host" \
-  "Kernel: $(uname -sr)" \
-  "Architecture: $(uname -m)" \
-  'Matrix: healthy, pre-switch failure, switch failure, post-switch rollback, process interruption, stale executor' \
-  'Result: passed' >"$work_dir/support-observation.txt"
+provision_sha256="$(sha256sum "$provision" | cut -d ' ' -f1)"
+python3 - "$work_dir/initial-host.json" "$provision_version" "$provision_sha256" "$actual_host" "$(uname -sr)" >"$work_dir/support-observation.json" <<'PY'
+import json
+import sys
+
+host_path, provision_version, provision_sha256, hostname, kernel = sys.argv[1:]
+with open(host_path, encoding="utf-8") as handle:
+    host = json.load(handle)
+print(json.dumps({
+    "schemaVersion": "provision.dev/direct-local-support-observation/v1alpha1",
+    "result": "passed",
+    "matrix": [
+        "healthy",
+        "pre-switch failure",
+        "switch failure",
+        "post-switch rollback",
+        "process interruption",
+        "stale executor",
+    ],
+    "provisionSourceVersion": provision_version,
+    "provisionBinarySha256": f"sha256:{provision_sha256}",
+    "host": hostname,
+    "kernel": kernel,
+    "os": host["os"],
+    "osVersion": host["osVersion"],
+    "architecture": host["architecture"],
+    "systemdVersion": host["systemdVersion"],
+    "caddyVersion": host["caddyVersion"],
+    "executorDigest": host["executorDigest"],
+}, indent=2))
+PY
 
 echo "direct-local failure matrix passed"
 echo "evidence: $work_dir"

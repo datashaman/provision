@@ -1,0 +1,21 @@
+#!/bin/sh
+set -eu
+
+case " $* " in
+  *" /usr/local/libexec/provision-host-executor execute "*)
+    captured="$(mktemp -t provision-local-output.XXXXXX)"
+    trap 'rm -f "$captured"' EXIT
+    # shellcheck disable=SC2024 # Capture the delegated command's stdout as this user.
+    if /usr/bin/sudo "$@" >"$captured"; then
+      : >"$PROVISION_FAULT_MARKER"
+      kill -KILL "$PPID"
+      sleep 1
+      exit 0
+    else
+      exit $?
+    fi
+    ;;
+  *)
+    exec /usr/bin/sudo "$@"
+    ;;
+esac

@@ -35,6 +35,36 @@ func TestLoadExampleDeterministically(t *testing.T) {
 	}
 }
 
+func TestLoadAsyncExampleDeterministically(t *testing.T) {
+	path := filepath.Join("..", "..", "examples", "host-async", "root.yaml")
+	first, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.Digest != second.Digest || !strings.HasPrefix(first.Digest, "sha256:") {
+		t.Fatalf("non-deterministic async digest: %q / %q", first.Digest, second.Digest)
+	}
+	if first.Application.Name != "provision-example-async" || first.Environment.Name != "lab" || first.Revision.Name != "provision-example-async-v1" {
+		t.Fatalf("unexpected compiled async configuration: %+v", first)
+	}
+	if got := first.Application.Components["consumer"].Worker.Queue; got != "messages" {
+		t.Fatalf("Worker Queue reference = %q, want messages", got)
+	}
+	if got := first.Application.Components["every-minute"].Schedule.Task; got != "publish" {
+		t.Fatalf("Schedule Task reference = %q, want publish", got)
+	}
+	if got := first.Environment.Implementations["consumer"].Worker.Drain.MaxDuration; got != "30s" {
+		t.Fatalf("Worker drain maxDuration = %q, want 30s", got)
+	}
+	if len(first.Revision.Artifacts) != 2 || first.Revision.Artifacts["consumer"].Digest != "sha256:4b6e79444cd9032facb5e027cafb7dca328d5f33eb334ccc3e83e70a30ce6e4a" || first.Revision.Artifacts["publish"].Digest != "sha256:ce1dc7e13900742b3139beb521e9bcd30005470370462b9aa01383f078c999e5" {
+		t.Fatalf("Revision does not bind the released async artifacts: %+v", first.Revision.Artifacts)
+	}
+}
+
 func TestEquivalentJSONRootHasSameDigest(t *testing.T) {
 	dir := copyExample(t)
 	jsonRoot := filepath.Join(dir, "root.json")
@@ -52,6 +82,39 @@ func TestEquivalentJSONRootHasSameDigest(t *testing.T) {
 	}
 	if fromJSON.Digest != fromYAML.Digest {
 		t.Fatalf("JSON digest %s != YAML digest %s", fromJSON.Digest, fromYAML.Digest)
+	}
+}
+
+func TestEquivalentAsyncJSONRootHasSameDigest(t *testing.T) {
+	dir := t.TempDir()
+	root := filepath.Join("..", "..", "examples", "host-async")
+	for _, name := range []string{"application.yaml", "environment.yaml", "revision.yaml"} {
+		data, err := os.ReadFile(filepath.Join(root, name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, name), data, 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	yamlRoot := filepath.Join(dir, "root.yaml")
+	jsonRoot := filepath.Join(dir, "root.json")
+	if err := os.WriteFile(yamlRoot, []byte("schemaVersion: provision.dev/v1alpha1\napplication: application.yaml\nenvironment: environment.yaml\nrevision: revision.yaml\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(jsonRoot, []byte(`{"schemaVersion":"provision.dev/v1alpha1","application":"application.yaml","environment":"environment.yaml","revision":"revision.yaml"}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	fromYAML, err := Load(yamlRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fromJSON, err := Load(jsonRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fromJSON.Digest != fromYAML.Digest {
+		t.Fatalf("async JSON digest %s != YAML digest %s", fromJSON.Digest, fromYAML.Digest)
 	}
 }
 

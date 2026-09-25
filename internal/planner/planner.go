@@ -70,25 +70,47 @@ type ApprovalRequirement struct {
 type OperationKind string
 
 const (
-	StageArtifact     OperationKind = "stageArtifact"
-	InstallGeneration OperationKind = "installGeneration"
-	StartCandidate    OperationKind = "startCandidate"
-	VerifyCandidate   OperationKind = "verifyCandidate"
-	SwitchEndpoint    OperationKind = "switchEndpoint"
-	VerifyActive      OperationKind = "verifyActive"
-	DrainPrevious     OperationKind = "drainPrevious"
-	RetainPrevious    OperationKind = "retainPrevious"
+	StageArtifact           OperationKind = "stageArtifact"
+	InstallGeneration       OperationKind = "installGeneration"
+	StartCandidate          OperationKind = "startCandidate"
+	VerifyCandidate         OperationKind = "verifyCandidate"
+	SwitchEndpoint          OperationKind = "switchEndpoint"
+	VerifyActive            OperationKind = "verifyActive"
+	DrainPrevious           OperationKind = "drainPrevious"
+	RetainPrevious          OperationKind = "retainPrevious"
+	PrepareQueue            OperationKind = "prepareQueue"
+	InstallTaskGeneration   OperationKind = "installTaskGeneration"
+	InstallWorkerGeneration OperationKind = "installWorkerGeneration"
+	StartWorkerCandidate    OperationKind = "startWorkerCandidate"
+	VerifyWorkerCandidate   OperationKind = "verifyWorkerCandidate"
+	FenceWorkerIntake       OperationKind = "fenceWorkerIntake"
+	DrainWorkerPrevious     OperationKind = "drainWorkerPrevious"
+	ActivateWorkerIntake    OperationKind = "activateWorkerIntake"
+	VerifyWorkerActive      OperationKind = "verifyWorkerActive"
+	InstallScheduleRuntime  OperationKind = "installScheduleRuntime"
+	HandoffSchedule         OperationKind = "handoffSchedule"
+	VerifySchedule          OperationKind = "verifySchedule"
+	RetainWorkerPrevious    OperationKind = "retainWorkerPrevious"
 )
 
 type RecoveryMode string
 
 const (
-	DiscardStaged          RecoveryMode = "discard-staged"
-	RemoveCandidate        RecoveryMode = "remove-candidate"
-	StopCandidate          RecoveryMode = "stop-candidate"
-	LeaveEndpointUnchanged RecoveryMode = "leave-endpoint-unchanged"
-	RestorePreviousRoute   RecoveryMode = "restore-previous-route"
-	RetainBothGenerations  RecoveryMode = "retain-both-generations"
+	DiscardStaged                RecoveryMode = "discard-staged"
+	RemoveCandidate              RecoveryMode = "remove-candidate"
+	StopCandidate                RecoveryMode = "stop-candidate"
+	LeaveEndpointUnchanged       RecoveryMode = "leave-endpoint-unchanged"
+	RestorePreviousRoute         RecoveryMode = "restore-previous-route"
+	RetainBothGenerations        RecoveryMode = "retain-both-generations"
+	RetainQueue                  RecoveryMode = "retain-queue"
+	DiscardAsyncArtifact         RecoveryMode = "discard-async-artifact"
+	RemoveTaskCandidate          RecoveryMode = "remove-task-candidate"
+	RemoveWorkerCandidate        RecoveryMode = "remove-worker-candidate"
+	KeepCandidateGated           RecoveryMode = "keep-candidate-gated"
+	RestorePreviousWorkerIntake  RecoveryMode = "restore-previous-worker-intake"
+	ReleaseInflight              RecoveryMode = "release-in-flight"
+	RestorePreviousScheduleFence RecoveryMode = "restore-previous-schedule-fence"
+	RetainBothWorkerGenerations  RecoveryMode = "retain-both-worker-generations"
 )
 
 type Operation struct {
@@ -116,6 +138,82 @@ type OperationInput struct {
 	Previous   *host.GenerationStatus `json:"previous,omitempty"`
 	Drain      *DrainInput            `json:"drain,omitempty"`
 	Retention  *RetentionInput        `json:"retention,omitempty"`
+	Async      *AsyncOperationInput   `json:"async,omitempty"`
+}
+
+type AsyncOperationInput struct {
+	Queue    *AsyncQueueInput    `json:"queue,omitempty"`
+	Artifact *AsyncArtifactInput `json:"artifact,omitempty"`
+	Worker   *AsyncWorkerInput   `json:"worker,omitempty"`
+	Task     *AsyncTaskInput     `json:"task,omitempty"`
+	Schedule *AsyncScheduleInput `json:"schedule,omitempty"`
+	Runtime  *AsyncRuntimeInput  `json:"runtime,omitempty"`
+}
+
+type AsyncQueueInput struct {
+	Component           string               `json:"component"`
+	LogicalID           string               `json:"logicalId"`
+	Implementation      string               `json:"implementation"`
+	Lifecycle           string               `json:"lifecycle"`
+	CredentialReference string               `json:"credentialReference"`
+	RabbitMQVersion     string               `json:"rabbitmqVersion"`
+	ImageIndex          string               `json:"imageIndex"`
+	ImageManifest       string               `json:"imageManifest"`
+	QueueType           string               `json:"queueType"`
+	Members             int                  `json:"members"`
+	Contract            config.QueueContract `json:"contract"`
+	Observed            *host.QueueStatus    `json:"observed,omitempty"`
+}
+
+type AsyncArtifactInput struct {
+	Component string `json:"component"`
+	Role      string `json:"role"`
+	Source    string `json:"source"`
+	Digest    string `json:"digest"`
+}
+
+type AsyncWorkerInput struct {
+	Component      string                       `json:"component"`
+	Queue          string                       `json:"queue"`
+	GenerationID   string                       `json:"generationId"`
+	Revision       string                       `json:"revision"`
+	ArtifactDigest string                       `json:"artifactDigest"`
+	SystemdUnit    string                       `json:"systemdUnit"`
+	Admission      string                       `json:"admission"`
+	Drain          config.WorkerDrain           `json:"drain"`
+	Previous       *host.WorkerGenerationStatus `json:"previous,omitempty"`
+}
+
+type AsyncTaskInput struct {
+	Component      string                     `json:"component"`
+	GenerationID   string                     `json:"generationId"`
+	Revision       string                     `json:"revision"`
+	ArtifactDigest string                     `json:"artifactDigest"`
+	SystemdUnit    string                     `json:"systemdUnit"`
+	Timeout        string                     `json:"timeout"`
+	Previous       *host.TaskGenerationStatus `json:"previous,omitempty"`
+}
+
+type AsyncScheduleInput struct {
+	Component        string                   `json:"component"`
+	Task             string                   `json:"task"`
+	TaskGenerationID string                   `json:"taskGenerationId"`
+	TimerUnit        string                   `json:"timerUnit"`
+	Expression       string                   `json:"expression"`
+	Timezone         string                   `json:"timezone"`
+	DaylightSaving   string                   `json:"daylightSaving"`
+	Overlap          string                   `json:"overlap"`
+	Retry            config.ScheduleRetry     `json:"retry"`
+	MissedRun        config.ScheduleMissedRun `json:"missedRun"`
+	Failure          string                   `json:"failure"`
+	AppletDigest     string                   `json:"appletDigest"`
+	LedgerSchema     string                   `json:"ledgerSchema"`
+	Previous         *host.ScheduleStatus     `json:"previous,omitempty"`
+}
+
+type AsyncRuntimeInput struct {
+	AppletDigest string `json:"appletDigest"`
+	LedgerSchema string `json:"ledgerSchema"`
 }
 
 type ArtifactInput struct {
@@ -177,6 +275,9 @@ type RetentionInput struct {
 // Build converts validated configuration and a restricted Host Target
 // inspection into canonical preview data. It never changes or persists state.
 func Build(compiled config.Compiled, observation host.BootstrapStatus) (Preview, error) {
+	if compiled.IsAsync() {
+		return buildAsync(compiled, observation)
+	}
 	selection, err := compiled.HostSelection()
 	if err != nil {
 		return Preview{}, err
@@ -258,6 +359,219 @@ func Build(compiled config.Compiled, observation host.BootstrapStatus) (Preview,
 	}
 	preview.Plan = &plan
 	return preview, nil
+}
+
+const (
+	rabbitMQQualificationDigest = "sha256:af41714b1aa2270ba6cd151bd24876ac117218e401e1e87515451a7081ac4c6d"
+	rabbitMQImageIndex          = "sha256:d0bffe70e755f348625415f32b0a090662e5f06b3ba3f82a4c7aaa18621b1279"
+	rabbitMQImageManifest       = "sha256:34fc91a9de04d612a340507b8e7e19c0ee1ec9839e09dc5fc98f54991633ce91"
+)
+
+func buildAsync(compiled config.Compiled, observation host.BootstrapStatus) (Preview, error) {
+	target, err := compiled.PlanningTarget()
+	if err != nil {
+		return Preview{}, err
+	}
+	if observation.Environment != compiled.Environment.Name || observation.Operator != target.Target.User {
+		return Preview{}, errors.New("host observation does not identify the configured Environment and operator")
+	}
+	evidence := CapabilityEvidence{
+		Contract:     "host-rabbitmq-systemd-async/v1alpha1",
+		RequiredMode: "required",
+		Guarantees: []string{
+			"digest-pinned-rabbitmq-quorum-queue", "publisher-confirmed-at-least-once-delivery",
+			"manual-consumer-acknowledgement", "gated-worker-candidate", "bounded-in-flight-worker-drain",
+			"generation-specific-task", "stable-schedule-timer", "fenced-schedule-handoff",
+			"previous-worker-generation-retention",
+		},
+		SupportEvidence: []string{
+			"restricted-bootstrap-ready", "tested-host-version-match", "qualified-rabbitmq-packaging",
+			"rootless-quadlet-ready", "systemd-credentials-ready", "worker-admission-control-proven",
+			"pinned-schedule-applet", "versioned-occurrence-ledger", "journald-active",
+			"restricted-executor-identity-matched",
+		},
+		Observed: observation,
+		Decision: "required-blue-green-supported",
+	}
+	reasons := asyncCapabilityIssues(observation, target)
+	preview := Preview{SchemaVersion: PreviewSchemaVersion, Executable: len(reasons) == 0, Capability: evidence, Reasons: reasons}
+	if len(reasons) != 0 {
+		preview.Capability.Decision = "unsupported"
+		return preview, nil
+	}
+
+	observationDigest, err := digest(observation)
+	if err != nil {
+		return Preview{}, err
+	}
+	artifactDigests := make(map[string]string, len(compiled.Revision.Artifacts))
+	for name, artifact := range compiled.Revision.Artifacts {
+		artifactDigests[name] = artifact.Digest
+	}
+	roles := asyncRoleNames(compiled)
+	queueImplementation := compiled.Environment.Implementations[roles["queue"]]
+	plan := Plan{
+		SchemaVersion:       SchemaVersion,
+		Application:         compiled.Application.Name,
+		Environment:         compiled.Environment.Name,
+		Revision:            compiled.Revision.Name,
+		ConfigurationDigest: compiled.Digest,
+		ArtifactDigests:     artifactDigests,
+		Target:              Target{Name: target.Name, Kind: target.Target.Kind, Local: target.Target.Local, Address: target.Target.Address, User: target.Target.User},
+		ObservationDigest:   observationDigest,
+		Capability:          evidence,
+		ApprovalRequirements: []ApprovalRequirement{{
+			Capability: "approve", Reason: "environment deployment policy requires approval of this exact Plan",
+		}},
+		SensitiveValueReferences: []string{queueImplementation.Credential},
+		Operations:               asyncOperations(compiled, observation, roles),
+	}
+	plan.ID, err = digest(plan)
+	if err != nil {
+		return Preview{}, err
+	}
+	preview.Plan = &plan
+	return preview, nil
+}
+
+func asyncCapabilityIssues(observation host.BootstrapStatus, target config.TargetSelection) []string {
+	issues := append([]string{}, observation.Findings...)
+	if observation.SchemaVersion != "provision.dev/host-inspection/v1alpha1" {
+		issues = append(issues, "host inspection schema does not provide asynchronous capability evidence")
+	}
+	if !observation.Ready {
+		issues = append(issues, "restricted Host Target bootstrap is not ready")
+	}
+	if observation.OS != "ubuntu" || observation.OSVersion != "26.04" {
+		issues = append(issues, fmt.Sprintf("Ubuntu version %s has no tested asynchronous evidence", observedOrUnknown(observation.OSVersion)))
+	}
+	if observation.Architecture != "x86_64" {
+		issues = append(issues, fmt.Sprintf("architecture %s has no tested asynchronous evidence", observedOrUnknown(observation.Architecture)))
+	}
+	if !strings.HasPrefix(observation.SystemdVersion, "systemd 259") || !observation.CgroupV2 || !observation.JournaldActive || !observation.GenerationStorageReady {
+		issues = append(issues, "Host systemd, cgroup v2, journald, or generation storage evidence is incomplete")
+	}
+	if observation.ExecutorDigest == "" || observation.AuthorityKeyID == "" {
+		issues = append(issues, "restricted host executor or authority identity is not observed")
+	}
+	if !target.Target.Local && observation.SSHHostKeyFingerprint == "" {
+		issues = append(issues, "SSH host key identity is not observed")
+	}
+	if observation.Async == nil || observation.Async.SchemaVersion != "provision.dev/host-async-inspection/v1alpha1" {
+		return unique(append(issues, "Host observation has no supported asynchronous capability evidence"))
+	}
+	capability := observation.Async.Capabilities
+	if capability.PodmanVersion != "5.7.0+ds2-3build1" || !capability.Quadlet || !capability.RootlessEnvironmentAccount {
+		issues = append(issues, "qualified rootless Podman and Quadlet capability is not observed")
+	}
+	if !capability.SystemdCredentials {
+		issues = append(issues, "encrypted systemd credential delivery is not observed")
+	}
+	if !capability.WorkerAdmissionGate {
+		issues = append(issues, "required Worker blue-green is unsupported without proven admission control")
+	}
+	if capability.RabbitMQQualificationDigest != rabbitMQQualificationDigest || capability.RabbitMQVersion != "4.3.6" || capability.RabbitMQImageIndex != rabbitMQImageIndex || capability.RabbitMQImageManifest != rabbitMQImageManifest {
+		issues = append(issues, "RabbitMQ product identity does not match the qualified packaging evidence")
+	}
+	if !strings.HasPrefix(capability.ScheduleAppletDigest, "sha256:") || len(capability.ScheduleAppletDigest) != 71 {
+		issues = append(issues, "pinned Schedule runtime applet identity is not observed")
+	}
+	if capability.ScheduleLedgerSchema != "provision.dev/schedule-ledger/v1alpha1" {
+		issues = append(issues, "Schedule occurrence-ledger schema is unsupported")
+	}
+	if queue := observation.Async.Deployment.Queue; queue != nil && queue.Exists {
+		if !queue.Ready || queue.QueueType != "quorum" || queue.Members != 1 || !queue.Durable || queue.ImageManifest != rabbitMQImageManifest {
+			issues = append(issues, "observed Queue does not match the qualified single-member quorum generation")
+		}
+	}
+	if worker := observation.Async.Deployment.ActiveWorker; worker != nil {
+		if worker.ID == "" || worker.ArtifactDigest == "" || !worker.UnitActive || !worker.QueueConnected || worker.Gate != "open" || worker.InFlight < 0 {
+			issues = append(issues, "active Worker generation does not match observed deployment state")
+		}
+	}
+	return unique(issues)
+}
+
+func asyncRoleNames(compiled config.Compiled) map[string]string {
+	roles := make(map[string]string, len(compiled.Application.Components))
+	for name, component := range compiled.Application.Components {
+		roles[component.Role] = name
+	}
+	return roles
+}
+
+func asyncOperations(compiled config.Compiled, observation host.BootstrapStatus, roles map[string]string) []Operation {
+	async := observation.Async
+	queueName, workerName, taskName, scheduleName := roles["queue"], roles["worker"], roles["task"], roles["schedule"]
+	queueComponent := compiled.Application.Components[queueName]
+	workerComponent := compiled.Application.Components[workerName]
+	taskComponent := compiled.Application.Components[taskName]
+	scheduleComponent := compiled.Application.Components[scheduleName]
+	queueImplementation := compiled.Environment.Implementations[queueName]
+	workerImplementation := compiled.Environment.Implementations[workerName]
+	workerArtifact := compiled.Revision.Artifacts[workerName]
+	taskArtifact := compiled.Revision.Artifacts[taskName]
+	workerDigestID := strings.TrimPrefix(workerArtifact.Digest, "sha256:")[:12]
+	taskDigestID := strings.TrimPrefix(taskArtifact.Digest, "sha256:")[:12]
+	workerGenerationID := compiled.Revision.Name + "-" + workerDigestID
+	taskGenerationID := compiled.Revision.Name + "-" + taskDigestID
+	workerUnit := fmt.Sprintf("provision-%s-%s-%s.service", compiled.Environment.Name, workerName, workerDigestID)
+	taskUnit := fmt.Sprintf("provision-%s-%s-%s.service", compiled.Environment.Name, taskName, taskDigestID)
+	timerUnit := fmt.Sprintf("provision-%s-%s.timer", compiled.Environment.Name, scheduleName)
+	queueInput := &AsyncQueueInput{
+		Component: queueName, LogicalID: "provision-" + compiled.Environment.Name + "-" + queueName,
+		Implementation: queueImplementation.Kind, Lifecycle: queueImplementation.Lifecycle,
+		CredentialReference: queueImplementation.Credential, RabbitMQVersion: async.Capabilities.RabbitMQVersion,
+		ImageIndex: async.Capabilities.RabbitMQImageIndex, ImageManifest: async.Capabilities.RabbitMQImageManifest, QueueType: "quorum", Members: 1,
+		Contract: queueComponent.Queue, Observed: async.Deployment.Queue,
+	}
+	workerInput := &AsyncWorkerInput{
+		Component: workerName, Queue: workerComponent.Worker.Queue, GenerationID: workerGenerationID,
+		Revision: compiled.Revision.Name, ArtifactDigest: workerArtifact.Digest, SystemdUnit: workerUnit,
+		Admission: workerImplementation.Worker.Admission, Drain: workerImplementation.Worker.Drain,
+		Previous: async.Deployment.ActiveWorker,
+	}
+	taskInput := &AsyncTaskInput{
+		Component: taskName, GenerationID: taskGenerationID, Revision: compiled.Revision.Name,
+		ArtifactDigest: taskArtifact.Digest, SystemdUnit: taskUnit, Timeout: taskComponent.Task.Timeout,
+		Previous: async.Deployment.ActiveTask,
+	}
+	scheduleInput := &AsyncScheduleInput{
+		Component: scheduleName, Task: scheduleComponent.Schedule.Task, TaskGenerationID: taskGenerationID,
+		TimerUnit: timerUnit, Expression: scheduleComponent.Schedule.Expression, Timezone: scheduleComponent.Schedule.Timezone,
+		DaylightSaving: scheduleComponent.Schedule.DaylightSaving, Overlap: scheduleComponent.Schedule.Overlap,
+		Retry: scheduleComponent.Schedule.Retry, MissedRun: scheduleComponent.Schedule.MissedRun,
+		Failure: scheduleComponent.Schedule.Failure, AppletDigest: async.Capabilities.ScheduleAppletDigest,
+		LedgerSchema: async.Capabilities.ScheduleLedgerSchema, Previous: async.Deployment.Schedule,
+	}
+	workerArtifactInput := &AsyncArtifactInput{Component: workerName, Role: "worker", Source: workerArtifact.Source, Digest: workerArtifact.Digest}
+	taskArtifactInput := &AsyncArtifactInput{Component: taskName, Role: "task", Source: taskArtifact.Source, Digest: taskArtifact.Digest}
+	runtimeInput := &AsyncRuntimeInput{AppletDigest: async.Capabilities.ScheduleAppletDigest, LedgerSchema: async.Capabilities.ScheduleLedgerSchema}
+	previousWorker := "none"
+	if workerInput.Previous != nil {
+		previousWorker = workerInput.Previous.ID
+	}
+	previousSchedule := "none"
+	if scheduleInput.Previous != nil {
+		previousSchedule = scheduleInput.Previous.TaskGenerationID
+	}
+	return []Operation{
+		{ID: "op-01", Kind: PrepareQueue, DependsOn: []string{}, Input: OperationInput{Async: &AsyncOperationInput{Queue: queueInput}}, Preconditions: conditions("rabbitmq-qualification", rabbitMQQualificationDigest, "matched"), ExpectedObservations: conditions("queue-generation", queueInput.LogicalID, "ready-single-member-quorum"), Recovery: RetainQueue},
+		{ID: "op-02", Kind: StageArtifact, DependsOn: []string{"op-01"}, Input: OperationInput{Async: &AsyncOperationInput{Artifact: workerArtifactInput}}, Preconditions: conditions("artifact-digest", workerArtifact.Source, workerArtifact.Digest), ExpectedObservations: conditions("artifact-cache", workerArtifact.Digest, "verified"), Recovery: DiscardAsyncArtifact},
+		{ID: "op-03", Kind: StageArtifact, DependsOn: []string{"op-01"}, Input: OperationInput{Async: &AsyncOperationInput{Artifact: taskArtifactInput}}, Preconditions: conditions("artifact-digest", taskArtifact.Source, taskArtifact.Digest), ExpectedObservations: conditions("artifact-cache", taskArtifact.Digest, "verified"), Recovery: DiscardAsyncArtifact},
+		{ID: "op-04", Kind: InstallTaskGeneration, DependsOn: []string{"op-03"}, Input: OperationInput{Async: &AsyncOperationInput{Task: taskInput}}, Preconditions: conditions("artifact-cache", taskArtifact.Digest, "verified"), ExpectedObservations: conditions("task-generation", taskGenerationID, "installed"), Recovery: RemoveTaskCandidate},
+		{ID: "op-05", Kind: InstallWorkerGeneration, DependsOn: []string{"op-02", "op-01"}, Input: OperationInput{Async: &AsyncOperationInput{Worker: workerInput}}, Preconditions: conditions("queue-generation", queueInput.LogicalID, "ready"), ExpectedObservations: conditions("worker-generation", workerGenerationID, "installed-gated"), Recovery: RemoveWorkerCandidate},
+		{ID: "op-06", Kind: StartWorkerCandidate, DependsOn: []string{"op-05"}, Input: OperationInput{Async: &AsyncOperationInput{Worker: workerInput}}, Preconditions: conditions("worker-admission", workerGenerationID, "closed"), ExpectedObservations: conditions("systemd-unit", workerUnit, "active-gated"), Recovery: KeepCandidateGated},
+		{ID: "op-07", Kind: VerifyWorkerCandidate, DependsOn: []string{"op-06"}, Input: OperationInput{Async: &AsyncOperationInput{Worker: workerInput}}, Preconditions: conditions("worker-admission", workerGenerationID, "closed"), ExpectedObservations: conditions("worker-candidate", workerGenerationID, "gated-queue-connected"), Recovery: KeepCandidateGated},
+		{ID: "op-08", Kind: FenceWorkerIntake, DependsOn: []string{"op-07"}, Input: OperationInput{Async: &AsyncOperationInput{Worker: workerInput}}, Preconditions: conditions("active-worker", previousWorker, "observed"), ExpectedObservations: conditions("previous-worker-admission", previousWorker, "closed"), Recovery: RestorePreviousWorkerIntake},
+		{ID: "op-09", Kind: DrainWorkerPrevious, DependsOn: []string{"op-08"}, Input: OperationInput{Async: &AsyncOperationInput{Worker: workerInput}}, Preconditions: conditions("previous-worker-admission", previousWorker, "closed"), ExpectedObservations: conditions("previous-worker-in-flight", previousWorker, "drained-or-safely-released"), Recovery: ReleaseInflight},
+		{ID: "op-10", Kind: ActivateWorkerIntake, DependsOn: []string{"op-09"}, Input: OperationInput{Async: &AsyncOperationInput{Worker: workerInput}}, Preconditions: conditions("worker-candidate", workerGenerationID, "verified"), ExpectedObservations: conditions("worker-admission", workerGenerationID, "open"), Recovery: RestorePreviousWorkerIntake},
+		{ID: "op-11", Kind: VerifyWorkerActive, DependsOn: []string{"op-10"}, Input: OperationInput{Async: &AsyncOperationInput{Worker: workerInput}}, Preconditions: conditions("worker-admission", workerGenerationID, "open"), ExpectedObservations: conditions("worker-processing", workerGenerationID, "verified-at-least-once"), Recovery: RestorePreviousWorkerIntake},
+		{ID: "op-12", Kind: InstallScheduleRuntime, DependsOn: []string{"op-04"}, Input: OperationInput{Async: &AsyncOperationInput{Runtime: runtimeInput}}, Preconditions: conditions("runtime-asset", runtimeInput.AppletDigest, "verified"), ExpectedObservations: conditions("schedule-runtime", runtimeInput.AppletDigest, "installed"), Recovery: RetainQueue},
+		{ID: "op-13", Kind: HandoffSchedule, DependsOn: []string{"op-11", "op-12", "op-04"}, Input: OperationInput{Async: &AsyncOperationInput{Schedule: scheduleInput}}, Preconditions: conditions("previous-schedule-generation", previousSchedule, "fenced"), ExpectedObservations: conditions("schedule-task-generation", taskGenerationID, "active-with-new-fence"), Recovery: RestorePreviousScheduleFence},
+		{ID: "op-14", Kind: VerifySchedule, DependsOn: []string{"op-13"}, Input: OperationInput{Async: &AsyncOperationInput{Schedule: scheduleInput}}, Preconditions: conditions("schedule-task-generation", taskGenerationID, "active"), ExpectedObservations: conditions("schedule-occurrence", scheduleName, "recorded-before-invocation"), Recovery: RestorePreviousScheduleFence},
+		{ID: "op-15", Kind: RetainWorkerPrevious, DependsOn: []string{"op-11", "op-14"}, Input: OperationInput{Async: &AsyncOperationInput{Worker: workerInput}}, Preconditions: conditions("worker-generation", workerGenerationID, "verified-active"), ExpectedObservations: conditions("previous-worker-generation", previousWorker, "retained-for-rollback-window"), Recovery: RetainBothWorkerGenerations},
+	}
 }
 
 func capabilityIssues(observation host.BootstrapStatus, selection config.HostSelection) []string {

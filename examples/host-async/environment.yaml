@@ -1,0 +1,33 @@
+schemaVersion: provision.dev/v1alpha1
+kind: Environment
+name: lab
+application: provision-example-async
+rollbackWindow: 30m0s
+targets:
+  base:
+    kind: host
+    address: base.local
+    user: marlinf
+implementations:
+  messages:
+    kind: rabbitmq-quadlet
+    target: base
+    lifecycle: managed
+    credential: secret://lab/rabbitmq-url
+  consumer:
+    kind: systemd-worker
+    target: base
+    rollout: required
+    worker:
+      admission: gated
+      drain:
+        mode: bounded-in-flight
+        maxDuration: 30s
+  publish:
+    kind: systemd-task
+    target: base
+  every-minute:
+    kind: systemd-schedule
+    target: base
+    schedule:
+      ledgerSchema: provision.dev/schedule-ledger/v1alpha1

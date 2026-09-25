@@ -494,6 +494,149 @@ func TestPlanPreviewIsDeterministicAndReadOnly(t *testing.T) {
 	}
 }
 
+func TestAsyncPlanPreviewIsDeterministicCompleteAndReadOnly(t *testing.T) {
+	dir := t.TempDir()
+	sshLog := filepath.Join(dir, "ssh.log")
+	writeAsyncBootstrapInspectionSSH(t, dir)
+	configPath := filepath.Join("..", "..", "examples", "host-async", "root.yaml")
+
+	preview := func(extraEnv ...string) ([]byte, error) {
+		command := exec.Command("go", "run", ".", "plan", "preview", "--file", configPath)
+		command.Env = append(os.Environ(), "PATH="+dir+string(os.PathListSeparator)+os.Getenv("PATH"), "FAKE_SSH_LOG="+sshLog)
+		command.Env = append(command.Env, extraEnv...)
+		return command.CombinedOutput()
+	}
+	first, err := preview()
+	if err != nil {
+		t.Fatalf("async Plan preview failed: %v\n%s", err, first)
+	}
+	second, err := preview()
+	if err != nil {
+		t.Fatalf("second async Plan preview failed: %v\n%s", err, second)
+	}
+	if string(first) != string(second) {
+		t.Fatalf("equivalent async inputs produced different Plans:\n%s\n%s", first, second)
+	}
+	var plan struct {
+		ID                       string            `json:"id"`
+		ArtifactDigests          map[string]string `json:"artifactDigests"`
+		SensitiveValueReferences []string          `json:"sensitiveValueReferences"`
+		Operations               []struct {
+			Kind string `json:"kind"`
+		} `json:"operations"`
+	}
+	if err := json.Unmarshal(first, &plan); err != nil {
+		t.Fatalf("invalid async Plan JSON: %v\n%s", err, first)
+	}
+	wantOperations := []string{
+		"prepareQueue", "stageArtifact", "stageArtifact", "installTaskGeneration",
+		"installWorkerGeneration", "startWorkerCandidate", "verifyWorkerCandidate",
+		"fenceWorkerIntake", "drainWorkerPrevious", "activateWorkerIntake",
+		"verifyWorkerActive", "installScheduleRuntime", "handoffSchedule",
+		"verifySchedule", "retainWorkerPrevious",
+	}
+	if len(plan.Operations) != len(wantOperations) {
+		t.Fatalf("async operation count = %d, want %d:\n%s", len(plan.Operations), len(wantOperations), first)
+	}
+	for index, want := range wantOperations {
+		if plan.Operations[index].Kind != want {
+			t.Fatalf("async operation %d = %q, want %q", index, plan.Operations[index].Kind, want)
+		}
+	}
+	if plan.ArtifactDigests["consumer"] != "sha256:4b6e79444cd9032facb5e027cafb7dca328d5f33eb334ccc3e83e70a30ce6e4a" || plan.ArtifactDigests["publish"] != "sha256:ce1dc7e13900742b3139beb521e9bcd30005470370462b9aa01383f078c999e5" {
+		t.Fatalf("Plan omitted released Artifact identities: %+v", plan.ArtifactDigests)
+	}
+	if len(plan.SensitiveValueReferences) != 1 || plan.SensitiveValueReferences[0] != "secret://lab/rabbitmq-url" {
+		t.Fatalf("Plan omitted Queue Secret Reference: %+v", plan.SensitiveValueReferences)
+	}
+	for _, want := range []string{
+		`"contract": "host-rabbitmq-systemd-async/v1alpha1"`,
+		`"queue": "messages"`,
+		`"imageIndex": "sha256:d0bffe70e755f348625415f32b0a090662e5f06b3ba3f82a4c7aaa18621b1279"`,
+		`"admission": "gated"`,
+		`"maxDuration": "30s"`,
+		`"task": "publish"`,
+		`"timezone": "Africa/Johannesburg"`,
+		`"appletDigest": "sha256:7777777777777777777777777777777777777777777777777777777777777777"`,
+		`"recovery": "retain-queue"`,
+		`"recovery": "keep-candidate-gated"`,
+		`"recovery": "retain-both-worker-generations"`,
+	} {
+		if !strings.Contains(string(first), want) {
+			t.Fatalf("async Plan omitted %s:\n%s", want, first)
+		}
+	}
+	if strings.Contains(string(first), "amqp://") || strings.Contains(string(first), "guest:guest") {
+		t.Fatalf("async Plan exposed resolved Queue credentials: %s", first)
+	}
+
+	changedRuntime, changedErr := preview("FAKE_APPLET_DIGEST=sha256:8888888888888888888888888888888888888888888888888888888888888888")
+	if changedErr != nil {
+		t.Fatalf("changed runtime asset did not produce a Plan: %v\n%s", changedErr, changedRuntime)
+	}
+	var changed struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(changedRuntime, &changed); err != nil {
+		t.Fatal(err)
+	}
+	if changed.ID == plan.ID {
+		t.Fatalf("runtime asset change did not stale Plan %s", plan.ID)
+	}
+	changedObservation, observationErr := preview("FAKE_LEDGER_DIGEST=sha256:6666666666666666666666666666666666666666666666666666666666666666")
+	if observationErr != nil {
+		t.Fatalf("changed observed state did not produce a Plan: %v\n%s", observationErr, changedObservation)
+	}
+	if err := json.Unmarshal(changedObservation, &changed); err != nil {
+		t.Fatal(err)
+	}
+	if changed.ID == plan.ID {
+		t.Fatalf("observed occurrence-ledger change did not stale Plan %s", plan.ID)
+	}
+	unsupported, unsupportedErr := preview("FAKE_WORKER_GATE_CAPABILITY=false")
+	if unsupportedErr == nil || !strings.Contains(string(unsupported), "required Worker blue-green is unsupported without proven admission control") || strings.Contains(string(unsupported), `"operations"`) {
+		t.Fatalf("missing admission control did not fail closed: %v\n%s", unsupportedErr, unsupported)
+	}
+
+	changedConfigDir := copyAsyncExample(t)
+	revisionPath := filepath.Join(changedConfigDir, "revision.yaml")
+	revision, err := os.ReadFile(revisionPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	revision = []byte(strings.Replace(string(revision),
+		"sha256:4b6e79444cd9032facb5e027cafb7dca328d5f33eb334ccc3e83e70a30ce6e4a",
+		"sha256:5b6e79444cd9032facb5e027cafb7dca328d5f33eb334ccc3e83e70a30ce6e4a", 1))
+	if err := os.WriteFile(revisionPath, revision, 0600); err != nil {
+		t.Fatal(err)
+	}
+	changedConfigCommand := exec.Command("go", "run", ".", "plan", "preview", "--file", filepath.Join(changedConfigDir, "root.yaml"))
+	changedConfigCommand.Env = append(os.Environ(), "PATH="+dir+string(os.PathListSeparator)+os.Getenv("PATH"), "FAKE_SSH_LOG="+sshLog)
+	changedConfigOutput, changedConfigErr := changedConfigCommand.CombinedOutput()
+	if changedConfigErr != nil {
+		t.Fatalf("changed Artifact identity did not produce a Plan: %v\n%s", changedConfigErr, changedConfigOutput)
+	}
+	if err := json.Unmarshal(changedConfigOutput, &changed); err != nil {
+		t.Fatal(err)
+	}
+	if changed.ID == plan.ID {
+		t.Fatalf("Artifact identity change did not stale Plan %s", plan.ID)
+	}
+
+	commands, err := os.ReadFile(sshLog)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Count(string(commands), "provision-host-executor inspect") != 6 {
+		t.Fatalf("preview did not perform exactly one read-only inspection per Plan:\n%s", commands)
+	}
+	for _, forbidden := range []string{"--apply", " install ", " start ", " reload ", " execute "} {
+		if strings.Contains(string(commands), forbidden) {
+			t.Fatalf("async preview attempted host mutation %q:\n%s", forbidden, commands)
+		}
+	}
+}
+
 func TestPlanPreviewRejectsUntestedRequiredBlueGreenCapability(t *testing.T) {
 	dir := t.TempDir()
 	writeBootstrapInspectionSSH(t, dir)
@@ -902,6 +1045,26 @@ esac
 	}
 }
 
+func writeAsyncBootstrapInspectionSSH(t *testing.T, dir string) {
+	t.Helper()
+	ssh := filepath.Join(dir, "ssh")
+	data := `#!/bin/sh
+printf '%s\n' "$*" >> "$FAKE_SSH_LOG"
+case "$*" in
+  *"/usr/local/libexec/provision-host-executor inspect --environment lab --operator marlinf")
+    applet_digest="${FAKE_APPLET_DIGEST:-sha256:7777777777777777777777777777777777777777777777777777777777777777}"
+    worker_gate="${FAKE_WORKER_GATE_CAPABILITY:-true}"
+    ledger_digest="${FAKE_LEDGER_DIGEST:-sha256:9999999999999999999999999999999999999999999999999999999999999999}"
+    printf '{"schemaVersion":"provision.dev/host-inspection/v1alpha1","environment":"lab","operator":"marlinf","account":"provision-lab","os":"ubuntu","osVersion":"26.04","architecture":"x86_64","systemdVersion":"systemd 259 (259.5-0ubuntu3.4)","sshServerVersion":"OpenSSH_10.2p1","caddyVersion":"2.6.2","caddyActive":true,"journaldActive":true,"cgroupV2":true,"executorDigest":"sha256:e066cdc1a1b8a625dfc32db5ec74c1e4ba7bc459a3a3fc09ccc6488c44d606c5","authorityKeyId":"sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc","sshHostKeyFingerprint":"SHA256:ddddddddddddddddddddddddddddddddddddddddddd","generationStorageReady":true,"caddyConfigValid":true,"caddyAdminReachable":true,"caddyConfigDurable":true,"allowedOperations":["inspect","stageArtifact","installGeneration","startCandidate","verifyCandidate","switchEndpoint","verifyActive","drainPrevious","retainPrevious"],"ready":true,"findings":[],"async":{"schemaVersion":"provision.dev/host-async-inspection/v1alpha1","capabilities":{"podmanVersion":"5.7.0+ds2-3build1","quadlet":true,"rootlessEnvironmentAccount":true,"systemdCredentials":true,"workerAdmissionGate":%s,"rabbitmqQualificationDigest":"sha256:af41714b1aa2270ba6cd151bd24876ac117218e401e1e87515451a7081ac4c6d","rabbitmqVersion":"4.3.6","rabbitmqImageIndex":"sha256:d0bffe70e755f348625415f32b0a090662e5f06b3ba3f82a4c7aaa18621b1279","rabbitmqImageManifest":"sha256:34fc91a9de04d612a340507b8e7e19c0ee1ec9839e09dc5fc98f54991633ce91","scheduleAppletDigest":"%s","scheduleLedgerSchema":"provision.dev/schedule-ledger/v1alpha1"},"deployment":{"queue":{"id":"provision-lab-messages","exists":true,"ready":true,"queueType":"quorum","members":1,"durable":true,"imageManifest":"sha256:34fc91a9de04d612a340507b8e7e19c0ee1ec9839e09dc5fc98f54991633ce91"},"activeWorker":{"id":"provision-example-async-v0-aaaaaaaaaaaa","revision":"provision-example-async-v0","artifactDigest":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","systemdUnit":"provision-lab-consumer-aaaaaaaaaaaa.service","gate":"open","unitActive":true,"queueConnected":true,"inFlight":0},"activeTask":{"id":"provision-example-async-v0-bbbbbbbbbbbb","revision":"provision-example-async-v0","artifactDigest":"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","systemdUnit":"provision-lab-publish-bbbbbbbbbbbb.service"},"schedule":{"timerUnit":"provision-lab-every-minute.timer","taskGenerationId":"provision-example-async-v0-bbbbbbbbbbbb","appletDigest":"%s","ledgerSchema":"provision.dev/schedule-ledger/v1alpha1","ledgerDigest":"%s","fencingToken":7}}}}\n' "$worker_gate" "$applet_digest" "$applet_digest" "$ledger_digest"
+    ;;
+  *) exit 23 ;;
+esac
+`
+	if err := os.WriteFile(ssh, []byte(data), 0700); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestConfigValidateVerifiesArtifactBytesWithoutChangingHost(t *testing.T) {
 	root := filepath.Join("..", "..", "examples", "host-http")
 	dir := t.TempDir()
@@ -944,6 +1107,134 @@ func TestConfigValidateVerifiesArtifactBytesWithoutChangingHost(t *testing.T) {
 	if err == nil || !strings.Contains(string(output), "artifact digest mismatch") {
 		t.Fatalf("tampered artifact accepted: %v\n%s", err, output)
 	}
+}
+
+func TestConfigValidateVerifiesEveryAsyncArtifactByComponent(t *testing.T) {
+	dir := t.TempDir()
+	root := filepath.Join("..", "..", "examples", "host-async")
+	for _, name := range []string{"root.yaml", "application.yaml", "environment.yaml", "revision.yaml"} {
+		data, err := os.ReadFile(filepath.Join(root, name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, name), data, 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	workerPath := filepath.Join(dir, "worker.tar.gz")
+	taskPath := filepath.Join(dir, "task.tar.gz")
+	workerBytes := []byte("worker release fixture\n")
+	taskBytes := []byte("task release fixture\n")
+	if err := os.WriteFile(workerPath, workerBytes, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(taskPath, taskBytes, 0600); err != nil {
+		t.Fatal(err)
+	}
+	workerSum := sha256.Sum256(workerBytes)
+	taskSum := sha256.Sum256(taskBytes)
+	revisionPath := filepath.Join(dir, "revision.yaml")
+	revision, err := os.ReadFile(revisionPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	revision = []byte(strings.ReplaceAll(string(revision),
+		"sha256:4b6e79444cd9032facb5e027cafb7dca328d5f33eb334ccc3e83e70a30ce6e4a",
+		"sha256:"+hex.EncodeToString(workerSum[:])))
+	revision = []byte(strings.ReplaceAll(string(revision),
+		"sha256:ce1dc7e13900742b3139beb521e9bcd30005470370462b9aa01383f078c999e5",
+		"sha256:"+hex.EncodeToString(taskSum[:])))
+	if err := os.WriteFile(revisionPath, revision, 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	command := exec.Command("go", "run", ".", "config", "validate",
+		"--file", filepath.Join(dir, "root.yaml"),
+		"--artifact-file", "consumer="+workerPath,
+		"--artifact-file", "publish="+taskPath,
+	)
+	output, err := command.CombinedOutput()
+	if err != nil {
+		t.Fatalf("async artifact validation failed: %v\n%s", err, output)
+	}
+	for _, want := range []string{`"artifactVerified": true`, `"verifiedArtifacts": [`, `"consumer"`, `"publish"`} {
+		if !strings.Contains(string(output), want) {
+			t.Fatalf("validation omitted %s:\n%s", want, output)
+		}
+	}
+
+	swapped := exec.Command("go", "run", ".", "config", "validate",
+		"--file", filepath.Join(dir, "root.yaml"),
+		"--artifact-file", "consumer="+taskPath,
+		"--artifact-file", "publish="+workerPath,
+	)
+	swappedOutput, swappedErr := swapped.CombinedOutput()
+	if swappedErr == nil || !strings.Contains(string(swappedOutput), "Artifact consumer digest mismatch") {
+		t.Fatalf("component-swapped artifacts were accepted: %v\n%s", swappedErr, swappedOutput)
+	}
+}
+
+func TestConfigValidateRejectsInvalidAsyncContracts(t *testing.T) {
+	tests := []struct {
+		name string
+		file string
+		old  string
+		new  string
+		want string
+	}{
+		{"missing Queue reference", "application.yaml", "queue: messages", "queue: missing", "references missing Queue"},
+		{"Worker references Task", "application.yaml", "queue: messages", "queue: publish", "may reference only a Queue"},
+		{"Schedule references Worker", "application.yaml", "task: publish", "task: consumer", "may reference only a Task"},
+		{"scheduler component", "application.yaml", "role: schedule", "role: scheduler", "model a Schedule instead"},
+		{"unsupported Queue ordering", "application.yaml", "ordering: unqualified", "ordering: fifo", "unsupported delivery"},
+		{"noncanonical Worker drain", "environment.yaml", "maxDuration: 30s", "maxDuration: 30000ms", "bounded drain"},
+		{"preferred Worker rollout", "environment.yaml", "rollout: required", "rollout: preferred", "requires gated systemd-worker blue-green"},
+		{"unknown Schedule timezone", "application.yaml", "timezone: Africa/Johannesburg", "timezone: Mars/Olympus", "unknown timezone"},
+		{"unbounded catch-up", "application.yaml", "maxOccurrences: 2", "maxOccurrences: 0", "bounded catch-up"},
+		{"resolved Queue credential", "environment.yaml", "secret://lab/rabbitmq-url", "amqp://guest:guest@localhost", "Secret Reference"},
+		{"component cycle", "application.yaml", "role: queue\n    queue:", "role: queue\n    requires: [consumer]\n    queue:", "contain a cycle"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			dir := copyAsyncExample(t)
+			path := filepath.Join(dir, test.file)
+			data, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			changed := strings.Replace(string(data), test.old, test.new, 1)
+			if changed == string(data) {
+				t.Fatalf("test substitution did not match %q", test.old)
+			}
+			if err := os.WriteFile(path, []byte(changed), 0600); err != nil {
+				t.Fatal(err)
+			}
+			command := exec.Command("go", "run", ".", "config", "validate", "--file", filepath.Join(dir, "root.yaml"))
+			output, err := command.CombinedOutput()
+			if err == nil || !strings.Contains(string(output), test.want) {
+				t.Fatalf("invalid async contract accepted or wrong error: %v\n%s", err, output)
+			}
+			if strings.Contains(string(output), "guest:guest") {
+				t.Fatalf("validation error exposed resolved credential: %s", output)
+			}
+		})
+	}
+}
+
+func copyAsyncExample(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	root := filepath.Join("..", "..", "examples", "host-async")
+	for _, name := range []string{"root.yaml", "application.yaml", "environment.yaml", "revision.yaml"} {
+		data, err := os.ReadFile(filepath.Join(root, name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, name), data, 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return dir
 }
 
 func TestConfigValidateRequiresCompleteHTTPHealthContract(t *testing.T) {

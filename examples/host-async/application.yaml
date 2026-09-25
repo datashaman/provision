@@ -1,0 +1,45 @@
+schemaVersion: provision.dev/v1alpha1
+kind: Application
+name: provision-example-async
+components:
+  messages:
+    role: queue
+    queue:
+      delivery: at-least-once
+      acknowledgement: manual
+      publisherConfirm: required
+      retry: consumer-requeue
+      deadLetter: discard-on-reject
+      retention: durable
+      ordering: unqualified
+      deduplication: application-stable-id
+  consumer:
+    role: worker
+    worker:
+      queue: messages
+    health:
+      liveness:
+        condition: process-active
+      readiness:
+        condition: queue-connected
+      candidateVerification:
+        condition: gated-queue-connected
+  publish:
+    role: task
+    task:
+      timeout: 1m0s
+  every-minute:
+    role: schedule
+    schedule:
+      task: publish
+      expression: "* * * * *"
+      timezone: Africa/Johannesburg
+      daylightSaving: wall-clock
+      overlap: forbid
+      retry:
+        maxAttempts: 3
+        delay: 10s
+      missedRun:
+        mode: bounded-catch-up
+        maxOccurrences: 2
+      failure: record

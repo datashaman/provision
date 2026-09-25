@@ -4,7 +4,7 @@ Provision can execute the first five operations of an approved Host Plan on eith
 
 Local and remote execution use the same Plan-bound authorization, fencing, journal, operation envelope, root-owned executor, and structured result. SSH is only the transport boundary; it does not create a second execution model or grant shell-shaped deployment authority.
 
-The first complete reset-host exercise, including both deliberate verification failure and successful switch eligibility without endpoint activation, is recorded in [the 2026-09-24 candidate preparation evidence](evidence/2026-09-24-base-host-candidate.md).
+The first complete reset-host exercise, including both deliberate verification failure and successful switch eligibility without endpoint activation, is recorded in [the 2026-09-24 candidate preparation evidence](evidence/2026-09-24-base-host-candidate.md). The subsequent stable-route activation, retained previous Generation, in-flight HTTP drain, and Caddy restart exercise is recorded in [the 2026-09-25 Endpoint switch evidence](evidence/2026-09-25-base-host-endpoint-switch.md).
 
 ## 1. Create the Environment authority
 

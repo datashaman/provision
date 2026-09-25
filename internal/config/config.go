@@ -41,11 +41,11 @@ type Application struct {
 type Component struct {
 	Role     string           `yaml:"role" json:"role"`
 	Requires []string         `yaml:"requires,omitempty" json:"requires,omitempty"`
-	Health   Health           `yaml:"health,omitempty" json:"health,omitempty"`
-	Queue    QueueContract    `yaml:"queue,omitempty" json:"queue,omitempty"`
-	Worker   WorkerContract   `yaml:"worker,omitempty" json:"worker,omitempty"`
-	Task     TaskContract     `yaml:"task,omitempty" json:"task,omitempty"`
-	Schedule ScheduleContract `yaml:"schedule,omitempty" json:"schedule,omitempty"`
+	Health   Health           `yaml:"health,omitempty" json:"health,omitempty,omitzero"`
+	Queue    QueueContract    `yaml:"queue,omitempty" json:"queue,omitempty,omitzero"`
+	Worker   WorkerContract   `yaml:"worker,omitempty" json:"worker,omitempty,omitzero"`
+	Task     TaskContract     `yaml:"task,omitempty" json:"task,omitempty,omitzero"`
+	Schedule ScheduleContract `yaml:"schedule,omitempty" json:"schedule,omitempty,omitzero"`
 }
 
 type Health struct {
@@ -122,9 +122,9 @@ type Implementation struct {
 	Lifecycle  string                 `yaml:"lifecycle,omitempty" json:"lifecycle,omitempty"`
 	Credential string                 `yaml:"credential,omitempty" json:"credential,omitempty"`
 	Rollout    string                 `yaml:"rollout,omitempty" json:"rollout,omitempty"`
-	Endpoint   Endpoint               `yaml:"endpoint,omitempty" json:"endpoint,omitempty"`
-	Worker     WorkerImplementation   `yaml:"worker,omitempty" json:"worker,omitempty"`
-	Schedule   ScheduleImplementation `yaml:"schedule,omitempty" json:"schedule,omitempty"`
+	Endpoint   Endpoint               `yaml:"endpoint,omitempty" json:"endpoint,omitempty,omitzero"`
+	Worker     WorkerImplementation   `yaml:"worker,omitempty" json:"worker,omitempty,omitzero"`
+	Schedule   ScheduleImplementation `yaml:"schedule,omitempty" json:"schedule,omitempty,omitzero"`
 }
 
 type WorkerImplementation struct {

@@ -8,6 +8,7 @@ import (
 	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -157,6 +158,27 @@ func TestAuthorizedArtifactPreparationRejectsReplayAndStaleFence(t *testing.T) {
 	if err != nil || failedResult.Outcome != operation.OutcomeFailed || !strings.Contains(string(failedResult.Observation), `"status":"failed"`) || !strings.Contains(string(failedResult.Observation), "temporary Artifact cache entry") {
 		t.Fatalf("known host failure was not structured: %+v, %v", failedResult, err)
 	}
+	consumedPath := filepath.Join(authorityState, failedAttempt+".json")
+	consumedData, err := os.ReadFile(consumedPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var interrupted consumedAuthorization
+	if err := json.Unmarshal(consumedData, &interrupted); err != nil {
+		t.Fatal(err)
+	}
+	interrupted.Outcome = "consumed"
+	consumedData, err = json.Marshal(interrupted)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(consumedPath, consumedData, 0600); err != nil {
+		t.Fatal(err)
+	}
+	unrecordedAttempt := "attempt-77777777777777777777777777777777"
+	if err := os.WriteFile(filepath.Join(artifactCache, "."+unrecordedAttempt+".tmp"), []byte("not owned by this Environment's authorization state"), 0600); err != nil {
+		t.Fatal(err)
+	}
 
 	remote := signedTestEnvelopeForTarget(t, signer, planned, operationDigest, record,
 		authority.TargetIdentity{Name: "base", Address: "192.168.101.109", Operator: record.Operator, ExecutorDigest: record.ExecutorDigest, SSHHostKeyFingerprint: hostFingerprint},
@@ -164,6 +186,12 @@ func TestAuthorizedArtifactPreparationRejectsReplayAndStaleFence(t *testing.T) {
 	remoteResult, err := executeAuthorized(context.Background(), remote, record, publicKey, paths, now)
 	if err != nil || remoteResult.Outcome != operation.OutcomeSucceeded {
 		t.Fatalf("authorized remote-target preparation = %+v, %v", remoteResult, err)
+	}
+	if _, err := os.Lstat(filepath.Join(artifactCache, "."+failedAttempt+".tmp")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("interrupted Artifact temporary entry was not removed: %v", err)
+	}
+	if _, err := os.Lstat(filepath.Join(artifactCache, "."+unrecordedAttempt+".tmp")); err != nil {
+		t.Fatalf("unowned Artifact temporary entry was changed: %v", err)
 	}
 	wrongHost := signedTestEnvelopeForTarget(t, signer, planned, operationDigest, record,
 		authority.TargetIdentity{Name: "base", Address: "192.168.101.109", Operator: record.Operator, ExecutorDigest: record.ExecutorDigest, SSHHostKeyFingerprint: host.SSHHostKeyFingerprint("SHA256:" + strings.Repeat("x", 43))},

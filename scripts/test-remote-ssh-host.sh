@@ -41,11 +41,11 @@ script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd "$script_dir/.." && pwd)"
 fixtures="$repo_root/testdata/direct-local-matrix"
 fault_bin="$repo_root/scripts/remote-ssh-fault-bin"
-for path in "$fixtures/application.yaml" "$fixtures/application-pre-switch-failure.yaml" "$fixtures/environment-remote.yaml.tmpl" "$fixtures/revision-v1.yaml" "$fixtures/revision-v2.yaml" "$fixtures/revision-fail-stable.yaml" "$fixtures/revision-v3.yaml" "$fixtures/root.yaml" "$fault_bin/ssh"; do
+for path in "$fixtures/application.yaml" "$fixtures/application-pre-switch-failure.yaml" "$fixtures/environment-remote.yaml.tmpl" "$fixtures/revision-v1.yaml" "$fixtures/revision-v2.yaml" "$fixtures/revision-fail-stable.yaml" "$fixtures/revision-v3.yaml" "$fixtures/root.yaml" "$fault_bin/ssh" "$fault_bin/stop-kill-executor.sh"; do
   [[ -f "$path" && ! -L "$path" ]] || { echo "required acceptance input is missing or unsafe: $path" >&2; exit 1; }
 done
-[[ -x "$fault_bin/ssh" ]] || { echo "SSH fault wrapper is not executable" >&2; exit 1; }
-for command in curl python3 ssh ssh-keygen sed sort; do command -v "$command" >/dev/null; done
+[[ -x "$fault_bin/ssh" && -x "$fault_bin/stop-kill-executor.sh" ]] || { echo "SSH fault helpers are not executable" >&2; exit 1; }
+for command in curl pgrep python3 ssh ssh-keygen sed sort; do command -v "$command" >/dev/null; done
 real_ssh="$(command -v ssh)"
 
 mkdir -m 0700 "$work_dir"
@@ -159,6 +159,41 @@ schedule_caddy_outage() {
   "$real_ssh" -tt "${ssh_options[@]}" \
     'sudo /usr/bin/systemd-run --quiet --collect --unit=provision-acceptance-caddy-start --on-active=20s /usr/bin/systemctl start caddy && sudo /usr/bin/systemd-run --quiet --collect --unit=provision-acceptance-caddy-stop --on-active=2s /usr/bin/systemctl stop caddy'
   wait_for_caddy_state inactive
+}
+
+schedule_executor_stop_and_kill() {
+  local fault_script=/tmp/provision-acceptance-executor-fault.sh
+  local fault_marker=/tmp/provision-acceptance-executor-stopped
+  remote "rm -f $fault_script $fault_marker"
+  "$real_ssh" "${ssh_options[@]}" "umask 077; cat >$fault_script; chmod 0700 $fault_script" <"$fault_bin/stop-kill-executor.sh"
+  printf 'Authenticate once for the deliberate in-flight executor termination.\n'
+  "$real_ssh" -tt "${ssh_options[@]}" \
+    "sudo /usr/bin/systemd-run --quiet --collect --unit=provision-acceptance-executor-fault /bin/bash $fault_script $target_user"
+}
+
+wait_for_executor_fault_marker() {
+  for _ in {1..200}; do
+    remote 'test -f /tmp/provision-acceptance-executor-stopped' >/dev/null 2>&1 && return 0
+    sleep 0.05
+  done
+  fail "remote executor was not stopped for the SSH disconnect"
+}
+
+wait_for_no_remote_executor() {
+  for _ in {1..200}; do
+    if "$real_ssh" "${ssh_options[@]}" /bin/bash -s <<'SCRIPT'
+for process in /proc/[0-9]*; do
+  [[ "$(readlink -f "$process/exe" 2>/dev/null || true)" == /usr/local/libexec/provision-host-executor ]] || continue
+  arguments="$(tr '\0' ' ' <"$process/cmdline" 2>/dev/null || true)"
+  [[ " $arguments " != *" execute "* ]] || exit 1
+done
+SCRIPT
+    then
+      return 0
+    fi
+    sleep 0.05
+  done
+  fail "terminated remote executor did not exit"
 }
 
 assert_no_gimme() {
@@ -353,14 +388,38 @@ for scenario in baseline pre-switch switch-failure post-switch interruption stal
   esac
 done
 
-echo "[1/6] healthy remote rollout"
+echo "[1/6] healthy remote rollout after SSH disconnect and executor restart"
 preview_and_approve baseline "$state"
 baseline_plan_id="$plan_id"
 stale_state="$work_dir/stale/state.db"
 preview_and_approve stale "$stale_state"
 stale_plan_id="$plan_id"
 plan_id="$baseline_plan_id"
-for operation in op-01 op-02 op-03 op-04 op-05 op-06; do execute_success baseline "$state" "$operation"; done
+schedule_executor_stop_and_kill
+set +e
+"$provision" deployment execute --plan "$plan_id" --operation op-01 --state "$state" --signing-key "$signing_key" >"$work_dir/baseline/op-01-disconnected.txt" 2>&1 &
+provision_pid=$!
+set -e
+wait_for_executor_fault_marker
+ssh_pid="$(pgrep -P "$provision_pid" -x ssh | head -n 1 || true)"
+[[ -n "$ssh_pid" ]] || fail "could not identify the in-flight SSH client"
+kill -KILL "$ssh_pid"
+set +e
+wait "$provision_pid"
+disconnected_result=$?
+set -e
+[[ $disconnected_result -ne 0 ]] || fail "in-flight SSH disconnect unexpectedly succeeded"
+assert_contains "$work_dir/baseline/op-01-disconnected.txt" 'outcome recorded as uncertain'
+write_status baseline "$state" disconnected
+journal_assert_latest "$work_dir/baseline/disconnected-status.json" op-01 outcome uncertain
+if curl --noproxy '*' --silent --max-time 1 "http://$target_address:18080/verify" >/dev/null 2>&1; then fail "SSH disconnect changed the stable Endpoint"; fi
+wait_for_no_remote_executor
+"$provision" deployment resume --plan "$plan_id" --state "$state" --signing-key "$signing_key" >"$work_dir/baseline/op-01-resumed.json"
+json_assert "$work_dir/baseline/op-01-resumed.json" outcome '"succeeded"'
+write_status baseline "$state" resumed
+journal_assert_resume "$work_dir/baseline/resumed-status.json" op-01 succeeded
+remote 'rm -f /tmp/provision-acceptance-executor-fault.sh /tmp/provision-acceptance-executor-stopped'
+for operation in op-02 op-03 op-04 op-05 op-06; do execute_success baseline "$state" "$operation"; done
 write_status baseline "$state" final
 journal_assert_latest "$work_dir/baseline/final-status.json" op-06 outcome succeeded
 assert_host_state baseline provision-example-http-v1 - provision-example-http-v1-bac304a88517
@@ -454,7 +513,7 @@ print(json.dumps({
     "schemaVersion": "provision.dev/remote-ssh-support-observation/v1alpha1",
     "result": "passed",
     "transport": "ssh",
-    "matrix": ["healthy", "pre-switch failure", "switch failure", "post-switch rollback after lost response", "switch interruption", "stale executor"],
+    "matrix": ["in-flight SSH disconnect and executor restart", "healthy", "pre-switch failure", "switch failure", "post-switch rollback after lost response", "switch interruption", "stale executor"],
     "provisionSourceVersion": provision_version,
     "provisionBinarySha256": f"sha256:{provision_sha256}",
     "controllerKernel": controller_kernel,

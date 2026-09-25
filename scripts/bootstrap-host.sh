@@ -68,7 +68,7 @@ if [[ "$mode" == --dry-run ]]; then
   printf '  Record: %s\n  Restricted sudoers: %s\n' "$record_path" "$sudoers_path"
   printf '  Durable Caddy service override: %s\n' "$caddy_override_path"
   printf '  Required services: systemd, Caddy\n'
-  printf '  Enabled mutations: signed, Plan-bound Artifact staging, candidate install/start/verification, verified Endpoint switch, stable health verification with bounded rollback, and bounded ordinary-HTTP drain completion.\nNo changes made.\n'
+  printf '  Enabled mutations: signed, Plan-bound Artifact staging, candidate install/start/verification, verified Endpoint switch, stable health verification with bounded rollback, bounded ordinary-HTTP drain completion, and rollback-window retention declaration.\nNo changes made.\n'
   exit 0
 fi
 

@@ -2,6 +2,7 @@ schemaVersion: provision.dev/v1alpha1
 kind: Environment
 name: lab
 application: provision-example-http
+rollbackWindow: 30m0s
 targets:
   base:
     kind: host

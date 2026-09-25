@@ -266,6 +266,8 @@ func executeAuthorized(ctx context.Context, envelope operation.Envelope, record 
 			encoded, actionErr = applyVerifyActive(ctx, envelope.Operation, claim, record, paths, now)
 		} else if envelope.Operation.Kind == planner.DrainPrevious {
 			encoded, actionErr = applyHTTPDrain(ctx, envelope.Operation, claim, record, paths, now)
+		} else if envelope.Operation.Kind == planner.RetainPrevious {
+			encoded, actionErr = applyRetention(ctx, envelope.Operation, claim, paths, now)
 		} else {
 			encoded, actionErr = applyCandidateOperation(ctx, envelope.Operation, record, paths, claim.AttemptID)
 		}

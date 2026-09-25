@@ -1,6 +1,6 @@
 # Authorized release preparation
 
-Provision can execute the first seven operations of an approved Host Plan on either the current machine or a bootstrapped remote machine over SSH. `stageArtifact` downloads the Artifact URL already recorded in the Plan, verifies its SHA-256 digest, and stores it at `/var/lib/provision/artifacts/sha256/<digest>`. Dependency-gated operations then install that exact native bundle as an immutable candidate Generation, start a separate hardened systemd unit on a loopback-only port, evaluate the declared liveness, readiness, and revision-bound candidate-verification checks, atomically route the stable Endpoint to the verified candidate through Caddy, evaluate the same Health Contract through that stable Endpoint, and complete its bounded ordinary-HTTP drain. The stopped previous unit definition and immutable release remain the rollback target.
+Provision can execute the first eight operations of an approved Host Plan on either the current machine or a bootstrapped remote machine over SSH. `stageArtifact` downloads the Artifact URL already recorded in the Plan, verifies its SHA-256 digest, and stores it at `/var/lib/provision/artifacts/sha256/<digest>`. Dependency-gated operations then install that exact native bundle as an immutable candidate Generation, start a separate hardened systemd unit on a loopback-only port, evaluate the declared liveness, readiness, and revision-bound candidate-verification checks, atomically route the stable Endpoint to the verified candidate through Caddy, evaluate the same Health Contract through that stable Endpoint, complete its bounded ordinary-HTTP drain, and declare the exact stopped previous Generation restartable through the Environment's rollback-window deadline.
 
 Local and remote execution use the same Plan-bound authorization, fencing, journal, operation envelope, root-owned executor, and structured result. SSH is only the transport boundary; it does not create a second execution model or grant shell-shaped deployment authority.
 
@@ -164,7 +164,29 @@ The result and `deployment status` evidence use `mode: bounded-http` and `status
 
 This bound is for ordinary finite HTTP requests. It gives requests admitted before Caddy's graceful configuration handoff their declared completion interval before the previous process is stopped. It does not inspect individual requests, migrate connections, or promise WebSocket and other long-lived-stream drain behavior.
 
-## 9. Resume an interrupted or uncertain operation
+## 9. Record rollback-window retention
+
+The Environment declares a canonical rollback window independently of the HTTP drain:
+
+```yaml
+rollbackWindow: 30m0s
+```
+
+It must be from one minute through 30 days. Execute `op-08` only after `op-07` succeeds:
+
+```sh
+go run ./cmd/provision deployment execute \
+  --plan sha256:PLAN_DIGEST \
+  --operation op-08 \
+  --state .provision/state.db \
+  --signing-key .provision/host-authority.key
+```
+
+The deterministic Plan contains the exact active Endpoint, exact previous Generation, `rollback-window` policy, and duration; it deliberately contains no wall-clock deadline. During execution the host independently proves the successful exact signed drain, stable route, stopped previous unit, immutable release and manifest, and digest-addressed Artifact. It derives `retainUntil` as the trusted switch time plus the declared window, then records the retention operation digest and timestamps in root-owned state. The result reports `status: retained`, `restartable: true`, and `cleanupPerformed: false`.
+
+This operation is a retention declaration, not garbage collection. It never starts, stops, deletes, or disables a unit and never removes a release, manifest, or Artifact. Replays, stale authorizations, mismatched identities, route drift, missing material, and attempts to shorten an existing window fail closed. If the response is lost after the marker is durable, resume re-observes the exact state and records success without replaying the mutation.
+
+## 10. Resume an interrupted or uncertain operation
 
 After the original execution lease has expired or been released, resume the latest interrupted or uncertain operation recorded for the Plan:
 
@@ -183,7 +205,7 @@ Traffic switching has an additional host-side recovery boundary. If Caddy alread
 
 Every resume handles one journaled operation. Run `deployment status` after it, and invoke resume again only if the latest outcome remains uncertain and the reported recovery action has been completed.
 
-## 10. Read the durable journal
+## 11. Read the durable journal
 
 ```sh
 go run ./cmd/provision deployment status \
@@ -195,4 +217,4 @@ The output contains append-only authoritative intent and outcome events, includi
 
 ## Current boundary
 
-This slice now completes the bounded ordinary-HTTP drain while retaining the stopped previous unit definition and immutable release. It is still not the complete HTTP blue-green lifecycle: `retainPrevious` cannot yet apply the rollback-window retention and cleanup decision. WebSocket and other long-lived-stream drain guarantees also remain unsupported rather than silently inferred from ordinary HTTP behavior.
+This slice now completes the bounded ordinary-HTTP drain and records the exact previous Generation as restartable through its declared rollback-window deadline. Expiry does not authorize deletion: cleanup, quarantine, and garbage collection remain separate unimplemented policy decisions. WebSocket and other long-lived-stream drain guarantees also remain unsupported rather than silently inferred from ordinary HTTP behavior.

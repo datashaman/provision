@@ -2,11 +2,13 @@ package execution
 
 import (
 	"bytes"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"os/exec"
+	"strings"
 
 	"provision/internal/host"
 	"provision/internal/operation"
@@ -95,7 +97,7 @@ func verifyHostResult(envelope operation.Envelope, result operation.Result) erro
 	if err := result.ValidateAgainst(envelope); err != nil {
 		return err
 	}
-	if result.Outcome == operation.OutcomeUncertain && envelope.Operation.Kind != planner.SwitchEndpoint && envelope.Operation.Kind != planner.VerifyActive && envelope.Operation.Kind != planner.DrainPrevious {
+	if result.Outcome == operation.OutcomeUncertain && envelope.Operation.Kind != planner.SwitchEndpoint && envelope.Operation.Kind != planner.VerifyActive && envelope.Operation.Kind != planner.DrainPrevious && envelope.Operation.Kind != planner.RetainPrevious {
 		return errors.New("host operation kind cannot return an uncertain structured outcome")
 	}
 	switch envelope.Operation.Kind {
@@ -113,6 +115,8 @@ func verifyHostResult(envelope operation.Envelope, result operation.Result) erro
 		return verifyActiveResult(envelope, result)
 	case planner.DrainPrevious:
 		return verifyDrainResult(envelope, result)
+	case planner.RetainPrevious:
+		return verifyRetentionResult(envelope, result)
 	default:
 		return errors.New("host operation result kind is unsupported")
 	}
@@ -320,6 +324,52 @@ func verifyDrainResult(envelope operation.Envelope, result operation.Result) err
 		return errors.New("host HTTP drain outcome is unsupported")
 	}
 	return nil
+}
+
+func verifyRetentionResult(envelope operation.Envelope, result operation.Result) error {
+	input := envelope.Operation.Input.Retention
+	if input == nil {
+		return errors.New("host rollback retention observation has no planned retention")
+	}
+	var observed host.RetentionObservation
+	if err := decodeObservation(result.Observation, &observed); err != nil {
+		return errors.New("host rollback retention observation is invalid")
+	}
+	digest, err := planner.OperationDigest(envelope.Operation)
+	if err != nil {
+		return err
+	}
+	if !endpointGenerationMatches(observed.Active, input.Endpoint) || !generationStatusIdentityMatches(observed.Previous, input.Previous) || observed.Policy != input.Policy || observed.RollbackWindow != input.RollbackWindow || observed.OperationDigest != digest {
+		return errors.New("host rollback retention observation does not match the Plan")
+	}
+	switch result.Outcome {
+	case operation.OutcomeSucceeded:
+		duration, durationErr := input.RollbackWindow.Duration()
+		validDeadline := durationErr == nil && observed.SwitchedAt != nil && !observed.SwitchedAt.IsZero() && observed.RetainUntil != nil && observed.RetainUntil.Equal(observed.SwitchedAt.Add(duration))
+		validTimes := observed.DrainedAt != nil && !observed.DrainedAt.IsZero() && observed.RetainedAt != nil && !observed.RetainedAt.IsZero() && !observed.RetainedAt.Before(*observed.DrainedAt)
+		if observed.Status != host.RetentionCompleted || !validDigest(observed.DrainOperationDigest) || !validDeadline || !validTimes || !observed.StableRouteVerified || observed.PreviousUnitActive || !observed.PreviousUnitRetained || !observed.PreviousReleaseRetained || !observed.PreviousManifestRetained || !observed.PreviousArtifactRetained || !observed.Restartable || observed.CleanupPerformed || observed.Reason != "" || observed.RecoveryAction != "" {
+			return errors.New("host rollback retention success observation is invalid")
+		}
+	case operation.OutcomeFailed:
+		if observed.Status != host.RetentionFailed || observed.Reason == "" || observed.RecoveryAction != "" || observed.CleanupPerformed {
+			return errors.New("host rollback retention failure observation is invalid")
+		}
+	case operation.OutcomeUncertain:
+		if observed.Status != host.RetentionUncertain || observed.Reason == "" || observed.RecoveryAction == "" || observed.CleanupPerformed {
+			return errors.New("host rollback retention uncertain observation is invalid")
+		}
+	default:
+		return errors.New("host rollback retention outcome is unsupported")
+	}
+	return nil
+}
+
+func validDigest(value string) bool {
+	if !strings.HasPrefix(value, "sha256:") || len(value) != len("sha256:")+64 {
+		return false
+	}
+	_, err := hex.DecodeString(strings.TrimPrefix(value, "sha256:"))
+	return err == nil
 }
 
 func exactHealthChecks(checks []host.HealthCheckObservation, input planner.HealthInput) bool {

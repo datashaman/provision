@@ -27,6 +27,8 @@ The matching remote executor digest was `sha256:e9c910de10f89045c98d426454c60a3e
 - A process interrupted after the traffic switch resumes from fresh host evidence without replaying the switch.
 - After stable verification, the direct-local native HTTP implementation honors the complete declared Caddy handoff bound before stopping only the exact previous Generation; its unit definition and immutable release remain available.
 - A lost successful drain response remains interrupted until resume proves durable host completion, then records `drained` without replaying the stop.
+- Rollback-window retention binds the exact stopped previous Generation and all restart material to a deadline derived from the trusted switch time; it performs no cleanup.
+- A lost successful retention response can be reconciled from the host's durable marker without shortening the window or replaying the mutation.
 - A stale executor authorization cannot mutate the host or move the stable Endpoint.
 - The durable journal distinguishes successful, failed, interrupted, resumed, and uncertain attempts.
 - Only the expected Provision units and immutable release directories appear; Gimme-owned resources remain absent.
@@ -41,7 +43,7 @@ The matching remote executor digest was `sha256:e9c910de10f89045c98d426454c60a3e
 - Caddy configuration reload preserves the prior route on a rejected load. An external Caddy outage can still make the Endpoint unavailable until Caddy is restored.
 - Remote mode adds a management-transport dependency, not a workload-availability dependency. If the controller cannot authenticate the host or cannot obtain enough fresh evidence after a lost connection, the operation remains interrupted or uncertain until an operator restores access and resumes it; stable traffic continues according to the last host state.
 - SSH host-key rotation is deliberately not automatic. A reset or legitimate key change fails closed until the operator verifies and pins the replacement out of band.
-- Candidate verification, Endpoint switching, stable verification, bounded rollback, and bounded ordinary-HTTP drain completion are implemented. The direct-local combination in the bounded-drain row support-qualifies that drain behavior; the historical direct-local and remote-SSH rows predate it and do not. Rollback-window cleanup is not implemented.
-- A successfully drained previous Generation is stopped while its unit definition and immutable release remain installed. Other failed or older Generations may remain running because rollback-window retention and cleanup are not yet enabled.
+- Candidate verification, Endpoint switching, stable verification, bounded rollback, bounded ordinary-HTTP drain completion, and rollback-window retention declaration are implemented. The direct-local rows above predate the retention operation, so its live support qualification is pending a fresh disposable-host run. The bounded-drain row alone support-qualifies drain behavior. Rollback-window cleanup is not implemented.
+- A successfully drained previous Generation is stopped while its exact unit definition, immutable release and manifest, and digest-addressed Artifact remain installed and restartable. Other failed or older Generations may remain running because cleanup is not yet enabled.
 - Host reset and bootstrap are separate operator-controlled procedures. The matrix does not claim unattended OS provisioning, upgrades, or in-place migration from Gimme.
 - Versions not listed above require their own capability observation and acceptance run; they are not implied by this row.

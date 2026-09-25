@@ -2,6 +2,11 @@
 
 The files in this directory are sketches and source inventories used to test the product model and inform implementation planning.
 
+The RabbitMQ packaging comparison is kept as dated evidence rather than an
+exploration because it records observed acceptance-host state, the approved
+decision, and its live qualification. See [the comparison evidence](../evidence/2026-09-25-rabbitmq-packaging-comparison.md)
+and [ADR 0072](../adr/0072-select-managed-host-rabbitmq-packaging.md).
+
 They are deliberately non-normative:
 
 - They do not define an accepted configuration format.

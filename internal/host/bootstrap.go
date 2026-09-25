@@ -50,9 +50,11 @@ type BootstrapStatus struct {
 }
 
 type AsyncStatus struct {
-	SchemaVersion string                `json:"schemaVersion"`
-	Capabilities  AsyncCapabilities     `json:"capabilities"`
-	Deployment    AsyncDeploymentStatus `json:"deployment"`
+	SchemaVersion       string                `json:"schemaVersion"`
+	ObservationComplete bool                  `json:"observationComplete"`
+	Findings            []string              `json:"findings"`
+	Capabilities        AsyncCapabilities     `json:"capabilities"`
+	Deployment          AsyncDeploymentStatus `json:"deployment"`
 }
 
 type AsyncCapabilities struct {
@@ -60,6 +62,11 @@ type AsyncCapabilities struct {
 	Quadlet                     bool   `json:"quadlet"`
 	RootlessEnvironmentAccount  bool   `json:"rootlessEnvironmentAccount"`
 	SystemdCredentials          bool   `json:"systemdCredentials"`
+	SubordinateIDs              bool   `json:"subordinateIds"`
+	LingeringUserManager        bool   `json:"lingeringUserManager"`
+	QuadletDefinitionRootOwned  bool   `json:"quadletDefinitionRootOwned"`
+	DataPathEnvironmentOwned    bool   `json:"dataPathEnvironmentOwned"`
+	EncryptedCredentialObserved bool   `json:"encryptedCredentialObserved"`
 	WorkerAdmissionGate         bool   `json:"workerAdmissionGate"`
 	RabbitMQQualificationDigest string `json:"rabbitmqQualificationDigest"`
 	RabbitMQVersion             string `json:"rabbitmqVersion"`

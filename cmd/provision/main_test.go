@@ -529,7 +529,7 @@ func TestAsyncPlanPreviewIsDeterministicCompleteAndReadOnly(t *testing.T) {
 		t.Fatalf("invalid async Plan JSON: %v\n%s", err, first)
 	}
 	wantOperations := []string{
-		"prepareQueue", "stageArtifact", "stageArtifact", "installTaskGeneration",
+		"prepareQueue", "stageArtifact", "stageArtifact", "installTaskGeneration", "verifyTaskGeneration",
 		"installWorkerGeneration", "startWorkerCandidate", "verifyWorkerCandidate",
 		"fenceWorkerIntake", "drainWorkerPrevious", "activateWorkerIntake",
 		"verifyWorkerActive", "installScheduleRuntime", "handoffSchedule",
@@ -622,12 +622,30 @@ func TestAsyncPlanPreviewIsDeterministicCompleteAndReadOnly(t *testing.T) {
 	if changed.ID == plan.ID {
 		t.Fatalf("Artifact identity change did not stale Plan %s", plan.ID)
 	}
+	initialOutput, initialErr := preview("FAKE_NO_ACTIVE_WORKER=1")
+	if initialErr != nil {
+		t.Fatalf("initial Worker Plan preview failed: %v\n%s", initialErr, initialOutput)
+	}
+	var initial struct {
+		Operations []struct {
+			Kind string `json:"kind"`
+		} `json:"operations"`
+	}
+	if err := json.Unmarshal(initialOutput, &initial); err != nil {
+		t.Fatal(err)
+	}
+	for _, operation := range initial.Operations {
+		switch operation.Kind {
+		case "fenceWorkerIntake", "drainWorkerPrevious", "retainWorkerPrevious":
+			t.Fatalf("initial Worker Plan contains impossible previous-Generation operation %q", operation.Kind)
+		}
+	}
 
 	commands, err := os.ReadFile(sshLog)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Count(string(commands), "provision-host-executor inspect") != 6 {
+	if strings.Count(string(commands), "provision-host-executor inspect") != 7 {
 		t.Fatalf("preview did not perform exactly one read-only inspection per Plan:\n%s", commands)
 	}
 	for _, forbidden := range []string{"--apply", " install ", " start ", " reload ", " execute "} {
@@ -1051,7 +1069,9 @@ func writeAsyncBootstrapInspectionSSH(t *testing.T, dir string) {
 	data := `#!/bin/sh
 printf '%s\n' "$*" >> "$FAKE_SSH_LOG"
 printf() {
-  command printf "$@" | sed 's#"rabbitmqImageManifest":"sha256:34fc91a9de04d612a340507b8e7e19c0ee1ec9839e09dc5fc98f54991633ce91"#"rabbitmqImageManifest":"sha256:34fc91a9de04d612a340507b8e7e19c0ee1ec9839e09dc5fc98f54991633ce91","rabbitmqServiceUnit":"provision-lab-rabbitmq.service","rabbitmqContainer":"provision-lab-rabbitmq","rabbitmqAccount":"provision-lab","rabbitmqDataPath":"/var/lib/provision/environments/lab/services/rabbitmq/data","rabbitmqQuadletPath":"/etc/containers/systemd/users/999/provision-lab-rabbitmq.container"#g' | sed 's#"imageManifest":"sha256:34fc91a9de04d612a340507b8e7e19c0ee1ec9839e09dc5fc98f54991633ce91"#"imageManifest":"sha256:34fc91a9de04d612a340507b8e7e19c0ee1ec9839e09dc5fc98f54991633ce91","serviceUnit":"provision-lab-rabbitmq.service","container":"provision-lab-rabbitmq","account":"provision-lab","dataPath":"/var/lib/provision/environments/lab/services/rabbitmq/data","quadletPath":"/etc/containers/systemd/users/999/provision-lab-rabbitmq.container"#g'
+  value="$(command printf "$@")"
+  if [ "${FAKE_NO_ACTIVE_WORKER:-0}" = 1 ]; then value="$(command printf '%s' "$value" | sed -E 's/,"activeWorker":\{[^}]*\}//')"; fi
+  command printf '%s\n' "$value" | sed 's#"rabbitmqImageManifest":"sha256:34fc91a9de04d612a340507b8e7e19c0ee1ec9839e09dc5fc98f54991633ce91"#"rabbitmqImageManifest":"sha256:34fc91a9de04d612a340507b8e7e19c0ee1ec9839e09dc5fc98f54991633ce91","rabbitmqServiceUnit":"provision-lab-rabbitmq.service","rabbitmqContainer":"provision-lab-rabbitmq","rabbitmqAccount":"provision-lab","rabbitmqDataPath":"/var/lib/provision/environments/lab/services/rabbitmq/data","rabbitmqQuadletPath":"/etc/containers/systemd/users/999/provision-lab-rabbitmq.container"#g' | sed 's#"imageManifest":"sha256:34fc91a9de04d612a340507b8e7e19c0ee1ec9839e09dc5fc98f54991633ce91"#"imageManifest":"sha256:34fc91a9de04d612a340507b8e7e19c0ee1ec9839e09dc5fc98f54991633ce91","serviceUnit":"provision-lab-rabbitmq.service","container":"provision-lab-rabbitmq","account":"provision-lab","dataPath":"/var/lib/provision/environments/lab/services/rabbitmq/data","quadletPath":"/etc/containers/systemd/users/999/provision-lab-rabbitmq.container"#g'
 }
 case "$*" in
   *"/usr/local/libexec/provision-host-executor inspect --environment lab --operator marlinf")

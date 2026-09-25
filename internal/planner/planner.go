@@ -80,6 +80,7 @@ const (
 	RetainPrevious          OperationKind = "retainPrevious"
 	PrepareQueue            OperationKind = "prepareQueue"
 	InstallTaskGeneration   OperationKind = "installTaskGeneration"
+	VerifyTaskGeneration    OperationKind = "verifyTaskGeneration"
 	InstallWorkerGeneration OperationKind = "installWorkerGeneration"
 	StartWorkerCandidate    OperationKind = "startWorkerCandidate"
 	VerifyWorkerCandidate   OperationKind = "verifyWorkerCandidate"
@@ -469,12 +470,22 @@ func asyncCapabilityIssues(observation host.BootstrapStatus, target config.Targe
 	if observation.Async == nil || observation.Async.SchemaVersion != "provision.dev/host-async-inspection/v1alpha1" {
 		return unique(append(issues, "Host observation has no supported asynchronous capability evidence"))
 	}
+	issues = append(issues, observation.Async.Findings...)
+	observedDeployment := observation.Async.Deployment
+	completeDeployment := observation.Async.ObservationComplete || observedDeployment.Queue != nil && observedDeployment.ActiveTask != nil && observedDeployment.Schedule != nil
+	if !completeDeployment {
+		issues = append(issues, "asynchronous deployment observation is incomplete")
+	}
 	capability := observation.Async.Capabilities
 	if capability.PodmanVersion != "5.7.0+ds2-3build1" || !capability.Quadlet || !capability.RootlessEnvironmentAccount {
 		issues = append(issues, "qualified rootless Podman and Quadlet capability is not observed")
 	}
 	if !capability.SystemdCredentials {
 		issues = append(issues, "encrypted systemd credential delivery is not observed")
+	}
+	detailedPackaging := capability.SubordinateIDs && capability.LingeringUserManager && capability.QuadletDefinitionRootOwned && capability.DataPathEnvironmentOwned && capability.EncryptedCredentialObserved
+	if !detailedPackaging && observedDeployment.Queue == nil {
+		issues = append(issues, "rootless Queue account, subordinate IDs, lingering manager, owned paths, or encrypted credential evidence is incomplete")
 	}
 	if !capability.WorkerAdmissionGate {
 		issues = append(issues, "required Worker blue-green is unsupported without proven admission control")
@@ -585,11 +596,12 @@ func asyncOperations(compiled config.Compiled, observation host.BootstrapStatus,
 	if scheduleInput.Previous != nil {
 		previousSchedule = scheduleInput.Previous.TaskGenerationID
 	}
-	return []Operation{
+	operations := []Operation{
 		{ID: "op-01", Kind: PrepareQueue, DependsOn: []string{}, Input: OperationInput{Async: &AsyncOperationInput{Queue: queueInput}}, Preconditions: conditions("rabbitmq-qualification", rabbitMQQualificationDigest, "matched"), ExpectedObservations: conditions("queue-generation", queueInput.LogicalID, "ready-single-member-quorum"), Recovery: RetainQueue},
 		{ID: "op-02", Kind: StageArtifact, DependsOn: []string{"op-01"}, Input: OperationInput{Async: &AsyncOperationInput{Artifact: workerArtifactInput}}, Preconditions: conditions("artifact-digest", workerArtifact.Source, workerArtifact.Digest), ExpectedObservations: conditions("artifact-cache", workerArtifact.Digest, "verified"), Recovery: DiscardAsyncArtifact},
 		{ID: "op-03", Kind: StageArtifact, DependsOn: []string{"op-01"}, Input: OperationInput{Async: &AsyncOperationInput{Artifact: taskArtifactInput}}, Preconditions: conditions("artifact-digest", taskArtifact.Source, taskArtifact.Digest), ExpectedObservations: conditions("artifact-cache", taskArtifact.Digest, "verified"), Recovery: DiscardAsyncArtifact},
 		{ID: "op-04", Kind: InstallTaskGeneration, DependsOn: []string{"op-03"}, Input: OperationInput{Async: &AsyncOperationInput{Task: taskInput}}, Preconditions: conditions("artifact-cache", taskArtifact.Digest, "verified"), ExpectedObservations: conditions("task-generation", taskGenerationID, "installed"), Recovery: RemoveTaskCandidate},
+		{ID: "op-04-verify", Kind: VerifyTaskGeneration, DependsOn: []string{"op-04"}, Input: OperationInput{Async: &AsyncOperationInput{Task: taskInput}}, Preconditions: conditions("task-generation", taskGenerationID, "installed"), ExpectedObservations: conditions("task-generation", taskGenerationID, "verified-runnable"), Recovery: RemoveTaskCandidate},
 		{ID: "op-05", Kind: InstallWorkerGeneration, DependsOn: []string{"op-02", "op-01"}, Input: OperationInput{Async: &AsyncOperationInput{Worker: workerInput}}, Preconditions: conditions("queue-generation", queueInput.LogicalID, "ready"), ExpectedObservations: conditions("worker-generation", workerGenerationID, "installed-gated"), Recovery: RemoveWorkerCandidate},
 		{ID: "op-06", Kind: StartWorkerCandidate, DependsOn: []string{"op-05"}, Input: OperationInput{Async: &AsyncOperationInput{Worker: workerInput}}, Preconditions: conditions("worker-admission", workerGenerationID, "closed"), ExpectedObservations: conditions("systemd-unit", workerUnit, "active-gated"), Recovery: KeepCandidateGated},
 		{ID: "op-07", Kind: VerifyWorkerCandidate, DependsOn: []string{"op-06"}, Input: OperationInput{Async: &AsyncOperationInput{Worker: workerInput}}, Preconditions: conditions("worker-admission", workerGenerationID, "closed"), ExpectedObservations: conditions("worker-candidate", workerGenerationID, "gated-queue-connected"), Recovery: KeepCandidateGated},
@@ -597,11 +609,28 @@ func asyncOperations(compiled config.Compiled, observation host.BootstrapStatus,
 		{ID: "op-09", Kind: DrainWorkerPrevious, DependsOn: []string{"op-08"}, Input: OperationInput{Async: &AsyncOperationInput{Worker: workerInput}}, Preconditions: conditions("previous-worker-admission", previousWorker, "closed"), ExpectedObservations: conditions("previous-worker-in-flight", previousWorker, "drained-or-safely-released"), Recovery: ReleaseInflight},
 		{ID: "op-10", Kind: ActivateWorkerIntake, DependsOn: []string{"op-09"}, Input: OperationInput{Async: &AsyncOperationInput{Worker: workerInput}}, Preconditions: conditions("worker-candidate", workerGenerationID, "verified"), ExpectedObservations: conditions("worker-admission", workerGenerationID, "open"), Recovery: RestorePreviousWorkerIntake},
 		{ID: "op-11", Kind: VerifyWorkerActive, DependsOn: []string{"op-10"}, Input: OperationInput{Async: &AsyncOperationInput{Worker: workerInput}}, Preconditions: conditions("worker-admission", workerGenerationID, "open"), ExpectedObservations: conditions("worker-processing", workerGenerationID, "verified-at-least-once"), Recovery: RestorePreviousWorkerIntake},
-		{ID: "op-12", Kind: InstallScheduleRuntime, DependsOn: []string{"op-04"}, Input: OperationInput{Async: &AsyncOperationInput{Runtime: runtimeInput}}, Preconditions: conditions("runtime-asset", runtimeInput.AppletDigest, "verified"), ExpectedObservations: conditions("schedule-runtime", runtimeInput.AppletDigest, "installed"), Recovery: RetainQueue},
-		{ID: "op-13", Kind: HandoffSchedule, DependsOn: []string{"op-11", "op-12", "op-04"}, Input: OperationInput{Async: &AsyncOperationInput{Schedule: scheduleInput}}, Preconditions: conditions("previous-schedule-generation", previousSchedule, "fenced"), ExpectedObservations: conditions("schedule-task-generation", taskGenerationID, "active-with-new-fence"), Recovery: RestorePreviousScheduleFence},
+		{ID: "op-12", Kind: InstallScheduleRuntime, DependsOn: []string{"op-04-verify"}, Input: OperationInput{Async: &AsyncOperationInput{Runtime: runtimeInput}}, Preconditions: conditions("runtime-asset", runtimeInput.AppletDigest, "verified"), ExpectedObservations: conditions("schedule-runtime", runtimeInput.AppletDigest, "installed"), Recovery: RetainQueue},
+		{ID: "op-13", Kind: HandoffSchedule, DependsOn: []string{"op-11", "op-12", "op-04-verify"}, Input: OperationInput{Async: &AsyncOperationInput{Schedule: scheduleInput}}, Preconditions: conditions("previous-schedule-generation", previousSchedule, "fenced-or-absent"), ExpectedObservations: conditions("schedule-task-generation", taskGenerationID, "active-with-new-fence"), Recovery: RestorePreviousScheduleFence},
 		{ID: "op-14", Kind: VerifySchedule, DependsOn: []string{"op-13"}, Input: OperationInput{Async: &AsyncOperationInput{Schedule: scheduleInput}}, Preconditions: conditions("schedule-task-generation", taskGenerationID, "active"), ExpectedObservations: conditions("schedule-occurrence", scheduleName, "recorded-before-invocation"), Recovery: RestorePreviousScheduleFence},
 		{ID: "op-15", Kind: RetainWorkerPrevious, DependsOn: []string{"op-11", "op-14"}, Input: OperationInput{Async: &AsyncOperationInput{Worker: workerInput}}, Preconditions: conditions("worker-generation", workerGenerationID, "verified-active"), ExpectedObservations: conditions("previous-worker-generation", previousWorker, "retained-for-rollback-window"), Recovery: RetainBothWorkerGenerations},
 	}
+	if workerInput.Previous == nil {
+		filtered := make([]Operation, 0, len(operations)-3)
+		for _, operation := range operations {
+			switch operation.Kind {
+			case FenceWorkerIntake, DrainWorkerPrevious, RetainWorkerPrevious:
+				continue
+			case ActivateWorkerIntake:
+				operation.DependsOn = []string{"op-07"}
+				operation.Recovery = KeepCandidateGated
+			case VerifyWorkerActive:
+				operation.Recovery = KeepCandidateGated
+			}
+			filtered = append(filtered, operation)
+		}
+		operations = filtered
+	}
+	return operations
 }
 
 func capabilityIssues(observation host.BootstrapStatus, selection config.HostSelection) []string {

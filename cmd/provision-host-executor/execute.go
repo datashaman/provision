@@ -15,6 +15,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strings"
 	"syscall"
 	"time"
 
@@ -248,12 +249,16 @@ func executeAuthorized(ctx context.Context, envelope operation.Envelope, record 
 		var encoded json.RawMessage
 		var actionErr error
 		if envelope.Operation.Kind == planner.StageArtifact {
-			observation, err := stageArtifact(ctx, paths.artifactCache, claim.AttemptID, *envelope.Operation.Input.Artifact)
-			if err != nil {
+			if err := cleanupInterruptedArtifactStages(paths.authorityState, paths.artifactCache, claim.AttemptID); err != nil {
 				actionErr = err
 			} else {
-				encoded, err = json.Marshal(observation)
-				actionErr = err
+				observation, err := stageArtifact(ctx, paths.artifactCache, claim.AttemptID, *envelope.Operation.Input.Artifact)
+				if err != nil {
+					actionErr = err
+				} else {
+					encoded, err = json.Marshal(observation)
+					actionErr = err
+				}
 			}
 		} else if envelope.Operation.Kind == planner.SwitchEndpoint {
 			encoded, actionErr = applySwitchEndpoint(ctx, envelope.Operation, claim, record, paths, now)
@@ -316,6 +321,58 @@ func executeAuthorized(ctx context.Context, envelope operation.Envelope, record 
 		}, nil
 	}
 	return result, nil
+}
+
+func cleanupInterruptedArtifactStages(authorityState, cacheRoot, currentAttempt string) error {
+	entries, err := os.ReadDir(authorityState)
+	if err != nil {
+		return errors.New("inspect prior host authorizations")
+	}
+	for _, entry := range entries {
+		name := entry.Name()
+		if entry.IsDir() || filepath.Ext(name) != ".json" {
+			continue
+		}
+		previousAttempt := strings.TrimSuffix(name, ".json")
+		if previousAttempt == currentAttempt || !attemptID.MatchString(previousAttempt) {
+			continue
+		}
+		data, err := os.ReadFile(filepath.Join(authorityState, name))
+		if err != nil {
+			return errors.New("read prior host authorization")
+		}
+		var consumed consumedAuthorization
+		decoder := json.NewDecoder(bytes.NewReader(data))
+		decoder.DisallowUnknownFields()
+		if err := decoder.Decode(&consumed); err != nil {
+			return errors.New("prior host authorization is invalid")
+		}
+		var extra any
+		if err := decoder.Decode(&extra); err != io.EOF || consumed.SchemaVersion != "provision.dev/consumed-authorization/v1alpha2" || consumed.Claim.AttemptID != previousAttempt || !journalOutcome.MatchString(consumed.Outcome) {
+			return errors.New("prior host authorization is invalid")
+		}
+		if consumed.Claim.OperationKind != string(consumed.Operation.Kind) || consumed.Claim.OperationID != consumed.Operation.ID {
+			return errors.New("prior host authorization is invalid")
+		}
+		if consumed.Operation.Kind != planner.StageArtifact {
+			continue
+		}
+		temporary := filepath.Join(cacheRoot, "."+previousAttempt+".tmp")
+		info, err := os.Lstat(temporary)
+		if errors.Is(err, os.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			return errors.New("inspect interrupted Artifact temporary entry")
+		}
+		if !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 {
+			return errors.New("interrupted Artifact temporary entry is unsafe")
+		}
+		if err := os.Remove(temporary); err != nil {
+			return errors.New("remove interrupted Artifact temporary entry")
+		}
+	}
+	return nil
 }
 
 func validateStageArtifact(planned planner.Operation) error {

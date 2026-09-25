@@ -1,0 +1,16 @@
+schemaVersion: provision.dev/v1alpha1
+kind: Environment
+name: lab
+application: provision-example-http
+targets:
+  current:
+    kind: host
+    address: @ADDRESS@
+    user: @OPERATOR@
+implementations:
+  web:
+    kind: systemd
+    target: current
+    rollout: required
+    endpoint:
+      port: 18080

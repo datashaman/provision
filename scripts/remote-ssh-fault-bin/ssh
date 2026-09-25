@@ -1,0 +1,21 @@
+#!/bin/sh
+set -eu
+
+real_ssh="${PROVISION_REAL_SSH:-/usr/bin/ssh}"
+case " $* " in
+  *" /usr/local/libexec/provision-host-executor execute "*)
+    captured="$(mktemp -t provision-remote-output.XXXXXX)"
+    trap 'rm -f "$captured"' EXIT
+    if "$real_ssh" "$@" >"$captured"; then
+      : >"$PROVISION_FAULT_MARKER"
+      kill -KILL "$PPID"
+      sleep 1
+      exit 0
+    else
+      exit $?
+    fi
+    ;;
+  *)
+    exec "$real_ssh" "$@"
+    ;;
+esac

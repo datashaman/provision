@@ -151,6 +151,45 @@ assert_no_gimme() {
   fi
 }
 
+assert_host_state() {
+  local label="$1" active_revision="$2" previous_revision="$3"
+  shift 3
+  local host_output="$work_dir/$label-host.json"
+  local expected_units="$work_dir/$label-expected-units.txt"
+  local actual_units="$work_dir/$label-actual-units.txt"
+  local expected_releases="$work_dir/$label-expected-releases.txt"
+  local actual_releases="$work_dir/$label-actual-releases.txt"
+
+  assert_stable_revision "$active_revision" "$label"
+  "$provision" host bootstrap check --local --environment lab --operator "$operator" >"$host_output"
+  json_assert "$host_output" ready true
+  json_assert "$host_output" deployment.active.revision "\"$active_revision\""
+  if [[ "$previous_revision" == - ]]; then
+    python3 - "$host_output" <<'PY'
+import json
+import sys
+
+with open(sys.argv[1], encoding="utf-8") as handle:
+    deployment = json.load(handle)["deployment"]
+if "previous" in deployment:
+    raise SystemExit(f"{sys.argv[1]}: unexpected previous Generation")
+PY
+  else
+    json_assert "$host_output" deployment.previous.revision "\"$previous_revision\""
+  fi
+
+  printf '%s\n' "$@" | sed 's/.*-\([0-9a-f]\{12\}\)$/provision-lab-web-\1.service/' | sort >"$expected_units"
+  find /etc/systemd/system -maxdepth 1 -type f -name 'provision-lab-web-*.service' -printf '%f\n' | sort >"$actual_units"
+  cmp -s "$expected_units" "$actual_units" || fail "$label has an unexpected Provision systemd unit set"
+
+  printf '%s\n' "$@" | sort >"$expected_releases"
+  find /var/lib/provision/environments/lab/releases -mindepth 1 -maxdepth 1 -type d -printf '%f\n' | sort >"$actual_releases"
+  cmp -s "$expected_releases" "$actual_releases" || fail "$label has an unexpected Provision release set"
+
+  assert_no_gimme
+  systemctl is-active --quiet caddy || fail "$label left Caddy inactive"
+}
+
 materialize() {
   local name="$1" application="$2" revision="$3"
   local directory="$work_dir/$name"
@@ -206,7 +245,8 @@ for scenario in baseline pre-switch switch-failure post-switch interruption stal
     pre-switch) materialize "$scenario" application-pre-switch-failure.yaml revision-v2.yaml ;;
     switch-failure) materialize "$scenario" application.yaml revision-v2.yaml ;;
     post-switch) materialize "$scenario" application.yaml revision-fail-stable.yaml ;;
-    interruption|stale) materialize "$scenario" application.yaml revision-v3.yaml ;;
+    interruption) materialize "$scenario" application.yaml revision-v3.yaml ;;
+    stale) materialize "$scenario" application.yaml revision-v1.yaml ;;
   esac
 done
 
@@ -227,12 +267,16 @@ fi
 
 echo "[1/6] healthy rollout"
 preview_and_approve baseline "$state"
+baseline_plan_id="$plan_id"
+stale_state="$work_dir/stale/state.db"
+preview_and_approve stale "$stale_state"
+stale_plan_id="$plan_id"
+plan_id="$baseline_plan_id"
 for operation in op-01 op-02 op-03 op-04 op-05 op-06; do execute_success baseline "$state" "$operation"; done
-assert_stable_revision provision-example-http-v1 baseline
-"$provision" host bootstrap check --local --environment lab --operator "$operator" >"$work_dir/baseline/host.json"
-json_assert "$work_dir/baseline/host.json" deployment.active.revision '"provision-example-http-v1"'
 write_status baseline "$state" final
 journal_assert_latest "$work_dir/baseline/final-status.json" op-06 outcome succeeded
+assert_host_state baseline provision-example-http-v1 - \
+  provision-example-http-v1-bac304a88517
 
 echo "[2/6] pre-switch verification failure"
 preview_and_approve pre-switch "$state"
@@ -241,9 +285,10 @@ execute_failure pre-switch "$state" op-04 op-04-failed 'host preparation operati
 assert_contains "$work_dir/pre-switch/op-04-failed.txt" '"candidateCleaned": true'
 [[ ! -e /etc/systemd/system/provision-lab-web-f5d67ce429e0.service ]] || fail "failed pre-switch candidate unit was retained"
 [[ ! -e /var/lib/provision/environments/lab/releases/provision-example-http-v2-f5d67ce429e0 ]] || fail "failed pre-switch candidate release was retained"
-assert_stable_revision provision-example-http-v1 pre-switch
 write_status pre-switch "$state" final
 journal_assert_latest "$work_dir/pre-switch/final-status.json" op-04 outcome failed
+assert_host_state pre-switch provision-example-http-v1 - \
+  provision-example-http-v1-bac304a88517
 
 echo "[3/6] Endpoint switch failure and explicit recovery"
 preview_and_approve switch-failure "$state"
@@ -260,9 +305,11 @@ assert_stable_revision provision-example-http-v1 switch-failure-before-resume
 "$provision" deployment resume --plan "$plan_id" --state "$state" --signing-key "$signing_key" >"$work_dir/switch-failure/op-05-resumed.json"
 json_assert "$work_dir/switch-failure/op-05-resumed.json" outcome '"succeeded"'
 execute_success switch-failure "$state" op-06
-assert_stable_revision provision-example-http-v2 switch-failure
 write_status switch-failure "$state" final
 journal_assert_resume "$work_dir/switch-failure/final-status.json" op-05
+assert_host_state switch-failure provision-example-http-v2 provision-example-http-v1 \
+  provision-example-http-v1-bac304a88517 \
+  provision-example-http-v2-f5d67ce429e0
 
 echo "[4/6] post-switch failure and bounded rollback"
 preview_and_approve post-switch "$state"
@@ -270,9 +317,12 @@ for operation in op-01 op-02 op-03 op-04 op-05; do execute_success post-switch "
 execute_failure post-switch "$state" op-06 op-06-rolled-back 'previous Generation was restored'
 assert_contains "$work_dir/post-switch/op-06-rolled-back.txt" '"status": "rolled-back"'
 assert_contains "$work_dir/post-switch/op-06-rolled-back.txt" '"rollbackSucceeded": true'
-assert_stable_revision provision-example-http-v2 post-switch
 write_status post-switch "$state" final
 journal_assert_latest "$work_dir/post-switch/final-status.json" op-06 outcome failed
+assert_host_state post-switch provision-example-http-v2 provision-example-http-v0-3-0-fail-stable \
+  provision-example-http-v0-3-0-fail-stable-b6f188a9b2f5 \
+  provision-example-http-v1-bac304a88517 \
+  provision-example-http-v2-f5d67ce429e0
 
 echo "[5/6] process interruption after traffic switch"
 preview_and_approve interruption "$state"
@@ -291,56 +341,35 @@ PATH="$fault_bin:$PATH" PROVISION_FAULT_MARKER="$replay_marker" "$provision" dep
 [[ ! -e "$replay_marker" ]] || fail "resume replayed an already-completed Endpoint switch"
 json_assert "$work_dir/interruption/op-05-resumed.json" outcome '"succeeded"'
 execute_success interruption "$state" op-06
-assert_stable_revision provision-example-http-v3 interruption
 write_status interruption "$state" final
 journal_assert_resume "$work_dir/interruption/final-status.json" op-05
-
-echo "[6/6] stale executor attempt"
-stale_state="$work_dir/stale/state.db"
-preview_and_approve stale "$stale_state"
-for operation in op-01 op-02 op-03; do execute_success stale "$stale_state" "$operation"; done
-execute_failure stale "$stale_state" op-04 op-04-stale 'fencing token is stale'
-assert_contains "$work_dir/stale/op-04-stale.txt" 'outcome recorded as uncertain'
-assert_stable_revision provision-example-http-v3 stale
-write_status stale "$stale_state" final
-journal_assert_latest "$work_dir/stale/final-status.json" op-04 outcome uncertain
-
-"$provision" host bootstrap check --local --environment lab --operator "$operator" >"$work_dir/final-host.json"
-json_assert "$work_dir/final-host.json" ready true
-json_assert "$work_dir/final-host.json" deployment.active.revision '"provision-example-http-v3"'
-json_assert "$work_dir/final-host.json" deployment.previous.revision '"provision-example-http-v2"'
-assert_no_gimme
-systemctl is-active --quiet caddy || fail "Caddy was not restored to active state"
-
-expected_units="$work_dir/expected-units.txt"
-actual_units="$work_dir/actual-units.txt"
-printf '%s\n' \
-  provision-lab-web-4e775436b605.service \
-  provision-lab-web-b6f188a9b2f5.service \
-  provision-lab-web-bac304a88517.service \
-  provision-lab-web-f5d67ce429e0.service | sort >"$expected_units"
-find /etc/systemd/system -maxdepth 1 -type f -name 'provision-lab-web-*.service' -printf '%f\n' | sort >"$actual_units"
-cmp -s "$expected_units" "$actual_units" || fail "unexpected Provision systemd unit set"
-
-expected_releases="$work_dir/expected-releases.txt"
-actual_releases="$work_dir/actual-releases.txt"
-printf '%s\n' \
+assert_host_state interruption provision-example-http-v3 provision-example-http-v2 \
   provision-example-http-v0-3-0-fail-stable-b6f188a9b2f5 \
   provision-example-http-v1-bac304a88517 \
   provision-example-http-v2-f5d67ce429e0 \
-  provision-example-http-v3-4e775436b605 | sort >"$expected_releases"
-find /var/lib/provision/environments/lab/releases -mindepth 1 -maxdepth 1 -type d -printf '%f\n' | sort >"$actual_releases"
-cmp -s "$expected_releases" "$actual_releases" || fail "unexpected Provision release set"
+  provision-example-http-v3-4e775436b605
 
-cat >"$work_dir/support-observation.txt" <<EOF
-Provision version: $provision_version
-Provision binary SHA-256: $(sha256sum "$provision" | cut -d ' ' -f1)
-Host: $actual_host
-Kernel: $(uname -sr)
-Architecture: $(uname -m)
-Matrix: healthy, pre-switch failure, switch failure, post-switch rollback, process interruption, stale executor
-Result: passed
-EOF
+echo "[6/6] stale executor attempt"
+plan_id="$stale_plan_id"
+for operation in op-01 op-02 op-03 op-04; do execute_success stale "$stale_state" "$operation"; done
+execute_failure stale "$stale_state" op-05 op-05-stale 'fencing token is stale'
+assert_contains "$work_dir/stale/op-05-stale.txt" 'outcome recorded as uncertain'
+write_status stale "$stale_state" final
+journal_assert_latest "$work_dir/stale/final-status.json" op-05 outcome uncertain
+assert_host_state stale provision-example-http-v3 provision-example-http-v2 \
+  provision-example-http-v0-3-0-fail-stable-b6f188a9b2f5 \
+  provision-example-http-v1-bac304a88517 \
+  provision-example-http-v2-f5d67ce429e0 \
+  provision-example-http-v3-4e775436b605
+
+printf '%s\n' \
+  "Provision version: $provision_version" \
+  "Provision binary SHA-256: $(sha256sum "$provision" | cut -d ' ' -f1)" \
+  "Host: $actual_host" \
+  "Kernel: $(uname -sr)" \
+  "Architecture: $(uname -m)" \
+  'Matrix: healthy, pre-switch failure, switch failure, post-switch rollback, process interruption, stale executor' \
+  'Result: passed' >"$work_dir/support-observation.txt"
 
 echo "direct-local failure matrix passed"
 echo "evidence: $work_dir"

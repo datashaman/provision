@@ -61,6 +61,8 @@ The product should let a user describe:
 - [Disposable host bootstrap](docs/host-bootstrap.md)
 - [Plan approval and status](docs/plan-approval.md)
 - [Authorized release preparation](docs/release-preparation.md)
+- [Direct-local failure matrix](docs/direct-local-failure-matrix.md)
+- [Test-backed support matrix](docs/SUPPORT_MATRIX.md)
 - [Decision records](docs/adr/)
 - [Exploratory material](docs/explorations/README.md)
 

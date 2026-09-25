@@ -1,0 +1,41 @@
+# Direct-local failure matrix
+
+The direct-local acceptance harness exercises the current HTTP host Deployment on an already bootstrapped disposable Linux machine. It drives the same `provision` binary and restricted host executor used by a normal Deployment; the faults are introduced only at declared operation boundaries.
+
+The harness is destructive to Provision-owned resources for its Environment. Run it only on a freshly reset and bootstrapped host whose hostname you explicitly confirm. It refuses a host with an existing stable Endpoint, Provision application units, Provision release directories, or Gimme-owned resources.
+
+## Run it
+
+Copy a Linux `provision` binary, the repository checkout, and the matching authority private key to the host. Then, as the bootstrapped non-root operator, run:
+
+```sh
+./scripts/test-direct-local-host.sh \
+  --provision ./provision \
+  --signing-key ./host-authority.key \
+  --work-dir /tmp/provision-direct-local-evidence \
+  --provision-version GIT_COMMIT_OR_RELEASE \
+  --confirm-disposable-host "$(hostname)"
+```
+
+The work directory must not exist before the run. The script obtains one `sudo` credential for its controlled Caddy outage and otherwise reaches privileged host mutation only through the restricted executor.
+
+## Scenarios
+
+| Scenario | Injected boundary | Required result |
+| --- | --- | --- |
+| Healthy rollout | none | Candidate becomes active and healthy through the stable Endpoint. |
+| Pre-switch failure | candidate verification | Failed candidate is removed; the stable Endpoint and active Generation do not change. |
+| Endpoint switch failure | Caddy unavailable during `switchEndpoint` | Outcome is uncertain, Caddy is restored, and explicit resume completes the switch. |
+| Post-switch failure | stable-only health failure | Exact retained previous Generation is verified and restored; outcome remains failed with proved rollback. |
+| Process interruption | CLI killed after Caddy switched but before the result was committed | Journal retains intent; resume observes the completed switch and does not replay it. |
+| Stale executor | separately authorized old Plan attempts a switch after the main lineage advanced the host fence | Executor rejects the stale fencing token; the copied lineage records an uncertain outcome and stable traffic does not move. |
+
+The shell's `Killed` diagnostic in the interruption scenario is expected evidence of the injected process termination. It is not a failed assertion.
+
+Every scenario checks the stable revision and the latest journal state. The final checks also require the expected active and previous identities, the exact Provision-owned unit and release sets, active Caddy, and the continued absence of `/srv/gimme` and `gimme-*` units.
+
+## Evidence
+
+On success, the harness prints `direct-local failure matrix passed` and leaves all JSON, command output, expected/actual host inventories, and `support-observation.txt` in the work directory. Preserve that directory until the summarized evidence and [support matrix](SUPPORT_MATRIX.md) have been updated.
+
+The harness deliberately does not reset, bootstrap, or clean the machine. Those lifecycle boundaries remain explicit operator actions.

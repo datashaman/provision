@@ -6,9 +6,9 @@ This matrix records combinations exercised end to end. It is evidence of the sta
 
 | Provision build | Host OS | Architecture | systemd | Caddy | Result |
 | --- | --- | --- | --- | --- | --- |
-| commit `00f8b0c`, binary `sha256:82eb365b4033980eaa780e08a8a57eb746bcc69bcbbaed361e06af4e4c8b1d5a` | Ubuntu Server 26.04, kernel `7.0.0-34-generic` | `x86_64` | `259 (259.5-0ubuntu3.4)` | `2.6.2` | Healthy rollout and all five failure classes observed on `base`; see the [2026-09-25 evidence](evidence/2026-09-25-base-host-direct-local-matrix.md). |
+| commit `b4ee92789c242056b5fbe9a51ab42b8c5d02bc36`, binary `sha256:d4baa0bf57f3620ae1e473a748391eb55700679331267762087ad1e3f2c78229` | Ubuntu Server 26.04, kernel `7.0.0-34-generic` | `x86_64` | `259 (259.5-0ubuntu3.4)` | `2.6.2` | Healthy rollout and all five failure classes passed in one repeatable run on `base`; see the [2026-09-25 evidence](evidence/2026-09-25-base-host-direct-local-matrix.md). |
 
-The matching host executor digest was `sha256:1fdf17dbecb277e8e1e6601f6eb3807a04505422843dbe4654b1e0a1f1e6580b`.
+The matching host executor digest was `sha256:c532f3b78d291c400761b187c1fe8c14e84f1427b9d59498d71d1f73e6f0b21e`. The harness emitted these values with `result: passed` in its structured support observation.
 
 ## Guarantees exercised
 

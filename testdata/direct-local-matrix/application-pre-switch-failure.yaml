@@ -1,0 +1,13 @@
+schemaVersion: provision.dev/v1alpha1
+kind: Application
+name: provision-example-http
+components:
+  web:
+    role: http
+    health:
+      liveness:
+        path: /live
+      readiness:
+        path: /ready
+      candidateVerification:
+        path: /deliberate-direct-local-failure

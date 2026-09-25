@@ -1,0 +1,8 @@
+schemaVersion: provision.dev/v1alpha1
+kind: Revision
+name: provision-example-http-v2
+application: provision-example-http
+artifacts:
+  web:
+    source: https://github.com/datashaman/provision-example-http/releases/download/v0.2.0/provision-example-http-linux-amd64.tar.gz
+    digest: sha256:f5d67ce429e0eedfd6d2a73be9b775b9a05025853d13c63a004164ce89bc9995

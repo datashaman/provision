@@ -13,6 +13,7 @@ import (
 	"provision/internal/config"
 	"provision/internal/drain"
 	"provision/internal/host"
+	hostasync "provision/internal/implementation/hostasync"
 	"provision/internal/rollbackwindow"
 )
 
@@ -371,12 +372,6 @@ func Build(compiled config.Compiled, observation host.BootstrapStatus) (Preview,
 	return preview, nil
 }
 
-const (
-	rabbitMQQualificationDigest = "sha256:af41714b1aa2270ba6cd151bd24876ac117218e401e1e87515451a7081ac4c6d"
-	rabbitMQImageIndex          = "sha256:d0bffe70e755f348625415f32b0a090662e5f06b3ba3f82a4c7aaa18621b1279"
-	rabbitMQImageManifest       = "sha256:34fc91a9de04d612a340507b8e7e19c0ee1ec9839e09dc5fc98f54991633ce91"
-)
-
 func buildAsync(compiled config.Compiled, observation host.BootstrapStatus) (Preview, error) {
 	target, err := compiled.PlanningTarget()
 	if err != nil {
@@ -385,25 +380,16 @@ func buildAsync(compiled config.Compiled, observation host.BootstrapStatus) (Pre
 	if observation.Environment != compiled.Environment.Name || observation.Operator != target.Target.User {
 		return Preview{}, errors.New("host observation does not identify the configured Environment and operator")
 	}
+	evaluation := hostasync.Evaluate(observation, target)
 	evidence := CapabilityEvidence{
-		Contract:     "host-rabbitmq-systemd-async/v1alpha1",
-		RequiredMode: "required",
-		Guarantees: []string{
-			"digest-pinned-rabbitmq-quorum-queue", "publisher-confirmed-at-least-once-delivery",
-			"manual-consumer-acknowledgement", "gated-worker-candidate", "bounded-in-flight-worker-drain",
-			"generation-specific-task", "stable-schedule-timer", "fenced-schedule-handoff",
-			"previous-worker-generation-retention",
-		},
-		SupportEvidence: []string{
-			"restricted-bootstrap-ready", "tested-host-version-match", "qualified-rabbitmq-packaging",
-			"rootless-quadlet-ready", "systemd-credentials-ready", "worker-admission-control-proven",
-			"pinned-schedule-applet", "versioned-occurrence-ledger", "journald-active",
-			"restricted-executor-identity-matched",
-		},
-		Observed: observation,
-		Decision: "required-blue-green-supported",
+		Contract:        evaluation.Contract,
+		RequiredMode:    "required",
+		Guarantees:      evaluation.Guarantees,
+		SupportEvidence: evaluation.SupportEvidence,
+		Observed:        observation,
+		Decision:        "required-blue-green-supported",
 	}
-	reasons := asyncCapabilityIssues(observation, target)
+	reasons := evaluation.Reasons
 	preview := Preview{SchemaVersion: PreviewSchemaVersion, Executable: len(reasons) == 0, Capability: evidence, Reasons: reasons}
 	if len(reasons) != 0 {
 		preview.Capability.Decision = "unsupported"
@@ -442,88 +428,6 @@ func buildAsync(compiled config.Compiled, observation host.BootstrapStatus) (Pre
 	}
 	preview.Plan = &plan
 	return preview, nil
-}
-
-func asyncCapabilityIssues(observation host.BootstrapStatus, target config.TargetSelection) []string {
-	issues := append([]string{}, observation.Findings...)
-	if observation.SchemaVersion != "provision.dev/host-inspection/v1alpha1" {
-		issues = append(issues, "host inspection schema does not provide asynchronous capability evidence")
-	}
-	if !observation.Ready {
-		issues = append(issues, "restricted Host Target bootstrap is not ready")
-	}
-	if observation.OS != "ubuntu" || observation.OSVersion != "26.04" {
-		issues = append(issues, fmt.Sprintf("Ubuntu version %s has no tested asynchronous evidence", observedOrUnknown(observation.OSVersion)))
-	}
-	if observation.Architecture != "x86_64" {
-		issues = append(issues, fmt.Sprintf("architecture %s has no tested asynchronous evidence", observedOrUnknown(observation.Architecture)))
-	}
-	if !strings.HasPrefix(observation.SystemdVersion, "systemd 259") || !observation.CgroupV2 || !observation.JournaldActive || !observation.GenerationStorageReady {
-		issues = append(issues, "Host systemd, cgroup v2, journald, or generation storage evidence is incomplete")
-	}
-	if observation.ExecutorDigest == "" || observation.AuthorityKeyID == "" {
-		issues = append(issues, "restricted host executor or authority identity is not observed")
-	}
-	if !target.Target.Local && observation.SSHHostKeyFingerprint == "" {
-		issues = append(issues, "SSH host key identity is not observed")
-	}
-	if observation.Async == nil || observation.Async.SchemaVersion != "provision.dev/host-async-inspection/v1alpha1" {
-		return unique(append(issues, "Host observation has no supported asynchronous capability evidence"))
-	}
-	issues = append(issues, observation.Async.Findings...)
-	observedDeployment := observation.Async.Deployment
-	completeDeployment := observation.Async.ObservationComplete || observedDeployment.Queue != nil && observedDeployment.ActiveTask != nil && observedDeployment.Schedule != nil
-	if !completeDeployment {
-		issues = append(issues, "asynchronous deployment observation is incomplete")
-	}
-	capability := observation.Async.Capabilities
-	if capability.PodmanVersion != "5.7.0+ds2-3build1" || !capability.Quadlet || !capability.RootlessEnvironmentAccount {
-		issues = append(issues, "qualified rootless Podman and Quadlet capability is not observed")
-	}
-	if !capability.SystemdCredentials {
-		issues = append(issues, "encrypted systemd credential delivery is not observed")
-	}
-	detailedPackaging := capability.SubordinateIDs && capability.LingeringUserManager && capability.QuadletDefinitionRootOwned && capability.DataPathEnvironmentOwned && capability.EncryptedCredentialObserved
-	if !detailedPackaging && observedDeployment.Queue == nil {
-		issues = append(issues, "rootless Queue account, subordinate IDs, lingering manager, owned paths, or encrypted credential evidence is incomplete")
-	}
-	if !capability.WorkerAdmissionGate {
-		issues = append(issues, "required Worker blue-green is unsupported without proven admission control")
-	}
-	if capability.RabbitMQQualificationDigest != rabbitMQQualificationDigest || capability.RabbitMQVersion != "4.3.6" || capability.RabbitMQImageIndex != rabbitMQImageIndex || capability.RabbitMQImageManifest != rabbitMQImageManifest {
-		issues = append(issues, "RabbitMQ product identity does not match the qualified packaging evidence")
-	}
-	expectedService := "provision-" + observation.Environment + "-rabbitmq"
-	if capability.RabbitMQServiceUnit != expectedService+".service" || capability.RabbitMQContainer != expectedService || capability.RabbitMQAccount != "provision-"+observation.Environment || capability.RabbitMQDataPath != "/var/lib/provision/environments/"+observation.Environment+"/services/rabbitmq/data" || capability.RabbitMQQuadletPath == "" {
-		issues = append(issues, "RabbitMQ service identity or owned paths do not match the Environment")
-	}
-	if !strings.HasPrefix(capability.ScheduleAppletDigest, "sha256:") || len(capability.ScheduleAppletDigest) != 71 {
-		issues = append(issues, "pinned Schedule runtime applet identity is not observed")
-	}
-	if capability.ScheduleLedgerSchema != "provision.dev/schedule-ledger/v1alpha1" {
-		issues = append(issues, "Schedule occurrence-ledger schema is unsupported")
-	}
-	if queue := observation.Async.Deployment.Queue; queue != nil && queue.Exists {
-		if !queue.Ready || queue.QueueType != "quorum" || queue.Members != 1 || !queue.Durable || queue.ImageManifest != rabbitMQImageManifest || queue.ServiceUnit != capability.RabbitMQServiceUnit || queue.Container != capability.RabbitMQContainer || queue.Account != capability.RabbitMQAccount || queue.DataPath != capability.RabbitMQDataPath || queue.QuadletPath != capability.RabbitMQQuadletPath {
-			issues = append(issues, "observed Queue does not match the qualified single-member quorum generation")
-		}
-	}
-	if worker := observation.Async.Deployment.ActiveWorker; worker != nil {
-		if worker.ID == "" || worker.ArtifactDigest == "" || !worker.UnitActive || !worker.QueueConnected || worker.Gate != "open" || worker.InFlight < 0 {
-			issues = append(issues, "active Worker generation does not match observed deployment state")
-		}
-	}
-	if task := observation.Async.Deployment.ActiveTask; task != nil {
-		if task.ID == "" || task.Revision == "" || !strings.HasPrefix(task.ArtifactDigest, "sha256:") || task.SystemdUnit == "" {
-			issues = append(issues, "active Task generation does not match observed deployment state")
-		}
-	}
-	if schedule := observation.Async.Deployment.Schedule; schedule != nil {
-		if schedule.TimerUnit == "" || schedule.TaskGenerationID == "" || !strings.HasPrefix(schedule.AppletDigest, "sha256:") || schedule.LedgerSchema != "provision.dev/schedule-ledger/v1alpha1" || !strings.HasPrefix(schedule.LedgerDigest, "sha256:") || schedule.FencingToken < 1 || observation.Async.Deployment.ActiveTask == nil || schedule.TaskGenerationID != observation.Async.Deployment.ActiveTask.ID {
-			issues = append(issues, "active Schedule and Task generation do not match observed fenced runtime state")
-		}
-	}
-	return unique(issues)
 }
 
 func asyncRoleNames(compiled config.Compiled) map[string]string {
@@ -597,7 +501,7 @@ func asyncOperations(compiled config.Compiled, observation host.BootstrapStatus,
 		previousSchedule = scheduleInput.Previous.TaskGenerationID
 	}
 	operations := []Operation{
-		{ID: "op-01", Kind: PrepareQueue, DependsOn: []string{}, Input: OperationInput{Async: &AsyncOperationInput{Queue: queueInput}}, Preconditions: conditions("rabbitmq-qualification", rabbitMQQualificationDigest, "matched"), ExpectedObservations: conditions("queue-generation", queueInput.LogicalID, "ready-single-member-quorum"), Recovery: RetainQueue},
+		{ID: "op-01", Kind: PrepareQueue, DependsOn: []string{}, Input: OperationInput{Async: &AsyncOperationInput{Queue: queueInput}}, Preconditions: conditions("rabbitmq-qualification", hostasync.QualificationDigest, "matched"), ExpectedObservations: conditions("queue-generation", queueInput.LogicalID, "ready-single-member-quorum"), Recovery: RetainQueue},
 		{ID: "op-02", Kind: StageArtifact, DependsOn: []string{"op-01"}, Input: OperationInput{Async: &AsyncOperationInput{Artifact: workerArtifactInput}}, Preconditions: conditions("artifact-digest", workerArtifact.Source, workerArtifact.Digest), ExpectedObservations: conditions("artifact-cache", workerArtifact.Digest, "verified"), Recovery: DiscardAsyncArtifact},
 		{ID: "op-03", Kind: StageArtifact, DependsOn: []string{"op-01"}, Input: OperationInput{Async: &AsyncOperationInput{Artifact: taskArtifactInput}}, Preconditions: conditions("artifact-digest", taskArtifact.Source, taskArtifact.Digest), ExpectedObservations: conditions("artifact-cache", taskArtifact.Digest, "verified"), Recovery: DiscardAsyncArtifact},
 		{ID: "op-04", Kind: InstallTaskGeneration, DependsOn: []string{"op-03"}, Input: OperationInput{Async: &AsyncOperationInput{Task: taskInput}}, Preconditions: conditions("artifact-cache", taskArtifact.Digest, "verified"), ExpectedObservations: conditions("task-generation", taskGenerationID, "installed"), Recovery: RemoveTaskCandidate},

@@ -130,8 +130,10 @@ PY
 assert_retention_result() {
   local path="$1" expected_active_revision="$2" expected_previous_revision="$3"
   python3 - "$path" "$expected_active_revision" "$expected_previous_revision" <<'PY'
-from datetime import datetime, timedelta
+import calendar
+from datetime import datetime
 import json
+import re
 import sys
 
 path, expected_active_revision, expected_previous_revision = sys.argv[1:]
@@ -160,9 +162,17 @@ if observation["active"]["revision"] != expected_active_revision:
     raise SystemExit(f"{path}: retained active revision differs")
 if observation["previous"]["revision"] != expected_previous_revision:
     raise SystemExit(f"{path}: retained previous revision differs")
-switched_at = datetime.fromisoformat(observation["switchedAt"].replace("Z", "+00:00"))
-retain_until = datetime.fromisoformat(observation["retainUntil"].replace("Z", "+00:00"))
-if retain_until != switched_at + timedelta(minutes=30):
+def rfc3339_nanoseconds(value):
+    match = re.fullmatch(r"(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})(?:\.(\d{1,9}))?(?:Z|\+00:00)", value)
+    if not match:
+        raise SystemExit(f"{path}: invalid RFC3339 timestamp {value!r}")
+    seconds = calendar.timegm(datetime.strptime(match.group(1), "%Y-%m-%dT%H:%M:%S").timetuple())
+    fraction = int((match.group(2) or "").ljust(9, "0"))
+    return seconds * 1_000_000_000 + fraction
+
+switched_at = rfc3339_nanoseconds(observation["switchedAt"])
+retain_until = rfc3339_nanoseconds(observation["retainUntil"])
+if retain_until != switched_at + 30 * 60 * 1_000_000_000:
     raise SystemExit(f"{path}: retention deadline is not exactly switch time plus 30 minutes")
 if not observation.get("operationDigest", "").startswith("sha256:"):
     raise SystemExit(f"{path}: retention operation digest is absent")

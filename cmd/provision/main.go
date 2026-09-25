@@ -7,6 +7,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"sort"
 	"strings"
 	"time"
 
@@ -335,7 +336,7 @@ func buildCurrentPlan(ctx context.Context, path string) (planner.Preview, error)
 	if err != nil {
 		return planner.Preview{}, err
 	}
-	selection, err := compiled.HostSelection()
+	selection, err := compiled.PlanningTarget()
 	if err != nil {
 		return planner.Preview{}, err
 	}
@@ -408,7 +409,8 @@ func runConfigValidate(args []string) error {
 	flags := flag.NewFlagSet("config validate", flag.ContinueOnError)
 	flags.SetOutput(os.Stderr)
 	path := flags.String("file", "", "root configuration document")
-	artifactFile := flags.String("artifact-file", "", "verify local artifact bytes against the Revision digest")
+	var artifactFiles repeatedFlag
+	flags.Var(&artifactFiles, "artifact-file", "verify local Artifact bytes; use COMPONENT=PATH when the Revision has multiple Artifacts")
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
@@ -419,15 +421,62 @@ func runConfigValidate(args []string) error {
 	if err != nil {
 		return err
 	}
-	if *artifactFile != "" {
-		if err := compiled.VerifyArtifactFile(*artifactFile); err != nil {
+	verifiedArtifacts := []string{}
+	if len(artifactFiles) == 1 && !strings.Contains(artifactFiles[0], "=") {
+		if err := compiled.VerifyArtifactFile(artifactFiles[0]); err != nil {
 			return err
 		}
+		for name := range compiled.Revision.Artifacts {
+			verifiedArtifacts = append(verifiedArtifacts, name)
+		}
+	} else if len(artifactFiles) != 0 {
+		paths := make(map[string]string, len(artifactFiles))
+		for _, value := range artifactFiles {
+			name, file, ok := strings.Cut(value, "=")
+			if !ok || !configName(name) || file == "" {
+				return errors.New("--artifact-file must use COMPONENT=PATH for a multi-Artifact Revision")
+			}
+			if _, duplicate := paths[name]; duplicate {
+				return fmt.Errorf("duplicate --artifact-file for component %q", name)
+			}
+			paths[name] = file
+		}
+		if err := compiled.VerifyArtifactFiles(paths); err != nil {
+			return err
+		}
+		for name := range paths {
+			verifiedArtifacts = append(verifiedArtifacts, name)
+		}
 	}
+	sort.Strings(verifiedArtifacts)
 	output := json.NewEncoder(os.Stdout)
 	output.SetIndent("", "  ")
 	return output.Encode(struct {
 		config.Compiled
-		ArtifactVerified bool `json:"artifactVerified"`
-	}{compiled, *artifactFile != ""})
+		ArtifactVerified  bool     `json:"artifactVerified"`
+		VerifiedArtifacts []string `json:"verifiedArtifacts"`
+	}{compiled, len(artifactFiles) != 0, verifiedArtifacts})
+}
+
+type repeatedFlag []string
+
+func (f *repeatedFlag) String() string { return strings.Join(*f, ",") }
+
+func (f *repeatedFlag) Set(value string) error {
+	*f = append(*f, value)
+	return nil
+}
+
+func configName(value string) bool {
+	if value == "" || value[0] < 'a' || value[0] > 'z' {
+		return false
+	}
+	for _, character := range value {
+		letter := character >= 'a' && character <= 'z'
+		digit := character >= '0' && character <= '9'
+		if !letter && !digit && character != '-' {
+			return false
+		}
+	}
+	return true
 }

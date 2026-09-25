@@ -18,11 +18,15 @@ The current goal is to turn the agreed model into executable acceptance cases an
 
 The current Go increment validates a strict single-HTTP configuration, verifies supplied Artifact bytes against the Revision digest, inspects Host Targets, previews a deterministic Plan, persists exact-Plan approvals in a local SQLite State Backend, and can execute the Plan's first eight typed operations on a direct-local or remote Host Target. Those operations stage the approved Artifact, install an immutable candidate Generation, start it under a separate hardened systemd unit on a loopback-only port, evaluate the complete Health Contract, atomically switch the stable Caddy Endpoint only after the host confirms that exact verification, verify the application again through that stable Endpoint, complete the Environment's declared bounded ordinary-HTTP drain, and record the exact stopped previous Generation as restartable through its declared rollback-window deadline. An interrupted or uncertain operation can be resumed from its durable journal entry and fresh host evidence under a new fencing token; ambiguous state pauses with an actionable recovery instruction instead of replaying blindly. A failed post-switch check automatically restores a directly verified retained previous Generation; if recovery cannot be proved, Provision records an explicit uncertain outcome for operator action. Rollback-window recording never deletes a unit definition, Generation directory or manifest, or Artifact; expiry and cleanup remain a separate unimplemented decision. This HTTP drain does not claim WebSocket or other long-lived-stream draining. Its non-Laravel example workload lives separately in [`datashaman/provision-example-http`](https://github.com/datashaman/provision-example-http). This repository also includes a separate, privileged disposable-host bootstrap path.
 
+The compiler and read-only Planner also support the first asynchronous Host graph: one managed RabbitMQ Queue, one gated systemd Worker, one systemd Task, and one Schedule. The Plan binds the accepted RabbitMQ packaging evidence, both real released example Artifact digests, Worker admission and drain policy, Schedule timing policy, pinned runtime identity, observed Queue and generation state, and the complete ordered handoff and recovery consequences. These asynchronous operations are preview contracts only; their Host executor implementations arrive in the subsequent tracer issues. See [Asynchronous Host Plan preview](docs/asynchronous-plan-preview.md).
+
 ```sh
 go run ./cmd/provision config validate --file examples/host-http/root.yaml
 go run ./cmd/provision host inspect --address base.local --user marlinf
 mkdir -m 0700 .provision
 go run ./cmd/provision plan preview --file examples/host-http/root.yaml --state .provision/state.db
+go run ./cmd/provision config validate --file examples/host-async/root.yaml
+go run ./cmd/provision plan preview --file examples/host-async/root.yaml
 ```
 
 Preview output contains the Plan digest needed by the approval flow. Supplying `--state` persists the exact preview as the Environment's current, initially unapproved Plan. See [Plan approval and status](docs/plan-approval.md) for the durable SQLite workflow and its local OS trust boundary.
@@ -61,6 +65,7 @@ The product should let a user describe:
 - [Disposable host bootstrap](docs/host-bootstrap.md)
 - [Plan approval and status](docs/plan-approval.md)
 - [Authorized release preparation](docs/release-preparation.md)
+- [Asynchronous Host Plan preview](docs/asynchronous-plan-preview.md)
 - [Direct-local failure matrix](docs/direct-local-failure-matrix.md)
 - [Remote SSH failure matrix](docs/remote-ssh-failure-matrix.md)
 - [Test-backed support matrix](docs/SUPPORT_MATRIX.md)

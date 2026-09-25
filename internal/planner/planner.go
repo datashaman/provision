@@ -11,8 +11,9 @@ import (
 	"strings"
 
 	"provision/internal/config"
-	"provision/internal/drain"
 	"provision/internal/host"
+	hostasync "provision/internal/implementation/hostasync"
+	"provision/internal/planmodel"
 	"provision/internal/rollbackwindow"
 )
 
@@ -67,116 +68,79 @@ type ApprovalRequirement struct {
 	Reason     string `json:"reason"`
 }
 
-type OperationKind string
+type OperationKind = planmodel.OperationKind
 
 const (
-	StageArtifact     OperationKind = "stageArtifact"
-	InstallGeneration OperationKind = "installGeneration"
-	StartCandidate    OperationKind = "startCandidate"
-	VerifyCandidate   OperationKind = "verifyCandidate"
-	SwitchEndpoint    OperationKind = "switchEndpoint"
-	VerifyActive      OperationKind = "verifyActive"
-	DrainPrevious     OperationKind = "drainPrevious"
-	RetainPrevious    OperationKind = "retainPrevious"
+	StageArtifact           = planmodel.StageArtifact
+	InstallGeneration       = planmodel.InstallGeneration
+	StartCandidate          = planmodel.StartCandidate
+	VerifyCandidate         = planmodel.VerifyCandidate
+	SwitchEndpoint          = planmodel.SwitchEndpoint
+	VerifyActive            = planmodel.VerifyActive
+	DrainPrevious           = planmodel.DrainPrevious
+	RetainPrevious          = planmodel.RetainPrevious
+	PrepareQueue            = planmodel.PrepareQueue
+	InstallTaskGeneration   = planmodel.InstallTaskGeneration
+	VerifyTaskGeneration    = planmodel.VerifyTaskGeneration
+	InstallWorkerGeneration = planmodel.InstallWorkerGeneration
+	StartWorkerCandidate    = planmodel.StartWorkerCandidate
+	VerifyWorkerCandidate   = planmodel.VerifyWorkerCandidate
+	FenceWorkerIntake       = planmodel.FenceWorkerIntake
+	DrainWorkerPrevious     = planmodel.DrainWorkerPrevious
+	ActivateWorkerIntake    = planmodel.ActivateWorkerIntake
+	VerifyWorkerActive      = planmodel.VerifyWorkerActive
+	InstallScheduleRuntime  = planmodel.InstallScheduleRuntime
+	HandoffSchedule         = planmodel.HandoffSchedule
+	VerifySchedule          = planmodel.VerifySchedule
+	RetainWorkerPrevious    = planmodel.RetainWorkerPrevious
 )
 
-type RecoveryMode string
+type RecoveryMode = planmodel.RecoveryMode
 
 const (
-	DiscardStaged          RecoveryMode = "discard-staged"
-	RemoveCandidate        RecoveryMode = "remove-candidate"
-	StopCandidate          RecoveryMode = "stop-candidate"
-	LeaveEndpointUnchanged RecoveryMode = "leave-endpoint-unchanged"
-	RestorePreviousRoute   RecoveryMode = "restore-previous-route"
-	RetainBothGenerations  RecoveryMode = "retain-both-generations"
+	DiscardStaged                = planmodel.DiscardStaged
+	RemoveCandidate              = planmodel.RemoveCandidate
+	StopCandidate                = planmodel.StopCandidate
+	LeaveEndpointUnchanged       = planmodel.LeaveEndpointUnchanged
+	RestorePreviousRoute         = planmodel.RestorePreviousRoute
+	RetainBothGenerations        = planmodel.RetainBothGenerations
+	RetainQueue                  = planmodel.RetainQueue
+	DiscardAsyncArtifact         = planmodel.DiscardAsyncArtifact
+	RemoveTaskCandidate          = planmodel.RemoveTaskCandidate
+	RemoveWorkerCandidate        = planmodel.RemoveWorkerCandidate
+	KeepCandidateGated           = planmodel.KeepCandidateGated
+	RestorePreviousWorkerIntake  = planmodel.RestorePreviousWorkerIntake
+	ReleaseInflight              = planmodel.ReleaseInflight
+	RestorePreviousScheduleFence = planmodel.RestorePreviousScheduleFence
+	RetainBothWorkerGenerations  = planmodel.RetainBothWorkerGenerations
 )
 
-type Operation struct {
-	ID                   string           `json:"id"`
-	Kind                 OperationKind    `json:"kind"`
-	DependsOn            []string         `json:"dependsOn"`
-	Input                OperationInput   `json:"input"`
-	Preconditions        []TypedCondition `json:"preconditions"`
-	ExpectedObservations []TypedCondition `json:"expectedObservations"`
-	Recovery             RecoveryMode     `json:"recovery"`
-}
+type Operation = planmodel.Operation
+type TypedCondition = planmodel.TypedCondition
+type OperationInput = planmodel.OperationInput
+type AsyncOperationInput = planmodel.AsyncOperationInput
+type AsyncQueueInput = planmodel.AsyncQueueInput
+type AsyncArtifactInput = planmodel.AsyncArtifactInput
+type AsyncWorkerInput = planmodel.AsyncWorkerInput
+type AsyncTaskInput = planmodel.AsyncTaskInput
+type AsyncScheduleInput = planmodel.AsyncScheduleInput
+type AsyncRuntimeInput = planmodel.AsyncRuntimeInput
 
-type TypedCondition struct {
-	Kind     string `json:"kind"`
-	Subject  string `json:"subject"`
-	Expected string `json:"expected"`
-}
-
-type OperationInput struct {
-	Artifact   *ArtifactInput         `json:"artifact,omitempty"`
-	Generation *GenerationInput       `json:"generation,omitempty"`
-	Systemd    *SystemdInput          `json:"systemd,omitempty"`
-	Health     *HealthInput           `json:"health,omitempty"`
-	Endpoint   *EndpointInput         `json:"endpoint,omitempty"`
-	Previous   *host.GenerationStatus `json:"previous,omitempty"`
-	Drain      *DrainInput            `json:"drain,omitempty"`
-	Retention  *RetentionInput        `json:"retention,omitempty"`
-}
-
-type ArtifactInput struct {
-	Source string `json:"source"`
-	Digest string `json:"digest"`
-}
-
-type GenerationReference struct {
-	ID               string `json:"id"`
-	Revision         string `json:"revision"`
-	ArtifactDigest   string `json:"artifactDigest"`
-	Account          string `json:"account"`
-	ReleaseDirectory string `json:"releaseDirectory"`
-}
-
-type GenerationInput struct {
-	GenerationReference
-}
-
-type SystemdInput struct {
-	GenerationReference
-	Unit string `json:"unit"`
-	Port int    `json:"port"`
-}
-
-type HealthInput struct {
-	GenerationReference
-	Unit                string `json:"unit"`
-	LivenessPath        string `json:"livenessPath"`
-	ReadinessPath       string `json:"readinessPath"`
-	CandidateVerifyPath string `json:"candidateVerificationPath"`
-	Port                int    `json:"port"`
-}
-
-type EndpointInput struct {
-	GenerationReference
-	Unit         string `json:"unit"`
-	RouteID      string `json:"routeId"`
-	ListenPort   int    `json:"listenPort"`
-	Upstream     string `json:"upstream"`
-	UpstreamPort int    `json:"upstreamPort"`
-	DrainPolicy  string `json:"drainPolicy"`
-}
-
-type DrainInput struct {
-	Endpoint    EndpointInput         `json:"endpoint"`
-	Previous    host.GenerationStatus `json:"previous"`
-	Mode        drain.Mode            `json:"mode"`
-	MaxDuration drain.Bound           `json:"maxDuration"`
-}
-
-type RetentionInput struct {
-	Endpoint       EndpointInput         `json:"endpoint"`
-	Previous       host.GenerationStatus `json:"previous"`
-	Policy         rollbackwindow.Rule   `json:"policy"`
-	RollbackWindow rollbackwindow.Window `json:"rollbackWindow"`
-}
+type ArtifactInput = planmodel.ArtifactInput
+type GenerationReference = planmodel.GenerationReference
+type GenerationInput = planmodel.GenerationInput
+type SystemdInput = planmodel.SystemdInput
+type HealthInput = planmodel.HealthInput
+type EndpointInput = planmodel.EndpointInput
+type DrainInput = planmodel.DrainInput
+type RetentionInput = planmodel.RetentionInput
 
 // Build converts validated configuration and a restricted Host Target
 // inspection into canonical preview data. It never changes or persists state.
 func Build(compiled config.Compiled, observation host.BootstrapStatus) (Preview, error) {
+	if compiled.IsAsync() {
+		return buildAsync(compiled, observation)
+	}
 	selection, err := compiled.HostSelection()
 	if err != nil {
 		return Preview{}, err
@@ -260,6 +224,101 @@ func Build(compiled config.Compiled, observation host.BootstrapStatus) (Preview,
 	return preview, nil
 }
 
+func buildAsync(compiled config.Compiled, observation host.BootstrapStatus) (Preview, error) {
+	target, err := compiled.PlanningTarget()
+	if err != nil {
+		return Preview{}, err
+	}
+	if observation.Environment != compiled.Environment.Name || observation.Operator != target.Target.User {
+		return Preview{}, errors.New("host observation does not identify the configured Environment and operator")
+	}
+	evaluation := hostasync.Evaluate(observation, target)
+	evidence := CapabilityEvidence{
+		Contract:        evaluation.Contract,
+		RequiredMode:    "required",
+		Guarantees:      evaluation.Guarantees,
+		SupportEvidence: evaluation.SupportEvidence,
+		Observed:        observation,
+		Decision:        "required-blue-green-supported",
+	}
+	reasons := evaluation.Reasons
+	preview := Preview{SchemaVersion: PreviewSchemaVersion, Executable: len(reasons) == 0, Capability: evidence, Reasons: reasons}
+	if len(reasons) != 0 {
+		preview.Capability.Decision = "unsupported"
+		return preview, nil
+	}
+
+	observationDigest, err := digest(observation)
+	if err != nil {
+		return Preview{}, err
+	}
+	artifactDigests := make(map[string]string, len(compiled.Revision.Artifacts))
+	for name, artifact := range compiled.Revision.Artifacts {
+		artifactDigests[name] = artifact.Digest
+	}
+	adapterPlan := hostasync.Plan(compiled, observation)
+	plan := Plan{
+		SchemaVersion:       SchemaVersion,
+		Application:         compiled.Application.Name,
+		Environment:         compiled.Environment.Name,
+		Revision:            compiled.Revision.Name,
+		ConfigurationDigest: compiled.Digest,
+		ArtifactDigests:     artifactDigests,
+		Target:              Target{Name: target.Name, Kind: target.Target.Kind, Local: target.Target.Local, Address: target.Target.Address, User: target.Target.User},
+		ObservationDigest:   observationDigest,
+		Capability:          evidence,
+		ApprovalRequirements: []ApprovalRequirement{{
+			Capability: "approve", Reason: "environment deployment policy requires approval of this exact Plan",
+		}},
+		SensitiveValueReferences: adapterPlan.SensitiveValueReferences,
+		Operations:               composeAsyncOperations(adapterPlan.Transitions),
+	}
+	plan.ID, err = digest(plan)
+	if err != nil {
+		return Preview{}, err
+	}
+	preview.Plan = &plan
+	return preview, nil
+}
+
+func composeAsyncOperations(transitions hostasync.TransitionSet) []Operation {
+	workerArtifact := withDependencies(transitions.WorkerArtifact, transitions.QueuePreparation.ID)
+	taskArtifact := withDependencies(transitions.TaskArtifact, transitions.QueuePreparation.ID)
+	taskOperations := withExternalDependencies(transitions.Task.Operations, transitions.Task.EntryID, taskArtifact.ID)
+	workerOperations := withExternalDependencies(transitions.Worker.Operations, transitions.Worker.EntryID, workerArtifact.ID, transitions.QueuePreparation.ID)
+	scheduleOperations := withExternalDependencies(transitions.Schedule.Operations, transitions.Schedule.RuntimeID, transitions.Task.ReadyID)
+	scheduleOperations = withExternalDependencies(scheduleOperations, transitions.Schedule.ActivationID, transitions.Worker.ReadyID, transitions.Task.ReadyID)
+
+	operations := []Operation{transitions.QueuePreparation, workerArtifact, taskArtifact}
+	operations = append(operations, taskOperations...)
+	operations = append(operations, workerOperations...)
+	operations = append(operations, scheduleOperations...)
+	if transitions.PreviousWorkerStore != nil {
+		retention := withDependencies(*transitions.PreviousWorkerStore, transitions.Worker.ReadyID, transitions.Schedule.ReadyID)
+		operations = append(operations, retention)
+	}
+	return operations
+}
+
+func withExternalDependencies(operations []Operation, targetID string, dependencies ...string) []Operation {
+	result := append([]Operation(nil), operations...)
+	for index := range result {
+		if result[index].ID == targetID {
+			result[index] = withDependencies(result[index], dependencies...)
+			break
+		}
+	}
+	return result
+}
+
+func withDependencies(operation Operation, dependencies ...string) Operation {
+	for _, dependency := range dependencies {
+		if !slices.Contains(operation.DependsOn, dependency) {
+			operation.DependsOn = append(operation.DependsOn, dependency)
+		}
+	}
+	return operation
+}
 func capabilityIssues(observation host.BootstrapStatus, selection config.HostSelection) []string {
 	issues := append([]string{}, observation.Findings...)
 	if observation.SchemaVersion != "provision.dev/host-inspection/v1alpha1" {

@@ -43,9 +43,92 @@ type BootstrapStatus struct {
 	CaddyConfigDurable     bool                  `json:"caddyConfigDurable,omitempty"`
 	ListeningTCPPorts      []int                 `json:"listeningTcpPorts,omitempty"`
 	Deployment             DeploymentStatus      `json:"deployment,omitempty"`
+	Async                  *AsyncStatus          `json:"async,omitempty"`
 	AllowedOperations      []string              `json:"allowedOperations"`
 	Ready                  bool                  `json:"ready"`
 	Findings               []string              `json:"findings"`
+}
+
+type AsyncStatus struct {
+	SchemaVersion       string                `json:"schemaVersion"`
+	ObservationComplete bool                  `json:"observationComplete"`
+	Findings            []string              `json:"findings"`
+	Capabilities        AsyncCapabilities     `json:"capabilities"`
+	Deployment          AsyncDeploymentStatus `json:"deployment"`
+}
+
+type AsyncCapabilities struct {
+	PodmanVersion               string `json:"podmanVersion"`
+	Quadlet                     bool   `json:"quadlet"`
+	RootlessEnvironmentAccount  bool   `json:"rootlessEnvironmentAccount"`
+	SystemdCredentials          bool   `json:"systemdCredentials"`
+	SubordinateIDs              bool   `json:"subordinateIds"`
+	LingeringUserManager        bool   `json:"lingeringUserManager"`
+	QuadletDefinitionRootOwned  bool   `json:"quadletDefinitionRootOwned"`
+	DataPathEnvironmentOwned    bool   `json:"dataPathEnvironmentOwned"`
+	EncryptedCredentialObserved bool   `json:"encryptedCredentialObserved"`
+	WorkerAdmissionGate         bool   `json:"workerAdmissionGate"`
+	RabbitMQQualificationDigest string `json:"rabbitmqQualificationDigest"`
+	RabbitMQVersion             string `json:"rabbitmqVersion"`
+	RabbitMQImageIndex          string `json:"rabbitmqImageIndex"`
+	RabbitMQImageManifest       string `json:"rabbitmqImageManifest"`
+	RabbitMQServiceUnit         string `json:"rabbitmqServiceUnit"`
+	RabbitMQContainer           string `json:"rabbitmqContainer"`
+	RabbitMQAccount             string `json:"rabbitmqAccount"`
+	RabbitMQDataPath            string `json:"rabbitmqDataPath"`
+	RabbitMQQuadletPath         string `json:"rabbitmqQuadletPath"`
+	ScheduleAppletDigest        string `json:"scheduleAppletDigest"`
+	ScheduleLedgerSchema        string `json:"scheduleLedgerSchema"`
+}
+
+type AsyncDeploymentStatus struct {
+	Queue        *QueueStatus            `json:"queue,omitempty"`
+	ActiveWorker *WorkerGenerationStatus `json:"activeWorker,omitempty"`
+	Previous     *WorkerGenerationStatus `json:"previousWorker,omitempty"`
+	ActiveTask   *TaskGenerationStatus   `json:"activeTask,omitempty"`
+	Schedule     *ScheduleStatus         `json:"schedule,omitempty"`
+}
+
+type QueueStatus struct {
+	ID            string `json:"id"`
+	Exists        bool   `json:"exists"`
+	Ready         bool   `json:"ready"`
+	QueueType     string `json:"queueType"`
+	Members       int    `json:"members"`
+	Durable       bool   `json:"durable"`
+	ImageManifest string `json:"imageManifest"`
+	ServiceUnit   string `json:"serviceUnit"`
+	Container     string `json:"container"`
+	Account       string `json:"account"`
+	DataPath      string `json:"dataPath"`
+	QuadletPath   string `json:"quadletPath"`
+}
+
+type WorkerGenerationStatus struct {
+	ID             string `json:"id"`
+	Revision       string `json:"revision"`
+	ArtifactDigest string `json:"artifactDigest"`
+	SystemdUnit    string `json:"systemdUnit"`
+	Gate           string `json:"gate"`
+	UnitActive     bool   `json:"unitActive"`
+	QueueConnected bool   `json:"queueConnected"`
+	InFlight       int    `json:"inFlight"`
+}
+
+type TaskGenerationStatus struct {
+	ID             string `json:"id"`
+	Revision       string `json:"revision"`
+	ArtifactDigest string `json:"artifactDigest"`
+	SystemdUnit    string `json:"systemdUnit"`
+}
+
+type ScheduleStatus struct {
+	TimerUnit        string `json:"timerUnit"`
+	TaskGenerationID string `json:"taskGenerationId"`
+	AppletDigest     string `json:"appletDigest"`
+	LedgerSchema     string `json:"ledgerSchema"`
+	LedgerDigest     string `json:"ledgerDigest"`
+	FencingToken     int64  `json:"fencingToken"`
 }
 
 type DeploymentStatus struct {

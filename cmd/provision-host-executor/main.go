@@ -232,8 +232,82 @@ func inspect(environment, operator string) host.BootstrapStatus {
 	if data, err := os.ReadFile("/etc/provision/bootstrap/" + environment + ".json"); err != nil || json.Unmarshal(data, &record) != nil || record.SchemaVersion != "provision.dev/bootstrap/v2" || record.Environment != environment || record.Operator != operator || record.Account != account || record.ExecutorDigest != result.ExecutorDigest || record.AuthorityKeyID != result.AuthorityKeyID {
 		result.Findings = append(result.Findings, "bootstrap record differs from installed executor or identities")
 	}
+	result.Async = inspectAsync(environment, account)
 	result.Ready = len(result.Findings) == 0
 	return result
+}
+
+func inspectAsync(environment, account string) *host.AsyncStatus {
+	service := "provision-" + environment + "-rabbitmq"
+	dataPath := "/var/lib/provision/environments/" + environment + "/services/rabbitmq/data"
+	podmanVersion := strings.TrimPrefix(command("podman", "--version"), "podman version ")
+	uid := command("id", "-u", account)
+	quadletPath := ""
+	if uid != "" {
+		quadletPath = "/etc/containers/systemd/users/" + uid + "/" + service + ".container"
+	}
+	accountUID, _ := strconv.Atoi(uid)
+	subordinateIDs := fileContainsPrefix("/etc/subuid", account+":") && fileContainsPrefix("/etc/subgid", account+":")
+	lingering := rootOwned("/var/lib/systemd/linger/"+account, 0644) && command("systemctl", "is-active", "user@"+uid+".service") == "active"
+	quadletOwned := quadletPath != "" && rootOwned(quadletPath, 0644)
+	dataOwned := ownedBy(dataPath, accountUID, 0700)
+	credentialPath := "/var/lib/provision/runtime/" + environment + "/.config/credstore.encrypted/rabbitmq-config"
+	credentialObserved := ownedBy(credentialPath, accountUID, 0600)
+	appletDigest := regularFileDigest("/usr/local/libexec/provision-runtime-schedule")
+	ledgerSchema := ""
+	if appletDigest != "" {
+		ledgerSchema = "provision.dev/schedule-ledger/v1alpha1"
+	}
+	return &host.AsyncStatus{
+		SchemaVersion: "provision.dev/host-async-inspection/v1alpha1", ObservationComplete: false,
+		Findings: []string{"asynchronous deployment observation is not implemented by this executor version"},
+		Capabilities: host.AsyncCapabilities{
+			PodmanVersion: podmanVersion, Quadlet: commandSucceeded("test", "-x", "/usr/lib/systemd/system-generators/podman-system-generator"),
+			RootlessEnvironmentAccount: uid != "", SystemdCredentials: commandSucceeded("systemd-creds", "--version"),
+			SubordinateIDs: subordinateIDs, LingeringUserManager: lingering, QuadletDefinitionRootOwned: quadletOwned,
+			DataPathEnvironmentOwned: dataOwned, EncryptedCredentialObserved: credentialObserved,
+			WorkerAdmissionGate: false,
+			RabbitMQServiceUnit: service + ".service", RabbitMQContainer: service, RabbitMQAccount: account,
+			RabbitMQDataPath: dataPath, RabbitMQQuadletPath: quadletPath,
+			ScheduleAppletDigest: appletDigest, ScheduleLedgerSchema: ledgerSchema,
+		},
+		Deployment: host.AsyncDeploymentStatus{},
+	}
+}
+
+func fileContainsPrefix(path, prefix string) bool {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return false
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		if strings.HasPrefix(line, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
+func ownedBy(path string, uid int, mode os.FileMode) bool {
+	info, err := os.Lstat(path)
+	if err != nil || info.Mode().Perm() != mode || info.Mode()&os.ModeSymlink != 0 {
+		return false
+	}
+	stat, ok := info.Sys().(*syscall.Stat_t)
+	return ok && int(stat.Uid) == uid
+}
+
+func regularFileDigest(path string) string {
+	info, err := os.Lstat(path)
+	if err != nil || !info.Mode().IsRegular() {
+		return ""
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return ""
+	}
+	sum := sha256.Sum256(data)
+	return "sha256:" + hex.EncodeToString(sum[:])
 }
 
 func command(name string, args ...string) string {

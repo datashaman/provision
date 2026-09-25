@@ -10,7 +10,7 @@ import (
 	"provision/internal/host"
 	"provision/internal/operation"
 	"provision/internal/planner"
-	"provision/internal/retention"
+	"provision/internal/rollbackwindow"
 )
 
 func TestVerifyEndpointResultBindsActiveAndPreviousGenerations(t *testing.T) {
@@ -224,7 +224,7 @@ func TestVerifyRetentionResultBindsDeadlinePolicyAndExactGenerations(t *testing.
 		ReleaseDirectory: "/var/lib/provision/environments/lab/releases/provision-example-http-v1-aaaaaaaaaaaa",
 		Port:             28081, RouteID: endpoint.RouteID, UnitMatches: true,
 	}
-	input := planner.RetentionInput{Endpoint: endpoint, Previous: previous, Policy: retention.PolicyRollbackWindow, RollbackWindow: "30m0s"}
+	input := planner.RetentionInput{Endpoint: endpoint, Previous: previous, Policy: rollbackwindow.RuleRollbackWindow, RollbackWindow: "30m0s"}
 	planned := planner.Operation{ID: "op-08", Kind: planner.RetainPrevious, Input: planner.OperationInput{Retention: &input}}
 	digest, err := planner.OperationDigest(planned)
 	if err != nil {
@@ -244,7 +244,7 @@ func TestVerifyRetentionResultBindsDeadlinePolicyAndExactGenerations(t *testing.
 		},
 		Previous: previous, Policy: input.Policy, RollbackWindow: input.RollbackWindow, OperationDigest: digest,
 		DrainOperationDigest: "sha256:" + strings.Repeat("d", 64), SwitchedAt: &switchedAt, DrainedAt: &drainedAt, RetainedAt: &retainedAt, RetainUntil: &deadline,
-		StableRouteVerified: true, PreviousUnitRetained: true, PreviousReleaseRetained: true, PreviousManifestRetained: true, PreviousArtifactRetained: true, Restartable: true,
+		StableRouteVerified: true, PreviousUnitRetained: true, PreviousGenerationDirectoryRetained: true, PreviousManifestRetained: true, PreviousArtifactRetained: true, Restartable: true,
 	}
 	result := operation.Result{SchemaVersion: operation.ResultSchemaVersion, PlanID: envelope.Authorization.Claim.PlanID, OperationID: "op-08", AttemptID: envelope.Authorization.Claim.AttemptID, FencingToken: 8, Outcome: operation.OutcomeSucceeded, Observation: mustJSON(t, observed)}
 	if err := verifyHostResult(envelope, result); err != nil {

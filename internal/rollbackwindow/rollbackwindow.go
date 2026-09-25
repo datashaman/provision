@@ -1,4 +1,4 @@
-package retention
+package rollbackwindow
 
 import (
 	"errors"
@@ -12,9 +12,9 @@ const (
 
 type Window string
 
-type Policy string
+type Rule string
 
-const PolicyRollbackWindow Policy = "rollback-window"
+const RuleRollbackWindow Rule = "rollback-window"
 
 func ParseWindow(value string) (Window, error) {
 	duration, err := time.ParseDuration(value)

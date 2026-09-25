@@ -13,7 +13,7 @@ import (
 	"provision/internal/config"
 	"provision/internal/drain"
 	"provision/internal/host"
-	"provision/internal/retention"
+	"provision/internal/rollbackwindow"
 )
 
 const (
@@ -170,8 +170,8 @@ type DrainInput struct {
 type RetentionInput struct {
 	Endpoint       EndpointInput         `json:"endpoint"`
 	Previous       host.GenerationStatus `json:"previous"`
-	Policy         retention.Policy      `json:"policy"`
-	RollbackWindow retention.Window      `json:"rollbackWindow"`
+	Policy         rollbackwindow.Rule   `json:"policy"`
+	RollbackWindow rollbackwindow.Window `json:"rollbackWindow"`
 }
 
 // Build converts validated configuration and a restricted Host Target
@@ -349,7 +349,7 @@ func httpOperations(compiled config.Compiled, selection config.HostSelection, ob
 	if previous := observation.Deployment.Active; previous != nil {
 		operations = append(operations,
 			Operation{ID: "op-07", Kind: DrainPrevious, DependsOn: []string{"op-06"}, Input: OperationInput{Drain: &DrainInput{Endpoint: endpoint, Previous: *previous, Mode: selection.Implementation.Endpoint.Drain.Mode, MaxDuration: selection.Implementation.Endpoint.Drain.MaxDuration}}, Preconditions: conditions("post-switch-verification", generationID, "passed"), ExpectedObservations: conditions("systemd-unit", previous.SystemdUnit, "drained"), Recovery: RestorePreviousRoute},
-			Operation{ID: "op-08", Kind: RetainPrevious, DependsOn: []string{"op-07"}, Input: OperationInput{Retention: &RetentionInput{Endpoint: endpoint, Previous: *previous, Policy: retention.PolicyRollbackWindow, RollbackWindow: compiled.Environment.RollbackWindow}}, Preconditions: conditions("systemd-unit", previous.SystemdUnit, "drained"), ExpectedObservations: conditions("rollback-generation", previous.ID+"@"+observationDigest, "retained"), Recovery: RetainBothGenerations},
+			Operation{ID: "op-08", Kind: RetainPrevious, DependsOn: []string{"op-07"}, Input: OperationInput{Retention: &RetentionInput{Endpoint: endpoint, Previous: *previous, Policy: rollbackwindow.RuleRollbackWindow, RollbackWindow: compiled.Environment.RollbackWindow}}, Preconditions: conditions("systemd-unit", previous.SystemdUnit, "drained"), ExpectedObservations: conditions("rollback-generation", previous.ID+"@"+observationDigest, "retained"), Recovery: RetainBothGenerations},
 		)
 	}
 	return operations

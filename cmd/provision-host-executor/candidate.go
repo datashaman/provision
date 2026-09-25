@@ -21,7 +21,7 @@ import (
 
 	"provision/internal/host"
 	"provision/internal/planner"
-	"provision/internal/retention"
+	"provision/internal/rollbackwindow"
 )
 
 const generationManifestName = ".provision-generation.json"
@@ -84,8 +84,8 @@ func validateCandidateOperation(planned planner.Operation, record bootstrapRecor
 }
 
 func validateRetentionInput(input planner.RetentionInput, record bootstrapRecord, paths executionPaths) error {
-	if input.Policy != retention.PolicyRollbackWindow {
-		return errors.New("rollback retention policy is unsupported")
+	if input.Policy != rollbackwindow.RuleRollbackWindow {
+		return errors.New("rollback-window rule is unsupported")
 	}
 	if _, err := input.RollbackWindow.Duration(); err != nil {
 		return errors.New("rollback retention window is invalid or unsupported")
@@ -93,7 +93,7 @@ func validateRetentionInput(input planner.RetentionInput, record bootstrapRecord
 	if err := validateEndpointInput(input.Endpoint, &input.Previous, record, paths); err != nil {
 		return err
 	}
-	if input.Endpoint.ID == input.Previous.ID || input.Endpoint.Unit == input.Previous.SystemdUnit || input.Endpoint.ReleaseDirectory == input.Previous.ReleaseDirectory || input.Endpoint.ArtifactDigest == input.Previous.ArtifactDigest {
+	if input.Endpoint.ID == input.Previous.ID || input.Endpoint.Unit == input.Previous.SystemdUnit || input.Endpoint.ReleaseDirectory == input.Previous.ReleaseDirectory {
 		return errors.New("rollback retention cannot select the active Generation")
 	}
 	return nil

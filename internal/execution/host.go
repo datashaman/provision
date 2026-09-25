@@ -347,7 +347,7 @@ func verifyRetentionResult(envelope operation.Envelope, result operation.Result)
 		duration, durationErr := input.RollbackWindow.Duration()
 		validDeadline := durationErr == nil && observed.SwitchedAt != nil && !observed.SwitchedAt.IsZero() && observed.RetainUntil != nil && observed.RetainUntil.Equal(observed.SwitchedAt.Add(duration))
 		validTimes := observed.DrainedAt != nil && !observed.DrainedAt.IsZero() && observed.RetainedAt != nil && !observed.RetainedAt.IsZero() && !observed.RetainedAt.Before(*observed.DrainedAt)
-		if observed.Status != host.RetentionCompleted || !validDigest(observed.DrainOperationDigest) || !validDeadline || !validTimes || !observed.StableRouteVerified || observed.PreviousUnitActive || !observed.PreviousUnitRetained || !observed.PreviousReleaseRetained || !observed.PreviousManifestRetained || !observed.PreviousArtifactRetained || !observed.Restartable || observed.CleanupPerformed || observed.Reason != "" || observed.RecoveryAction != "" {
+		if observed.Status != host.RetentionCompleted || !validDigest(observed.DrainOperationDigest) || !validDeadline || !validTimes || !observed.StableRouteVerified || observed.PreviousUnitActive || !observed.PreviousUnitRetained || !observed.PreviousGenerationDirectoryRetained || !observed.PreviousManifestRetained || !observed.PreviousArtifactRetained || !observed.Restartable || observed.CleanupPerformed || observed.Reason != "" || observed.RecoveryAction != "" {
 			return errors.New("host rollback retention success observation is invalid")
 		}
 	case operation.OutcomeFailed:

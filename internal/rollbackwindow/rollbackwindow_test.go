@@ -1,4 +1,4 @@
-package retention
+package rollbackwindow
 
 import (
 	"testing"

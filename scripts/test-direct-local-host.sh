@@ -146,7 +146,7 @@ expected = {
     "stableRouteVerified": True,
     "previousUnitActive": False,
     "previousUnitRetained": True,
-    "previousReleaseRetained": True,
+    "previousGenerationDirectoryRetained": True,
     "previousManifestRetained": True,
     "previousArtifactRetained": True,
     "restartable": True,

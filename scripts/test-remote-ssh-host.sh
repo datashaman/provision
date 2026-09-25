@@ -384,6 +384,7 @@ materialize() {
 preview_and_approve() {
   local name="$1" backend="$2"
   local directory="$work_dir/$name"
+  "$provision" config validate --file "$directory/root.yaml" >"$directory/validation.json"
   "$provision" plan preview --file "$directory/root.yaml" --state "$backend" >"$directory/plan.json"
   plan_id="$(python3 - "$directory/plan.json" <<'PY'
 import json

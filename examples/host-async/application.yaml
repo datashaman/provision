@@ -8,11 +8,11 @@ components:
       delivery: at-least-once
       acknowledgement: manual
       publisherConfirm: required
-      retry: consumer-requeue
-      deadLetter: discard-on-reject
-      retention: durable
+      retry: unqualified
+      deadLetter: unqualified
+      retention: unqualified
       ordering: unqualified
-      deduplication: application-stable-id
+      deduplication: unqualified
   consumer:
     role: worker
     worker:

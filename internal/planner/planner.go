@@ -155,10 +155,16 @@ type AsyncQueueInput struct {
 	LogicalID           string               `json:"logicalId"`
 	Implementation      string               `json:"implementation"`
 	Lifecycle           string               `json:"lifecycle"`
+	Rollout             string               `json:"rollout"`
 	CredentialReference string               `json:"credentialReference"`
 	RabbitMQVersion     string               `json:"rabbitmqVersion"`
 	ImageIndex          string               `json:"imageIndex"`
 	ImageManifest       string               `json:"imageManifest"`
+	ServiceUnit         string               `json:"serviceUnit"`
+	Container           string               `json:"container"`
+	Account             string               `json:"account"`
+	DataPath            string               `json:"dataPath"`
+	QuadletPath         string               `json:"quadletPath"`
 	QueueType           string               `json:"queueType"`
 	Members             int                  `json:"members"`
 	Contract            config.QueueContract `json:"contract"`
@@ -181,6 +187,7 @@ type AsyncWorkerInput struct {
 	SystemdUnit    string                       `json:"systemdUnit"`
 	Admission      string                       `json:"admission"`
 	Drain          config.WorkerDrain           `json:"drain"`
+	Rollout        string                       `json:"rollout"`
 	Previous       *host.WorkerGenerationStatus `json:"previous,omitempty"`
 }
 
@@ -191,6 +198,7 @@ type AsyncTaskInput struct {
 	ArtifactDigest string                     `json:"artifactDigest"`
 	SystemdUnit    string                     `json:"systemdUnit"`
 	Timeout        string                     `json:"timeout"`
+	Rollout        string                     `json:"rollout"`
 	Previous       *host.TaskGenerationStatus `json:"previous,omitempty"`
 }
 
@@ -206,6 +214,7 @@ type AsyncScheduleInput struct {
 	Retry            config.ScheduleRetry     `json:"retry"`
 	MissedRun        config.ScheduleMissedRun `json:"missedRun"`
 	Failure          string                   `json:"failure"`
+	Rollout          string                   `json:"rollout"`
 	AppletDigest     string                   `json:"appletDigest"`
 	LedgerSchema     string                   `json:"ledgerSchema"`
 	Previous         *host.ScheduleStatus     `json:"previous,omitempty"`
@@ -473,6 +482,10 @@ func asyncCapabilityIssues(observation host.BootstrapStatus, target config.Targe
 	if capability.RabbitMQQualificationDigest != rabbitMQQualificationDigest || capability.RabbitMQVersion != "4.3.6" || capability.RabbitMQImageIndex != rabbitMQImageIndex || capability.RabbitMQImageManifest != rabbitMQImageManifest {
 		issues = append(issues, "RabbitMQ product identity does not match the qualified packaging evidence")
 	}
+	expectedService := "provision-" + observation.Environment + "-rabbitmq"
+	if capability.RabbitMQServiceUnit != expectedService+".service" || capability.RabbitMQContainer != expectedService || capability.RabbitMQAccount != "provision-"+observation.Environment || capability.RabbitMQDataPath != "/var/lib/provision/environments/"+observation.Environment+"/services/rabbitmq/data" || capability.RabbitMQQuadletPath == "" {
+		issues = append(issues, "RabbitMQ service identity or owned paths do not match the Environment")
+	}
 	if !strings.HasPrefix(capability.ScheduleAppletDigest, "sha256:") || len(capability.ScheduleAppletDigest) != 71 {
 		issues = append(issues, "pinned Schedule runtime applet identity is not observed")
 	}
@@ -480,13 +493,23 @@ func asyncCapabilityIssues(observation host.BootstrapStatus, target config.Targe
 		issues = append(issues, "Schedule occurrence-ledger schema is unsupported")
 	}
 	if queue := observation.Async.Deployment.Queue; queue != nil && queue.Exists {
-		if !queue.Ready || queue.QueueType != "quorum" || queue.Members != 1 || !queue.Durable || queue.ImageManifest != rabbitMQImageManifest {
+		if !queue.Ready || queue.QueueType != "quorum" || queue.Members != 1 || !queue.Durable || queue.ImageManifest != rabbitMQImageManifest || queue.ServiceUnit != capability.RabbitMQServiceUnit || queue.Container != capability.RabbitMQContainer || queue.Account != capability.RabbitMQAccount || queue.DataPath != capability.RabbitMQDataPath || queue.QuadletPath != capability.RabbitMQQuadletPath {
 			issues = append(issues, "observed Queue does not match the qualified single-member quorum generation")
 		}
 	}
 	if worker := observation.Async.Deployment.ActiveWorker; worker != nil {
 		if worker.ID == "" || worker.ArtifactDigest == "" || !worker.UnitActive || !worker.QueueConnected || worker.Gate != "open" || worker.InFlight < 0 {
 			issues = append(issues, "active Worker generation does not match observed deployment state")
+		}
+	}
+	if task := observation.Async.Deployment.ActiveTask; task != nil {
+		if task.ID == "" || task.Revision == "" || !strings.HasPrefix(task.ArtifactDigest, "sha256:") || task.SystemdUnit == "" {
+			issues = append(issues, "active Task generation does not match observed deployment state")
+		}
+	}
+	if schedule := observation.Async.Deployment.Schedule; schedule != nil {
+		if schedule.TimerUnit == "" || schedule.TaskGenerationID == "" || !strings.HasPrefix(schedule.AppletDigest, "sha256:") || schedule.LedgerSchema != "provision.dev/schedule-ledger/v1alpha1" || !strings.HasPrefix(schedule.LedgerDigest, "sha256:") || schedule.FencingToken < 1 || observation.Async.Deployment.ActiveTask == nil || schedule.TaskGenerationID != observation.Async.Deployment.ActiveTask.ID {
+			issues = append(issues, "active Schedule and Task generation do not match observed fenced runtime state")
 		}
 	}
 	return unique(issues)
@@ -509,6 +532,8 @@ func asyncOperations(compiled config.Compiled, observation host.BootstrapStatus,
 	scheduleComponent := compiled.Application.Components[scheduleName]
 	queueImplementation := compiled.Environment.Implementations[queueName]
 	workerImplementation := compiled.Environment.Implementations[workerName]
+	taskImplementation := compiled.Environment.Implementations[taskName]
+	scheduleImplementation := compiled.Environment.Implementations[scheduleName]
 	workerArtifact := compiled.Revision.Artifacts[workerName]
 	taskArtifact := compiled.Revision.Artifacts[taskName]
 	workerDigestID := strings.TrimPrefix(workerArtifact.Digest, "sha256:")[:12]
@@ -520,20 +545,24 @@ func asyncOperations(compiled config.Compiled, observation host.BootstrapStatus,
 	timerUnit := fmt.Sprintf("provision-%s-%s.timer", compiled.Environment.Name, scheduleName)
 	queueInput := &AsyncQueueInput{
 		Component: queueName, LogicalID: "provision-" + compiled.Environment.Name + "-" + queueName,
-		Implementation: queueImplementation.Kind, Lifecycle: queueImplementation.Lifecycle,
+		Implementation: queueImplementation.Kind, Lifecycle: queueImplementation.Lifecycle, Rollout: queueImplementation.Rollout,
 		CredentialReference: queueImplementation.Credential, RabbitMQVersion: async.Capabilities.RabbitMQVersion,
 		ImageIndex: async.Capabilities.RabbitMQImageIndex, ImageManifest: async.Capabilities.RabbitMQImageManifest, QueueType: "quorum", Members: 1,
+		ServiceUnit: async.Capabilities.RabbitMQServiceUnit, Container: async.Capabilities.RabbitMQContainer,
+		Account: async.Capabilities.RabbitMQAccount, DataPath: async.Capabilities.RabbitMQDataPath, QuadletPath: async.Capabilities.RabbitMQQuadletPath,
 		Contract: queueComponent.Queue, Observed: async.Deployment.Queue,
 	}
 	workerInput := &AsyncWorkerInput{
 		Component: workerName, Queue: workerComponent.Worker.Queue, GenerationID: workerGenerationID,
 		Revision: compiled.Revision.Name, ArtifactDigest: workerArtifact.Digest, SystemdUnit: workerUnit,
 		Admission: workerImplementation.Worker.Admission, Drain: workerImplementation.Worker.Drain,
+		Rollout:  workerImplementation.Rollout,
 		Previous: async.Deployment.ActiveWorker,
 	}
 	taskInput := &AsyncTaskInput{
 		Component: taskName, GenerationID: taskGenerationID, Revision: compiled.Revision.Name,
 		ArtifactDigest: taskArtifact.Digest, SystemdUnit: taskUnit, Timeout: taskComponent.Task.Timeout,
+		Rollout:  taskImplementation.Rollout,
 		Previous: async.Deployment.ActiveTask,
 	}
 	scheduleInput := &AsyncScheduleInput{
@@ -542,6 +571,7 @@ func asyncOperations(compiled config.Compiled, observation host.BootstrapStatus,
 		DaylightSaving: scheduleComponent.Schedule.DaylightSaving, Overlap: scheduleComponent.Schedule.Overlap,
 		Retry: scheduleComponent.Schedule.Retry, MissedRun: scheduleComponent.Schedule.MissedRun,
 		Failure: scheduleComponent.Schedule.Failure, AppletDigest: async.Capabilities.ScheduleAppletDigest,
+		Rollout:      scheduleImplementation.Rollout,
 		LedgerSchema: async.Capabilities.ScheduleLedgerSchema, Previous: async.Deployment.Schedule,
 	}
 	workerArtifactInput := &AsyncArtifactInput{Component: workerName, Role: "worker", Source: workerArtifact.Source, Digest: workerArtifact.Digest}

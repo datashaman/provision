@@ -65,6 +65,11 @@ type AsyncCapabilities struct {
 	RabbitMQVersion             string `json:"rabbitmqVersion"`
 	RabbitMQImageIndex          string `json:"rabbitmqImageIndex"`
 	RabbitMQImageManifest       string `json:"rabbitmqImageManifest"`
+	RabbitMQServiceUnit         string `json:"rabbitmqServiceUnit"`
+	RabbitMQContainer           string `json:"rabbitmqContainer"`
+	RabbitMQAccount             string `json:"rabbitmqAccount"`
+	RabbitMQDataPath            string `json:"rabbitmqDataPath"`
+	RabbitMQQuadletPath         string `json:"rabbitmqQuadletPath"`
 	ScheduleAppletDigest        string `json:"scheduleAppletDigest"`
 	ScheduleLedgerSchema        string `json:"scheduleLedgerSchema"`
 }
@@ -85,6 +90,11 @@ type QueueStatus struct {
 	Members       int    `json:"members"`
 	Durable       bool   `json:"durable"`
 	ImageManifest string `json:"imageManifest"`
+	ServiceUnit   string `json:"serviceUnit"`
+	Container     string `json:"container"`
+	Account       string `json:"account"`
+	DataPath      string `json:"dataPath"`
+	QuadletPath   string `json:"quadletPath"`
 }
 
 type WorkerGenerationStatus struct {

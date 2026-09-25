@@ -1050,6 +1050,9 @@ func writeAsyncBootstrapInspectionSSH(t *testing.T, dir string) {
 	ssh := filepath.Join(dir, "ssh")
 	data := `#!/bin/sh
 printf '%s\n' "$*" >> "$FAKE_SSH_LOG"
+printf() {
+  command printf "$@" | sed 's#"rabbitmqImageManifest":"sha256:34fc91a9de04d612a340507b8e7e19c0ee1ec9839e09dc5fc98f54991633ce91"#"rabbitmqImageManifest":"sha256:34fc91a9de04d612a340507b8e7e19c0ee1ec9839e09dc5fc98f54991633ce91","rabbitmqServiceUnit":"provision-lab-rabbitmq.service","rabbitmqContainer":"provision-lab-rabbitmq","rabbitmqAccount":"provision-lab","rabbitmqDataPath":"/var/lib/provision/environments/lab/services/rabbitmq/data","rabbitmqQuadletPath":"/etc/containers/systemd/users/999/provision-lab-rabbitmq.container"#g' | sed 's#"imageManifest":"sha256:34fc91a9de04d612a340507b8e7e19c0ee1ec9839e09dc5fc98f54991633ce91"#"imageManifest":"sha256:34fc91a9de04d612a340507b8e7e19c0ee1ec9839e09dc5fc98f54991633ce91","serviceUnit":"provision-lab-rabbitmq.service","container":"provision-lab-rabbitmq","account":"provision-lab","dataPath":"/var/lib/provision/environments/lab/services/rabbitmq/data","quadletPath":"/etc/containers/systemd/users/999/provision-lab-rabbitmq.container"#g'
+}
 case "$*" in
   *"/usr/local/libexec/provision-host-executor inspect --environment lab --operator marlinf")
     applet_digest="${FAKE_APPLET_DIGEST:-sha256:7777777777777777777777777777777777777777777777777777777777777777}"
@@ -1188,7 +1191,7 @@ func TestConfigValidateRejectsInvalidAsyncContracts(t *testing.T) {
 		{"scheduler component", "application.yaml", "role: schedule", "role: scheduler", "model a Schedule instead"},
 		{"unsupported Queue ordering", "application.yaml", "ordering: unqualified", "ordering: fifo", "unsupported delivery"},
 		{"noncanonical Worker drain", "environment.yaml", "maxDuration: 30s", "maxDuration: 30000ms", "bounded drain"},
-		{"preferred Worker rollout", "environment.yaml", "rollout: required", "rollout: preferred", "requires gated systemd-worker blue-green"},
+		{"preferred Worker rollout", "environment.yaml", "kind: systemd-worker\n    target: base\n    rollout: required", "kind: systemd-worker\n    target: base\n    rollout: preferred", "requires gated systemd-worker blue-green"},
 		{"unknown Schedule timezone", "application.yaml", "timezone: Africa/Johannesburg", "timezone: Mars/Olympus", "unknown timezone"},
 		{"unbounded catch-up", "application.yaml", "maxOccurrences: 2", "maxOccurrences: 0", "bounded catch-up"},
 		{"resolved Queue credential", "environment.yaml", "secret://lab/rabbitmq-url", "amqp://guest:guest@localhost", "Secret Reference"},

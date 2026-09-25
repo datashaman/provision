@@ -232,8 +232,56 @@ func inspect(environment, operator string) host.BootstrapStatus {
 	if data, err := os.ReadFile("/etc/provision/bootstrap/" + environment + ".json"); err != nil || json.Unmarshal(data, &record) != nil || record.SchemaVersion != "provision.dev/bootstrap/v2" || record.Environment != environment || record.Operator != operator || record.Account != account || record.ExecutorDigest != result.ExecutorDigest || record.AuthorityKeyID != result.AuthorityKeyID {
 		result.Findings = append(result.Findings, "bootstrap record differs from installed executor or identities")
 	}
+	result.Async = inspectAsync(environment, account)
 	result.Ready = len(result.Findings) == 0
 	return result
+}
+
+func inspectAsync(environment, account string) *host.AsyncStatus {
+	const (
+		qualification = "sha256:af41714b1aa2270ba6cd151bd24876ac117218e401e1e87515451a7081ac4c6d"
+		imageIndex    = "sha256:d0bffe70e755f348625415f32b0a090662e5f06b3ba3f82a4c7aaa18621b1279"
+		imageManifest = "sha256:34fc91a9de04d612a340507b8e7e19c0ee1ec9839e09dc5fc98f54991633ce91"
+	)
+	service := "provision-" + environment + "-rabbitmq"
+	dataPath := "/var/lib/provision/environments/" + environment + "/services/rabbitmq/data"
+	podmanVersion := strings.TrimPrefix(command("podman", "--version"), "podman version ")
+	uid := command("id", "-u", account)
+	quadletPath := ""
+	if uid != "" {
+		quadletPath = "/etc/containers/systemd/users/" + uid + "/" + service + ".container"
+	}
+	appletDigest := regularFileDigest("/usr/local/libexec/provision-runtime-schedule")
+	ledgerSchema := ""
+	if appletDigest != "" {
+		ledgerSchema = "provision.dev/schedule-ledger/v1alpha1"
+	}
+	return &host.AsyncStatus{
+		SchemaVersion: "provision.dev/host-async-inspection/v1alpha1",
+		Capabilities: host.AsyncCapabilities{
+			PodmanVersion: podmanVersion, Quadlet: commandSucceeded("test", "-x", "/usr/lib/systemd/system-generators/podman-system-generator"),
+			RootlessEnvironmentAccount: uid != "", SystemdCredentials: commandSucceeded("systemd-creds", "--version"),
+			WorkerAdmissionGate: false, RabbitMQQualificationDigest: qualification, RabbitMQVersion: "4.3.6",
+			RabbitMQImageIndex: imageIndex, RabbitMQImageManifest: imageManifest,
+			RabbitMQServiceUnit: service + ".service", RabbitMQContainer: service, RabbitMQAccount: account,
+			RabbitMQDataPath: dataPath, RabbitMQQuadletPath: quadletPath,
+			ScheduleAppletDigest: appletDigest, ScheduleLedgerSchema: ledgerSchema,
+		},
+		Deployment: host.AsyncDeploymentStatus{},
+	}
+}
+
+func regularFileDigest(path string) string {
+	info, err := os.Lstat(path)
+	if err != nil || !info.Mode().IsRegular() {
+		return ""
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return ""
+	}
+	sum := sha256.Sum256(data)
+	return "sha256:" + hex.EncodeToString(sum[:])
 }
 
 func command(name string, args ...string) string {

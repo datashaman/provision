@@ -309,10 +309,11 @@ func (c Compiled) verifyArtifactFile(name, path, label string) error {
 }
 
 var (
-	namePattern   = regexp.MustCompile(`^[a-z][a-z0-9-]*$`)
-	digestPattern = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
-	hostPattern   = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9.-]*$`)
-	userPattern   = regexp.MustCompile(`^[a-z_][a-z0-9_-]*$`)
+	namePattern      = regexp.MustCompile(`^[a-z][a-z0-9-]*$`)
+	digestPattern    = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
+	hostPattern      = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9.-]*$`)
+	userPattern      = regexp.MustCompile(`^[a-z_][a-z0-9_-]*$`)
+	cronFieldPattern = regexp.MustCompile(`^[0-9*/,-]+$`)
 )
 
 // Load compiles an explicit root document and its three local references. This
@@ -553,8 +554,8 @@ func (c Compiled) validateAsync() error {
 	queue := c.Application.Components[queueName].Queue
 	wantQueue := QueueContract{
 		Delivery: "at-least-once", Acknowledgement: "manual", PublisherConfirm: "required",
-		Retry: "consumer-requeue", DeadLetter: "discard-on-reject", Retention: "durable",
-		Ordering: "unqualified", Deduplication: "application-stable-id",
+		Retry: "unqualified", DeadLetter: "unqualified", Retention: "unqualified",
+		Ordering: "unqualified", Deduplication: "unqualified",
 	}
 	if queue != wantQueue {
 		return fmt.Errorf("Queue %q requests unsupported delivery, acknowledgement, retry, dead-letter, retention, ordering, or deduplication semantics", queueName)
@@ -645,10 +646,10 @@ func (c Compiled) validateAsync() error {
 		}
 		switch component.Role {
 		case "queue":
-			if implementation.Rollout != "" || implementation.Endpoint != (Endpoint{}) || implementation.Worker != (WorkerImplementation{}) || implementation.Schedule != (ScheduleImplementation{}) {
+			if implementation.Endpoint != (Endpoint{}) || implementation.Worker != (WorkerImplementation{}) || implementation.Schedule != (ScheduleImplementation{}) {
 				return fmt.Errorf("Queue %q contains fields for another implementation type", name)
 			}
-			if implementation.Kind != "rabbitmq-quadlet" || implementation.Lifecycle != "managed" || !validSecretReference(implementation.Credential) {
+			if implementation.Kind != "rabbitmq-quadlet" || implementation.Lifecycle != "managed" || implementation.Rollout != "required" || !validSecretReference(implementation.Credential) {
 				return fmt.Errorf("Queue %q requires a managed rabbitmq-quadlet implementation and Queue credential Secret Reference", name)
 			}
 		case "worker":
@@ -659,11 +660,11 @@ func (c Compiled) validateAsync() error {
 				return fmt.Errorf("Worker %q requires gated systemd-worker blue-green with a bounded drain from 1s through 5m0s", name)
 			}
 		case "task":
-			if implementation.Kind != "systemd-task" || implementation.Lifecycle != "" || implementation.Credential != "" || implementation.Rollout != "" || implementation.Endpoint != (Endpoint{}) || implementation.Worker != (WorkerImplementation{}) || implementation.Schedule != (ScheduleImplementation{}) {
+			if implementation.Kind != "systemd-task" || implementation.Lifecycle != "" || implementation.Credential != "" || implementation.Rollout != "required" || implementation.Endpoint != (Endpoint{}) || implementation.Worker != (WorkerImplementation{}) || implementation.Schedule != (ScheduleImplementation{}) {
 				return fmt.Errorf("Task %q requires a systemd-task implementation", name)
 			}
 		case "schedule":
-			if implementation.Kind != "systemd-schedule" || implementation.Lifecycle != "" || implementation.Credential != "" || implementation.Rollout != "" || implementation.Endpoint != (Endpoint{}) || implementation.Worker != (WorkerImplementation{}) || implementation.Schedule.LedgerSchema != "provision.dev/schedule-ledger/v1alpha1" {
+			if implementation.Kind != "systemd-schedule" || implementation.Lifecycle != "" || implementation.Credential != "" || implementation.Rollout != "required" || implementation.Endpoint != (Endpoint{}) || implementation.Worker != (WorkerImplementation{}) || implementation.Schedule.LedgerSchema != "provision.dev/schedule-ledger/v1alpha1" {
 				return fmt.Errorf("Schedule %q requires a systemd-schedule implementation and supported occurrence-ledger schema", name)
 			}
 		}
@@ -726,7 +727,7 @@ func validCronExpression(value string) bool {
 		return false
 	}
 	for _, field := range fields {
-		if field == "" || strings.ContainsAny(field, "\x00\r\n") {
+		if !cronFieldPattern.MatchString(field) {
 			return false
 		}
 	}

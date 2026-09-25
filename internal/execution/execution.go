@@ -159,7 +159,13 @@ func (e Engine) Execute(ctx context.Context, request Request) (operation.Result,
 		return operation.Result{}, err
 	}
 	if result.Outcome == operation.OutcomeFailed {
+		if attempt.Operation.Kind == planner.VerifyActive {
+			return result, errors.New("post-switch verification failed; the previous Generation was restored")
+		}
 		return result, errors.New("host preparation operation failed")
+	}
+	if result.Outcome == operation.OutcomeUncertain {
+		return result, errors.New("host operation requires explicit recovery because its outcome is uncertain")
 	}
 	return result, nil
 }
@@ -178,6 +184,8 @@ func (e Engine) commitResult(ctx context.Context, attempt state.OperationAttempt
 	outcome := state.ExecutionSucceeded
 	if result.Outcome == operation.OutcomeFailed {
 		outcome = state.ExecutionFailed
+	} else if result.Outcome == operation.OutcomeUncertain {
+		outcome = state.ExecutionUncertain
 	}
 	if err := e.Backend.CompleteOperation(ctx, state.CompleteOperationRequest{
 		AttemptID: attempt.AttemptID, Holder: attempt.Holder,

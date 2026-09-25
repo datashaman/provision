@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -110,6 +111,101 @@ func TestAuthorizedEndpointSwitchFailsClosedWhenCaddyRejectsLoad(t *testing.T) {
 	}
 }
 
+func TestPostSwitchVerificationAcceptsHealthyStableEndpoint(t *testing.T) {
+	paths, record, signer, publicKey, generation, systemd := authorizedCandidateFixture(t)
+	stable, stablePort := startStableEndpoint(t, paths, "provision-lab-web")
+	defer stable.Close()
+	candidate := prepareHealthyCandidate(t, paths, record, signer, publicKey, generation, systemd, 1)
+	defer candidate.Close()
+
+	endpoint := endpointInput(generation.GenerationReference, systemd.Unit, systemd.Port)
+	endpoint.ListenPort = stablePort
+	switchOperation := planner.Operation{ID: "op-05", Kind: planner.SwitchEndpoint, DependsOn: []string{"op-04"}, Input: planner.OperationInput{Endpoint: &endpoint}, Recovery: planner.RestorePreviousRoute}
+	result, _ := executeCandidateOperation(t, paths, record, signer, publicKey, switchOperation, 4)
+	if result.Outcome != operation.OutcomeSucceeded {
+		t.Fatalf("Endpoint switch = %+v", result)
+	}
+
+	verify := activeVerificationOperation(endpoint, nil)
+	result, _ = executeCandidateOperation(t, paths, record, signer, publicKey, verify, 5)
+	var observed host.ActiveVerificationObservation
+	if err := json.Unmarshal(result.Observation, &observed); err != nil || result.Outcome != operation.OutcomeSucceeded || observed.Status != host.ActiveVerificationHealthy || len(observed.ActiveChecks) != 3 || observed.RollbackAttempted {
+		t.Fatalf("post-switch verification = %+v, observation=%+v, error=%v", result, observed, err)
+	}
+}
+
+func TestPostSwitchVerificationRollsBackToHealthyPreviousGeneration(t *testing.T) {
+	paths, record, signer, publicKey, firstGeneration, firstSystemd := authorizedCandidateFixture(t)
+	stable, stablePort := startStableEndpoint(t, paths, "provision-lab-web")
+	defer stable.Close()
+	firstCandidate := prepareHealthyCandidate(t, paths, record, signer, publicKey, firstGeneration, firstSystemd, 1)
+	defer firstCandidate.Close()
+	firstEndpoint := endpointInput(firstGeneration.GenerationReference, firstSystemd.Unit, firstSystemd.Port)
+	firstEndpoint.ListenPort = stablePort
+	firstSwitch := planner.Operation{ID: "op-05", Kind: planner.SwitchEndpoint, DependsOn: []string{"op-04"}, Input: planner.OperationInput{Endpoint: &firstEndpoint}, Recovery: planner.RestorePreviousRoute}
+	firstResult, _ := executeCandidateOperation(t, paths, record, signer, publicKey, firstSwitch, 4)
+	if firstResult.Outcome != operation.OutcomeSucceeded {
+		t.Fatalf("first Endpoint switch = %+v", firstResult)
+	}
+	var firstObserved host.EndpointObservation
+	if err := json.Unmarshal(firstResult.Observation, &firstObserved); err != nil {
+		t.Fatal(err)
+	}
+
+	secondGeneration, secondSystemd := anotherCandidateFixture(t, paths, firstGeneration, firstSystemd)
+	secondCandidate := prepareCandidate(t, paths, record, signer, publicKey, secondGeneration, secondSystemd, 5, true)
+	defer secondCandidate.Close()
+	previous := firstObserved.Active
+	secondEndpoint := endpointInput(secondGeneration.GenerationReference, secondSystemd.Unit, secondSystemd.Port)
+	secondEndpoint.ListenPort = stablePort
+	secondSwitch := planner.Operation{ID: "op-05", Kind: planner.SwitchEndpoint, DependsOn: []string{"op-04"}, Input: planner.OperationInput{Endpoint: &secondEndpoint, Previous: &previous}, Recovery: planner.RestorePreviousRoute}
+	secondResult, _ := executeCandidateOperation(t, paths, record, signer, publicKey, secondSwitch, 8)
+	if secondResult.Outcome != operation.OutcomeSucceeded {
+		t.Fatalf("second Endpoint switch = %+v", secondResult)
+	}
+
+	verify := activeVerificationOperation(secondEndpoint, &previous)
+	result, _ := executeCandidateOperation(t, paths, record, signer, publicKey, verify, 9)
+	var observed host.ActiveVerificationObservation
+	if err := json.Unmarshal(result.Observation, &observed); err != nil || result.Outcome != operation.OutcomeFailed || observed.Status != host.ActiveVerificationRolledBack || !observed.RollbackAttempted || !observed.RollbackSucceeded || observed.Restored == nil || observed.Restored.ID != previous.ID || len(observed.PreviousChecks) != 3 || len(observed.RollbackChecks) != 3 {
+		t.Fatalf("post-switch rollback = %+v, observation=%+v, error=%v", result, observed, err)
+	}
+	recorded, err := readActiveGenerationRecord(filepath.Join(paths.environmentHome, "active-generation.json"))
+	if err != nil || recorded == nil || recorded.Active.ID != previous.ID || recorded.Previous == nil || recorded.Previous.ID != secondGeneration.ID {
+		t.Fatalf("rolled-back active record = %+v, %v", recorded, err)
+	}
+	upstream, _, routeOK, err := observeCaddyEndpoint(context.Background(), paths.caddy, secondEndpoint.RouteID)
+	if err != nil || !routeOK || upstream != fmt.Sprintf("127.0.0.1:%d", previous.Port) {
+		t.Fatalf("rolled-back stable route = %q, %t, %v", upstream, routeOK, err)
+	}
+}
+
+func TestPostSwitchVerificationReportsUncertainWithoutPreviousGeneration(t *testing.T) {
+	paths, record, signer, publicKey, generation, systemd := authorizedCandidateFixture(t)
+	stable, stablePort := startStableEndpoint(t, paths, "provision-lab-web")
+	defer stable.Close()
+	candidate := prepareCandidate(t, paths, record, signer, publicKey, generation, systemd, 1, true)
+	defer candidate.Close()
+	endpoint := endpointInput(generation.GenerationReference, systemd.Unit, systemd.Port)
+	endpoint.ListenPort = stablePort
+	switchOperation := planner.Operation{ID: "op-05", Kind: planner.SwitchEndpoint, DependsOn: []string{"op-04"}, Input: planner.OperationInput{Endpoint: &endpoint}, Recovery: planner.RestorePreviousRoute}
+	result, _ := executeCandidateOperation(t, paths, record, signer, publicKey, switchOperation, 4)
+	if result.Outcome != operation.OutcomeSucceeded {
+		t.Fatalf("Endpoint switch = %+v", result)
+	}
+
+	verify := activeVerificationOperation(endpoint, nil)
+	result, _ = executeCandidateOperation(t, paths, record, signer, publicKey, verify, 5)
+	var observed host.ActiveVerificationObservation
+	if err := json.Unmarshal(result.Observation, &observed); err != nil || result.Outcome != operation.OutcomeUncertain || observed.Status != host.ActiveVerificationUncertain || observed.RollbackAttempted || observed.RollbackSucceeded || observed.Reason == "" || observed.RecoveryAction == "" {
+		t.Fatalf("uncertain post-switch verification = %+v, observation=%+v, error=%v", result, observed, err)
+	}
+	recorded, err := readActiveGenerationRecord(filepath.Join(paths.environmentHome, "active-generation.json"))
+	if err != nil || recorded == nil || recorded.Active.ID != generation.ID || recorded.Previous != nil {
+		t.Fatalf("uncertain active record = %+v, %v", recorded, err)
+	}
+}
+
 func TestAdminCaddyControllerTreatsNullConfigurationAsAbsent(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, _ *http.Request) {
 		response.Header().Set("Content-Type", "application/json")
@@ -125,6 +221,10 @@ func TestAdminCaddyControllerTreatsNullConfigurationAsAbsent(t *testing.T) {
 }
 
 func prepareHealthyCandidate(t *testing.T, paths executionPaths, record bootstrapRecord, signer authority.Signer, publicKey []byte, generation planner.GenerationInput, systemd planner.SystemdInput, firstToken int64) *httptest.Server {
+	return prepareCandidate(t, paths, record, signer, publicKey, generation, systemd, firstToken, false)
+}
+
+func prepareCandidate(t *testing.T, paths executionPaths, record bootstrapRecord, signer authority.Signer, publicKey []byte, generation planner.GenerationInput, systemd planner.SystemdInput, firstToken int64, failThroughStableEndpoint bool) *httptest.Server {
 	t.Helper()
 	install := planner.Operation{ID: "op-02", Kind: planner.InstallGeneration, DependsOn: []string{"op-01"}, Input: planner.OperationInput{Generation: &generation}}
 	installResult, _ := executeCandidateOperation(t, paths, record, signer, publicKey, install, firstToken)
@@ -141,6 +241,10 @@ func prepareHealthyCandidate(t *testing.T, paths executionPaths, record bootstra
 		t.Fatal(err)
 	}
 	server := httptest.NewUnstartedServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		if failThroughStableEndpoint && request.Host != fmt.Sprintf("127.0.0.1:%d", systemd.Port) {
+			http.Error(response, "post-switch failure", http.StatusServiceUnavailable)
+			return
+		}
 		switch request.URL.Path {
 		case "/live", "/ready":
 			response.WriteHeader(http.StatusNoContent)
@@ -160,6 +264,51 @@ func prepareHealthyCandidate(t *testing.T, paths executionPaths, record bootstra
 		t.Fatalf("verify candidate = %+v", verifyResult)
 	}
 	return server
+}
+
+func startStableEndpoint(t *testing.T, paths executionPaths, routeID string) (*httptest.Server, int) {
+	t.Helper()
+	listener, err := net.Listen("tcp4", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := httptest.NewUnstartedServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		upstream, _, ok, observeErr := observeCaddyEndpoint(request.Context(), paths.caddy, routeID)
+		if observeErr != nil || !ok {
+			http.Error(response, "stable route unavailable", http.StatusServiceUnavailable)
+			return
+		}
+		forward, requestErr := http.NewRequestWithContext(request.Context(), request.Method, "http://"+upstream+request.URL.RequestURI(), nil)
+		if requestErr != nil {
+			http.Error(response, "stable route invalid", http.StatusInternalServerError)
+			return
+		}
+		forward.Host = request.Host
+		result, requestErr := http.DefaultClient.Do(forward)
+		if requestErr != nil {
+			http.Error(response, "stable upstream unavailable", http.StatusBadGateway)
+			return
+		}
+		defer result.Body.Close()
+		for key, values := range result.Header {
+			for _, value := range values {
+				response.Header().Add(key, value)
+			}
+		}
+		response.WriteHeader(result.StatusCode)
+		_, _ = io.Copy(response, result.Body)
+	}))
+	server.Listener = listener
+	server.Start()
+	return server, listener.Addr().(*net.TCPAddr).Port
+}
+
+func activeVerificationOperation(endpoint planner.EndpointInput, previous *host.GenerationStatus) planner.Operation {
+	health := planner.HealthInput{
+		GenerationReference: endpoint.GenerationReference, Unit: endpoint.Unit,
+		LivenessPath: "/live", ReadinessPath: "/ready", CandidateVerifyPath: "/verify", Port: endpoint.ListenPort,
+	}
+	return planner.Operation{ID: "op-06", Kind: planner.VerifyActive, DependsOn: []string{"op-05"}, Input: planner.OperationInput{Health: &health, Endpoint: &endpoint, Previous: previous}, Recovery: planner.RestorePreviousRoute}
 }
 
 func anotherCandidateFixture(t *testing.T, paths executionPaths, first planner.GenerationInput, firstSystemd planner.SystemdInput) (planner.GenerationInput, planner.SystemdInput) {

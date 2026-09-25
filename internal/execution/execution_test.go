@@ -152,6 +152,15 @@ func TestEngineRecordsFailureAndUncertainRecoveryEvidence(t *testing.T) {
 			wantOutcome: state.ExecutionFailed, wantKind: state.JournalOutcome, wantError: true, wantEvidence: "digest mismatch",
 		},
 		{
+			name: "structured uncertain host outcome",
+			handler: func(_ *time.Time) *handlerFake {
+				return &handlerFake{observations: []HandlerObservation{{State: ObservationPending}}, apply: func(envelope operation.Envelope) (operation.Result, error) {
+					return matchingResult(envelope, operation.OutcomeUncertain, `{"status":"uncertain","reason":"rollback cannot be proven"}`), nil
+				}}
+			},
+			wantOutcome: state.ExecutionUncertain, wantKind: state.JournalOutcome, wantError: true, wantEvidence: "rollback cannot be proven",
+		},
+		{
 			name: "result verification failure",
 			handler: func(_ *time.Time) *handlerFake {
 				return &handlerFake{observations: []HandlerObservation{{State: ObservationPending}}, verifyErr: errors.New("result evidence invalid"), apply: func(envelope operation.Envelope) (operation.Result, error) {

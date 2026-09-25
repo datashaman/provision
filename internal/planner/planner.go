@@ -185,6 +185,8 @@ func Build(compiled config.Compiled, observation host.BootstrapStatus) (Preview,
 			"atomic-caddy-route-load",
 			"in-flight-http-request-drain",
 			"previous-generation-retention",
+			"post-switch-health-verification",
+			"automatic-previous-route-rollback",
 		},
 		SupportEvidence: []string{
 			"restricted-bootstrap-ready",
@@ -296,7 +298,7 @@ func capabilityIssues(observation host.BootstrapStatus, selection config.HostSel
 	if !selection.Target.Local && observation.SSHHostKeyFingerprint == "" {
 		issues = append(issues, "SSH host key identity is not observed")
 	}
-	for _, operation := range []string{"stageArtifact", "installGeneration", "startCandidate", "verifyCandidate", "switchEndpoint"} {
+	for _, operation := range []string{"stageArtifact", "installGeneration", "startCandidate", "verifyCandidate", "switchEndpoint", "verifyActive"} {
 		if !slices.Contains(observation.AllowedOperations, operation) {
 			issues = append(issues, fmt.Sprintf("host executor does not allow typed %s operations", operation))
 		}
@@ -332,7 +334,7 @@ func httpOperations(compiled config.Compiled, selection config.HostSelection, ob
 		{ID: "op-03", Kind: StartCandidate, DependsOn: []string{"op-02"}, Input: OperationInput{Systemd: &SystemdInput{GenerationReference: generation, Unit: unit, Port: candidatePort}}, Preconditions: conditions("tcp-port", fmt.Sprintf("127.0.0.1:%d", candidatePort), "available"), ExpectedObservations: conditions("systemd-unit", unit, "active"), Recovery: StopCandidate},
 		{ID: "op-04", Kind: VerifyCandidate, DependsOn: []string{"op-03"}, Input: OperationInput{Health: &HealthInput{GenerationReference: generation, Unit: unit, LivenessPath: component.Health.Liveness.Path, ReadinessPath: component.Health.Readiness.Path, CandidateVerifyPath: component.Health.CandidateVerification.Path, Port: candidatePort}}, Preconditions: conditions("health-check", component.Health.Readiness.Path, "healthy"), ExpectedObservations: conditions("health-check", component.Health.CandidateVerification.Path, "healthy"), Recovery: LeaveEndpointUnchanged},
 		{ID: "op-05", Kind: SwitchEndpoint, DependsOn: []string{"op-04"}, Input: OperationInput{Endpoint: &EndpointInput{GenerationReference: generation, Unit: unit, RouteID: routeID, ListenPort: listenPort, Upstream: fmt.Sprintf("127.0.0.1:%d", candidatePort), UpstreamPort: candidatePort, DrainPolicy: "caddy-graceful-config-reload"}, Previous: observation.Deployment.Active}, Preconditions: conditions("candidate-verification", generationID, "passed"), ExpectedObservations: conditions("caddy-route", routeID, fmt.Sprintf("127.0.0.1:%d", candidatePort)), Recovery: RestorePreviousRoute},
-		{ID: "op-06", Kind: VerifyActive, DependsOn: []string{"op-05"}, Input: OperationInput{Health: &HealthInput{GenerationReference: generation, Unit: unit, LivenessPath: component.Health.Liveness.Path, ReadinessPath: component.Health.Readiness.Path, CandidateVerifyPath: component.Health.CandidateVerification.Path, Port: listenPort}}, Preconditions: conditions("caddy-route", routeID, fmt.Sprintf("127.0.0.1:%d", candidatePort)), ExpectedObservations: conditions("stable-endpoint-health", component.Health.Readiness.Path, "healthy"), Recovery: RestorePreviousRoute},
+		{ID: "op-06", Kind: VerifyActive, DependsOn: []string{"op-05"}, Input: OperationInput{Health: &HealthInput{GenerationReference: generation, Unit: unit, LivenessPath: component.Health.Liveness.Path, ReadinessPath: component.Health.Readiness.Path, CandidateVerifyPath: component.Health.CandidateVerification.Path, Port: listenPort}, Endpoint: &EndpointInput{GenerationReference: generation, Unit: unit, RouteID: routeID, ListenPort: listenPort, Upstream: fmt.Sprintf("127.0.0.1:%d", candidatePort), UpstreamPort: candidatePort, DrainPolicy: "caddy-graceful-config-reload"}, Previous: observation.Deployment.Active}, Preconditions: conditions("caddy-route", routeID, fmt.Sprintf("127.0.0.1:%d", candidatePort)), ExpectedObservations: conditions("stable-endpoint-health", component.Health.Readiness.Path, "healthy"), Recovery: RestorePreviousRoute},
 	}
 	if previous := observation.Deployment.Active; previous != nil {
 		operations = append(operations,

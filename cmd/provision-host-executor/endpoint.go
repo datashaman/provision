@@ -25,6 +25,7 @@ const (
 )
 
 var errCaddyPathNotFound = errors.New("Caddy configuration path is absent")
+var errUncertainRecovery = errors.New("post-switch recovery is uncertain")
 
 type caddyController interface {
 	Read(context.Context, string) ([]byte, error)
@@ -109,6 +110,21 @@ func validateEndpointInput(input planner.EndpointInput, previous *host.Generatio
 	if previous != nil {
 		if err := validatePlannedPrevious(*previous, record, paths, input.RouteID); err != nil {
 			return err
+		}
+	}
+	return nil
+}
+
+func validateActiveVerificationInput(health planner.HealthInput, endpoint planner.EndpointInput, previous *host.GenerationStatus, record bootstrapRecord, paths executionPaths) error {
+	if err := validateEndpointInput(endpoint, previous, record, paths); err != nil {
+		return err
+	}
+	if health.GenerationReference != endpoint.GenerationReference || health.Unit != endpoint.Unit || health.Port != endpoint.ListenPort {
+		return errors.New("post-switch Health Contract does not identify the planned stable Endpoint")
+	}
+	for _, path := range []string{health.LivenessPath, health.ReadinessPath, health.CandidateVerifyPath} {
+		if !validProbePath(path) {
+			return errors.New("post-switch Health Contract path is invalid")
 		}
 	}
 	return nil
@@ -247,6 +263,170 @@ func applySwitchEndpoint(ctx context.Context, planned planner.Operation, claim a
 		return encoded, errors.New("switched Endpoint failed exact post-load observation")
 	}
 	return encoded, nil
+}
+
+func observeActiveVerification(ctx context.Context, paths executionPaths, health planner.HealthInput, endpoint planner.EndpointInput, previous *host.GenerationStatus) host.ActiveVerificationObservation {
+	observed := host.ActiveVerificationObservation{
+		Status: host.ActiveVerificationUncertain, Candidate: generationStatusFromEndpoint(endpoint),
+		Previous: copyGenerationStatus(previous), ActiveChecks: []host.HealthCheckObservation{},
+		RecoveryAction: "inspect the stable Endpoint and choose an explicit recovery before retrying",
+	}
+	activePath := filepath.Join(paths.environmentHome, "active-generation.json")
+	current, err := readActiveGenerationRecord(activePath)
+	if err != nil || current == nil {
+		observed.Reason = "active Generation record is unavailable"
+		if err != nil {
+			observed.Reason = err.Error()
+		}
+		return observed
+	}
+	if !sameGenerationIdentity(current.Active, observed.Candidate) || current.ListenPort != endpoint.ListenPort || current.DrainPolicy != endpoint.DrainPolicy || previous == nil != (current.Previous == nil) || previous != nil && !sameGenerationIdentity(*previous, *current.Previous) {
+		observed.Reason = "recorded active and previous Generations do not match the approved Plan"
+		return observed
+	}
+	observed.Candidate = current.Active
+	observed.Previous = copyGenerationStatus(current.Previous)
+	candidate := observeSystemdCandidate(ctx, paths, planner.SystemdInput{GenerationReference: endpoint.GenerationReference, Unit: endpoint.Unit, Port: endpoint.UpstreamPort})
+	observed.Candidate.UnitActive = candidate.Status == host.CandidateActive
+	observed.Candidate.UnitMatches = candidate.Status == host.CandidateActive
+	upstream, listen, routeOK, routeErr := observeCaddyEndpoint(ctx, paths.caddy, endpoint.RouteID)
+	observed.ObservedUpstream = upstream
+	observed.Candidate.RouteObserved = routeOK
+	observed.Candidate.RouteUpstream = upstream
+	observed.Candidate.RouteMatches = routeErr == nil && routeOK && listen == endpoint.ListenPort && upstream == endpoint.Upstream
+	if !observed.Candidate.UnitActive || !observed.Candidate.RouteMatches {
+		observed.Reason = "post-switch active Generation or stable route does not match the approved Plan"
+		return observed
+	}
+	observed.ActiveChecks, observed.Reason = checkHTTPHealth(ctx, health, "stable Endpoint is unavailable")
+	if observed.Reason == "" {
+		observed.Status = host.ActiveVerificationHealthy
+		observed.RecoveryAction = ""
+	}
+	return observed
+}
+
+func applyVerifyActive(ctx context.Context, planned planner.Operation, claim authority.Claim, record bootstrapRecord, paths executionPaths, now time.Time) (json.RawMessage, error) {
+	health := *planned.Input.Health
+	endpoint := *planned.Input.Endpoint
+	observed := observeActiveVerification(ctx, paths, health, endpoint, planned.Input.Previous)
+	activePath := filepath.Join(paths.environmentHome, "active-generation.json")
+	current, err := readActiveGenerationRecord(activePath)
+	if err != nil || current == nil || current.PlanID != claim.PlanID || !sameGenerationIdentity(current.Active, generationStatusFromEndpoint(endpoint)) || current.ListenPort != endpoint.ListenPort || current.DrainPolicy != endpoint.DrainPolicy || planned.Input.Previous == nil != (current.Previous == nil) || planned.Input.Previous != nil && !sameGenerationIdentity(*planned.Input.Previous, *current.Previous) {
+		return encodeUncertainActiveVerification(observed, "durable active Generation state does not match the signed post-switch Plan")
+	}
+	if observed.Candidate.RouteMatches && observed.Candidate.UnitActive && observed.Status == host.ActiveVerificationHealthy {
+		encoded, encodeErr := json.Marshal(observed)
+		return encoded, encodeErr
+	}
+	activeFailure := observed.Reason
+	if activeFailure == "" {
+		activeFailure = "post-switch Health Contract failed"
+	}
+	if planned.Input.Previous == nil {
+		return encodeUncertainActiveVerification(observed, activeFailure+"; no previous Generation was approved for rollback")
+	}
+	previous := *planned.Input.Previous
+	observed.RollbackAttempted = true
+	previousHealth := healthForGeneration(health, endpoint.Account, previous, previous.Port)
+	previousObserved := checkCandidateHealth(ctx, paths, previousHealth)
+	observed.PreviousChecks = previousObserved.Checks
+	if previousObserved.Status != host.CandidateHealthy || !previousObserved.CandidateActive || !previousObserved.SwitchEligible {
+		return encodeUncertainActiveVerification(observed, activeFailure+"; retained previous Generation is not healthy: "+previousObserved.Reason)
+	}
+
+	serverPath := "/config/apps/http/servers/" + url.PathEscape(endpoint.RouteID)
+	oldServer, readErr := paths.caddy.Read(ctx, serverPath)
+	if readErr != nil {
+		return encodeUncertainActiveVerification(observed, activeFailure+"; current Caddy server cannot be preserved for recovery")
+	}
+	previousEndpoint := endpointForGeneration(endpoint, previous)
+	server, serverErr := caddyServerConfiguration(previousEndpoint)
+	if serverErr != nil {
+		return encodeUncertainActiveVerification(observed, activeFailure+"; previous Caddy route cannot be encoded")
+	}
+	if replaceErr := paths.caddy.Replace(ctx, serverPath, server); replaceErr != nil {
+		return encodeUncertainActiveVerification(observed, activeFailure+"; Caddy rejected rollback to the previous Generation")
+	}
+	upstream, listen, routeOK, routeErr := observeCaddyEndpoint(ctx, paths.caddy, endpoint.RouteID)
+	observed.ObservedUpstream = upstream
+	if routeErr != nil || !routeOK || listen != endpoint.ListenPort || upstream != previousEndpoint.Upstream {
+		restoreErr := paths.caddy.Replace(context.Background(), serverPath, oldServer)
+		reason := activeFailure + "; rollback route could not be established"
+		if restoreErr != nil {
+			reason += "; original route could not be restored"
+		}
+		return encodeUncertainActiveVerification(observed, reason)
+	}
+	rollbackHealth := healthForGeneration(health, endpoint.Account, previous, endpoint.ListenPort)
+	var rollbackReason string
+	observed.RollbackChecks, rollbackReason = checkHTTPHealth(ctx, rollbackHealth, "restored stable Endpoint is unavailable")
+	if rollbackReason != "" {
+		restoreErr := paths.caddy.Replace(context.Background(), serverPath, oldServer)
+		reason := activeFailure + "; restored previous Endpoint failed verification: " + rollbackReason
+		if restoreErr != nil {
+			reason += "; original route could not be restored"
+		}
+		if finalUpstream, _, finalOK, _ := observeCaddyEndpoint(context.Background(), paths.caddy, endpoint.RouteID); finalOK {
+			observed.ObservedUpstream = finalUpstream
+		}
+		return encodeUncertainActiveVerification(observed, reason)
+	}
+
+	restored := previous
+	restored.UnitActive, restored.UnitMatches = true, true
+	restored.RouteObserved, restored.RouteMatches = true, true
+	restored.RouteUpstream = previousEndpoint.Upstream
+	failedCandidate := current.Active
+	failedCandidate.RouteObserved, failedCandidate.RouteMatches = false, false
+	failedCandidate.RouteUpstream = ""
+	current.Active = restored
+	current.Previous = &failedCandidate
+	current.SwitchedAt = now.UTC()
+	if writeErr := writeJSONAtomic(activePath, *current, 0644); writeErr != nil {
+		observed.Restored = &restored
+		return encodeUncertainActiveVerification(observed, activeFailure+"; previous route is healthy but durable active Generation state could not be recorded")
+	}
+	observed.Status = host.ActiveVerificationRolledBack
+	observed.RollbackSucceeded = true
+	observed.Restored = &restored
+	observed.Reason = activeFailure
+	observed.RecoveryAction = ""
+	encoded, encodeErr := json.Marshal(observed)
+	if encodeErr != nil {
+		return nil, encodeErr
+	}
+	return encoded, errors.New("post-switch verification failed and the stable Endpoint was rolled back")
+}
+
+func healthForGeneration(template planner.HealthInput, account string, generation host.GenerationStatus, port int) planner.HealthInput {
+	return planner.HealthInput{
+		GenerationReference: planner.GenerationReference{ID: generation.ID, Revision: generation.Revision, ArtifactDigest: generation.ArtifactDigest, Account: account, ReleaseDirectory: generation.ReleaseDirectory},
+		Unit:                generation.SystemdUnit, LivenessPath: template.LivenessPath, ReadinessPath: template.ReadinessPath,
+		CandidateVerifyPath: template.CandidateVerifyPath, Port: port,
+	}
+}
+
+func endpointForGeneration(template planner.EndpointInput, generation host.GenerationStatus) planner.EndpointInput {
+	return planner.EndpointInput{
+		GenerationReference: planner.GenerationReference{ID: generation.ID, Revision: generation.Revision, ArtifactDigest: generation.ArtifactDigest, Account: template.Account, ReleaseDirectory: generation.ReleaseDirectory},
+		Unit:                generation.SystemdUnit, RouteID: template.RouteID, ListenPort: template.ListenPort,
+		Upstream: fmt.Sprintf("127.0.0.1:%d", generation.Port), UpstreamPort: generation.Port, DrainPolicy: template.DrainPolicy,
+	}
+}
+
+func encodeUncertainActiveVerification(observed host.ActiveVerificationObservation, reason string) (json.RawMessage, error) {
+	observed.Status = host.ActiveVerificationUncertain
+	observed.RollbackSucceeded = false
+	observed.Reason = reason
+	if observed.RecoveryAction == "" {
+		observed.RecoveryAction = "inspect the stable Endpoint and choose an explicit recovery before retrying"
+	}
+	encoded, err := json.Marshal(observed)
+	if err != nil {
+		return nil, err
+	}
+	return encoded, fmt.Errorf("%w: %s", errUncertainRecovery, reason)
 }
 
 func requireSuccessfulCandidateVerification(paths executionPaths, claim authority.Claim, planned planner.Operation) (string, error) {

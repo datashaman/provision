@@ -423,7 +423,7 @@ func (b *sqliteBackend) BeginOperation(ctx context.Context, request BeginOperati
 		if len(operation.DependsOn) != 0 {
 			return OperationAttempt{}, errors.New("Artifact preparation cannot have operation dependencies")
 		}
-	case planner.InstallGeneration, planner.StartCandidate, planner.VerifyCandidate, planner.SwitchEndpoint:
+	case planner.InstallGeneration, planner.StartCandidate, planner.VerifyCandidate, planner.SwitchEndpoint, planner.VerifyActive:
 		if len(operation.DependsOn) == 0 {
 			return OperationAttempt{}, errors.New("candidate operation requires a successful dependency")
 		}

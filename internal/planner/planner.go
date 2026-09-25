@@ -11,9 +11,9 @@ import (
 	"strings"
 
 	"provision/internal/config"
-	"provision/internal/drain"
 	"provision/internal/host"
 	hostasync "provision/internal/implementation/hostasync"
+	"provision/internal/planmodel"
 	"provision/internal/rollbackwindow"
 )
 
@@ -68,220 +68,72 @@ type ApprovalRequirement struct {
 	Reason     string `json:"reason"`
 }
 
-type OperationKind string
+type OperationKind = planmodel.OperationKind
 
 const (
-	StageArtifact           OperationKind = "stageArtifact"
-	InstallGeneration       OperationKind = "installGeneration"
-	StartCandidate          OperationKind = "startCandidate"
-	VerifyCandidate         OperationKind = "verifyCandidate"
-	SwitchEndpoint          OperationKind = "switchEndpoint"
-	VerifyActive            OperationKind = "verifyActive"
-	DrainPrevious           OperationKind = "drainPrevious"
-	RetainPrevious          OperationKind = "retainPrevious"
-	PrepareQueue            OperationKind = "prepareQueue"
-	InstallTaskGeneration   OperationKind = "installTaskGeneration"
-	VerifyTaskGeneration    OperationKind = "verifyTaskGeneration"
-	InstallWorkerGeneration OperationKind = "installWorkerGeneration"
-	StartWorkerCandidate    OperationKind = "startWorkerCandidate"
-	VerifyWorkerCandidate   OperationKind = "verifyWorkerCandidate"
-	FenceWorkerIntake       OperationKind = "fenceWorkerIntake"
-	DrainWorkerPrevious     OperationKind = "drainWorkerPrevious"
-	ActivateWorkerIntake    OperationKind = "activateWorkerIntake"
-	VerifyWorkerActive      OperationKind = "verifyWorkerActive"
-	InstallScheduleRuntime  OperationKind = "installScheduleRuntime"
-	HandoffSchedule         OperationKind = "handoffSchedule"
-	VerifySchedule          OperationKind = "verifySchedule"
-	RetainWorkerPrevious    OperationKind = "retainWorkerPrevious"
+	StageArtifact           = planmodel.StageArtifact
+	InstallGeneration       = planmodel.InstallGeneration
+	StartCandidate          = planmodel.StartCandidate
+	VerifyCandidate         = planmodel.VerifyCandidate
+	SwitchEndpoint          = planmodel.SwitchEndpoint
+	VerifyActive            = planmodel.VerifyActive
+	DrainPrevious           = planmodel.DrainPrevious
+	RetainPrevious          = planmodel.RetainPrevious
+	PrepareQueue            = planmodel.PrepareQueue
+	InstallTaskGeneration   = planmodel.InstallTaskGeneration
+	VerifyTaskGeneration    = planmodel.VerifyTaskGeneration
+	InstallWorkerGeneration = planmodel.InstallWorkerGeneration
+	StartWorkerCandidate    = planmodel.StartWorkerCandidate
+	VerifyWorkerCandidate   = planmodel.VerifyWorkerCandidate
+	FenceWorkerIntake       = planmodel.FenceWorkerIntake
+	DrainWorkerPrevious     = planmodel.DrainWorkerPrevious
+	ActivateWorkerIntake    = planmodel.ActivateWorkerIntake
+	VerifyWorkerActive      = planmodel.VerifyWorkerActive
+	InstallScheduleRuntime  = planmodel.InstallScheduleRuntime
+	HandoffSchedule         = planmodel.HandoffSchedule
+	VerifySchedule          = planmodel.VerifySchedule
+	RetainWorkerPrevious    = planmodel.RetainWorkerPrevious
 )
 
-type RecoveryMode string
+type RecoveryMode = planmodel.RecoveryMode
 
 const (
-	DiscardStaged                RecoveryMode = "discard-staged"
-	RemoveCandidate              RecoveryMode = "remove-candidate"
-	StopCandidate                RecoveryMode = "stop-candidate"
-	LeaveEndpointUnchanged       RecoveryMode = "leave-endpoint-unchanged"
-	RestorePreviousRoute         RecoveryMode = "restore-previous-route"
-	RetainBothGenerations        RecoveryMode = "retain-both-generations"
-	RetainQueue                  RecoveryMode = "retain-queue"
-	DiscardAsyncArtifact         RecoveryMode = "discard-async-artifact"
-	RemoveTaskCandidate          RecoveryMode = "remove-task-candidate"
-	RemoveWorkerCandidate        RecoveryMode = "remove-worker-candidate"
-	KeepCandidateGated           RecoveryMode = "keep-candidate-gated"
-	RestorePreviousWorkerIntake  RecoveryMode = "restore-previous-worker-intake"
-	ReleaseInflight              RecoveryMode = "release-in-flight"
-	RestorePreviousScheduleFence RecoveryMode = "restore-previous-schedule-fence"
-	RetainBothWorkerGenerations  RecoveryMode = "retain-both-worker-generations"
+	DiscardStaged                = planmodel.DiscardStaged
+	RemoveCandidate              = planmodel.RemoveCandidate
+	StopCandidate                = planmodel.StopCandidate
+	LeaveEndpointUnchanged       = planmodel.LeaveEndpointUnchanged
+	RestorePreviousRoute         = planmodel.RestorePreviousRoute
+	RetainBothGenerations        = planmodel.RetainBothGenerations
+	RetainQueue                  = planmodel.RetainQueue
+	DiscardAsyncArtifact         = planmodel.DiscardAsyncArtifact
+	RemoveTaskCandidate          = planmodel.RemoveTaskCandidate
+	RemoveWorkerCandidate        = planmodel.RemoveWorkerCandidate
+	KeepCandidateGated           = planmodel.KeepCandidateGated
+	RestorePreviousWorkerIntake  = planmodel.RestorePreviousWorkerIntake
+	ReleaseInflight              = planmodel.ReleaseInflight
+	RestorePreviousScheduleFence = planmodel.RestorePreviousScheduleFence
+	RetainBothWorkerGenerations  = planmodel.RetainBothWorkerGenerations
 )
 
-type Operation struct {
-	ID                   string           `json:"id"`
-	Kind                 OperationKind    `json:"kind"`
-	DependsOn            []string         `json:"dependsOn"`
-	Input                OperationInput   `json:"input"`
-	Preconditions        []TypedCondition `json:"preconditions"`
-	ExpectedObservations []TypedCondition `json:"expectedObservations"`
-	Recovery             RecoveryMode     `json:"recovery"`
-}
+type Operation = planmodel.Operation
+type TypedCondition = planmodel.TypedCondition
+type OperationInput = planmodel.OperationInput
+type AsyncOperationInput = planmodel.AsyncOperationInput
+type AsyncQueueInput = planmodel.AsyncQueueInput
+type AsyncArtifactInput = planmodel.AsyncArtifactInput
+type AsyncWorkerInput = planmodel.AsyncWorkerInput
+type AsyncTaskInput = planmodel.AsyncTaskInput
+type AsyncScheduleInput = planmodel.AsyncScheduleInput
+type AsyncRuntimeInput = planmodel.AsyncRuntimeInput
 
-type TypedCondition struct {
-	Kind     string `json:"kind"`
-	Subject  string `json:"subject"`
-	Expected string `json:"expected"`
-}
-
-type OperationInput struct {
-	Artifact   *ArtifactInput         `json:"artifact,omitempty"`
-	Generation *GenerationInput       `json:"generation,omitempty"`
-	Systemd    *SystemdInput          `json:"systemd,omitempty"`
-	Health     *HealthInput           `json:"health,omitempty"`
-	Endpoint   *EndpointInput         `json:"endpoint,omitempty"`
-	Previous   *host.GenerationStatus `json:"previous,omitempty"`
-	Drain      *DrainInput            `json:"drain,omitempty"`
-	Retention  *RetentionInput        `json:"retention,omitempty"`
-	Async      *AsyncOperationInput   `json:"async,omitempty"`
-}
-
-type AsyncOperationInput struct {
-	Queue    *AsyncQueueInput    `json:"queue,omitempty"`
-	Artifact *AsyncArtifactInput `json:"artifact,omitempty"`
-	Worker   *AsyncWorkerInput   `json:"worker,omitempty"`
-	Task     *AsyncTaskInput     `json:"task,omitempty"`
-	Schedule *AsyncScheduleInput `json:"schedule,omitempty"`
-	Runtime  *AsyncRuntimeInput  `json:"runtime,omitempty"`
-}
-
-type AsyncQueueInput struct {
-	Component           string               `json:"component"`
-	LogicalID           string               `json:"logicalId"`
-	Implementation      string               `json:"implementation"`
-	Lifecycle           string               `json:"lifecycle"`
-	Rollout             string               `json:"rollout"`
-	CredentialReference string               `json:"credentialReference"`
-	RabbitMQVersion     string               `json:"rabbitmqVersion"`
-	ImageIndex          string               `json:"imageIndex"`
-	ImageManifest       string               `json:"imageManifest"`
-	ServiceUnit         string               `json:"serviceUnit"`
-	Container           string               `json:"container"`
-	Account             string               `json:"account"`
-	DataPath            string               `json:"dataPath"`
-	QuadletPath         string               `json:"quadletPath"`
-	QueueType           string               `json:"queueType"`
-	Members             int                  `json:"members"`
-	Contract            config.QueueContract `json:"contract"`
-	Observed            *host.QueueStatus    `json:"observed,omitempty"`
-}
-
-type AsyncArtifactInput struct {
-	Component string `json:"component"`
-	Role      string `json:"role"`
-	Source    string `json:"source"`
-	Digest    string `json:"digest"`
-}
-
-type AsyncWorkerInput struct {
-	Component      string                       `json:"component"`
-	Queue          string                       `json:"queue"`
-	GenerationID   string                       `json:"generationId"`
-	Revision       string                       `json:"revision"`
-	ArtifactDigest string                       `json:"artifactDigest"`
-	SystemdUnit    string                       `json:"systemdUnit"`
-	Admission      string                       `json:"admission"`
-	Drain          config.WorkerDrain           `json:"drain"`
-	Rollout        string                       `json:"rollout"`
-	Previous       *host.WorkerGenerationStatus `json:"previous,omitempty"`
-}
-
-type AsyncTaskInput struct {
-	Component      string                     `json:"component"`
-	GenerationID   string                     `json:"generationId"`
-	Revision       string                     `json:"revision"`
-	ArtifactDigest string                     `json:"artifactDigest"`
-	SystemdUnit    string                     `json:"systemdUnit"`
-	Timeout        string                     `json:"timeout"`
-	Rollout        string                     `json:"rollout"`
-	Previous       *host.TaskGenerationStatus `json:"previous,omitempty"`
-}
-
-type AsyncScheduleInput struct {
-	Component        string                   `json:"component"`
-	Task             string                   `json:"task"`
-	TaskGenerationID string                   `json:"taskGenerationId"`
-	TimerUnit        string                   `json:"timerUnit"`
-	Expression       string                   `json:"expression"`
-	Timezone         string                   `json:"timezone"`
-	DaylightSaving   string                   `json:"daylightSaving"`
-	Overlap          string                   `json:"overlap"`
-	Retry            config.ScheduleRetry     `json:"retry"`
-	MissedRun        config.ScheduleMissedRun `json:"missedRun"`
-	Failure          string                   `json:"failure"`
-	Rollout          string                   `json:"rollout"`
-	AppletDigest     string                   `json:"appletDigest"`
-	LedgerSchema     string                   `json:"ledgerSchema"`
-	Previous         *host.ScheduleStatus     `json:"previous,omitempty"`
-}
-
-type AsyncRuntimeInput struct {
-	AppletDigest string `json:"appletDigest"`
-	LedgerSchema string `json:"ledgerSchema"`
-}
-
-type ArtifactInput struct {
-	Source string `json:"source"`
-	Digest string `json:"digest"`
-}
-
-type GenerationReference struct {
-	ID               string `json:"id"`
-	Revision         string `json:"revision"`
-	ArtifactDigest   string `json:"artifactDigest"`
-	Account          string `json:"account"`
-	ReleaseDirectory string `json:"releaseDirectory"`
-}
-
-type GenerationInput struct {
-	GenerationReference
-}
-
-type SystemdInput struct {
-	GenerationReference
-	Unit string `json:"unit"`
-	Port int    `json:"port"`
-}
-
-type HealthInput struct {
-	GenerationReference
-	Unit                string `json:"unit"`
-	LivenessPath        string `json:"livenessPath"`
-	ReadinessPath       string `json:"readinessPath"`
-	CandidateVerifyPath string `json:"candidateVerificationPath"`
-	Port                int    `json:"port"`
-}
-
-type EndpointInput struct {
-	GenerationReference
-	Unit         string `json:"unit"`
-	RouteID      string `json:"routeId"`
-	ListenPort   int    `json:"listenPort"`
-	Upstream     string `json:"upstream"`
-	UpstreamPort int    `json:"upstreamPort"`
-	DrainPolicy  string `json:"drainPolicy"`
-}
-
-type DrainInput struct {
-	Endpoint    EndpointInput         `json:"endpoint"`
-	Previous    host.GenerationStatus `json:"previous"`
-	Mode        drain.Mode            `json:"mode"`
-	MaxDuration drain.Bound           `json:"maxDuration"`
-}
-
-type RetentionInput struct {
-	Endpoint       EndpointInput         `json:"endpoint"`
-	Previous       host.GenerationStatus `json:"previous"`
-	Policy         rollbackwindow.Rule   `json:"policy"`
-	RollbackWindow rollbackwindow.Window `json:"rollbackWindow"`
-}
+type ArtifactInput = planmodel.ArtifactInput
+type GenerationReference = planmodel.GenerationReference
+type GenerationInput = planmodel.GenerationInput
+type SystemdInput = planmodel.SystemdInput
+type HealthInput = planmodel.HealthInput
+type EndpointInput = planmodel.EndpointInput
+type DrainInput = planmodel.DrainInput
+type RetentionInput = planmodel.RetentionInput
 
 // Build converts validated configuration and a restricted Host Target
 // inspection into canonical preview data. It never changes or persists state.
@@ -404,8 +256,7 @@ func buildAsync(compiled config.Compiled, observation host.BootstrapStatus) (Pre
 	for name, artifact := range compiled.Revision.Artifacts {
 		artifactDigests[name] = artifact.Digest
 	}
-	roles := asyncRoleNames(compiled)
-	queueImplementation := compiled.Environment.Implementations[roles["queue"]]
+	adapterPlan := hostasync.Plan(compiled, observation)
 	plan := Plan{
 		SchemaVersion:       SchemaVersion,
 		Application:         compiled.Application.Name,
@@ -419,8 +270,8 @@ func buildAsync(compiled config.Compiled, observation host.BootstrapStatus) (Pre
 		ApprovalRequirements: []ApprovalRequirement{{
 			Capability: "approve", Reason: "environment deployment policy requires approval of this exact Plan",
 		}},
-		SensitiveValueReferences: []string{queueImplementation.Credential},
-		Operations:               asyncOperations(compiled, observation, roles),
+		SensitiveValueReferences: adapterPlan.SensitiveValueReferences,
+		Operations:               composeAsyncOperations(adapterPlan.Transitions),
 	}
 	plan.ID, err = digest(plan)
 	if err != nil {
@@ -430,111 +281,42 @@ func buildAsync(compiled config.Compiled, observation host.BootstrapStatus) (Pre
 	return preview, nil
 }
 
-func asyncRoleNames(compiled config.Compiled) map[string]string {
-	roles := make(map[string]string, len(compiled.Application.Components))
-	for name, component := range compiled.Application.Components {
-		roles[component.Role] = name
-	}
-	return roles
-}
-
-func asyncOperations(compiled config.Compiled, observation host.BootstrapStatus, roles map[string]string) []Operation {
-	async := observation.Async
-	queueName, workerName, taskName, scheduleName := roles["queue"], roles["worker"], roles["task"], roles["schedule"]
-	queueComponent := compiled.Application.Components[queueName]
-	workerComponent := compiled.Application.Components[workerName]
-	taskComponent := compiled.Application.Components[taskName]
-	scheduleComponent := compiled.Application.Components[scheduleName]
-	queueImplementation := compiled.Environment.Implementations[queueName]
-	workerImplementation := compiled.Environment.Implementations[workerName]
-	taskImplementation := compiled.Environment.Implementations[taskName]
-	scheduleImplementation := compiled.Environment.Implementations[scheduleName]
-	workerArtifact := compiled.Revision.Artifacts[workerName]
-	taskArtifact := compiled.Revision.Artifacts[taskName]
-	workerDigestID := strings.TrimPrefix(workerArtifact.Digest, "sha256:")[:12]
-	taskDigestID := strings.TrimPrefix(taskArtifact.Digest, "sha256:")[:12]
-	workerGenerationID := compiled.Revision.Name + "-" + workerDigestID
-	taskGenerationID := compiled.Revision.Name + "-" + taskDigestID
-	workerUnit := fmt.Sprintf("provision-%s-%s-%s.service", compiled.Environment.Name, workerName, workerDigestID)
-	taskUnit := fmt.Sprintf("provision-%s-%s-%s.service", compiled.Environment.Name, taskName, taskDigestID)
-	timerUnit := fmt.Sprintf("provision-%s-%s.timer", compiled.Environment.Name, scheduleName)
-	queueInput := &AsyncQueueInput{
-		Component: queueName, LogicalID: "provision-" + compiled.Environment.Name + "-" + queueName,
-		Implementation: queueImplementation.Kind, Lifecycle: queueImplementation.Lifecycle, Rollout: queueImplementation.Rollout,
-		CredentialReference: queueImplementation.Credential, RabbitMQVersion: async.Capabilities.RabbitMQVersion,
-		ImageIndex: async.Capabilities.RabbitMQImageIndex, ImageManifest: async.Capabilities.RabbitMQImageManifest, QueueType: "quorum", Members: 1,
-		ServiceUnit: async.Capabilities.RabbitMQServiceUnit, Container: async.Capabilities.RabbitMQContainer,
-		Account: async.Capabilities.RabbitMQAccount, DataPath: async.Capabilities.RabbitMQDataPath, QuadletPath: async.Capabilities.RabbitMQQuadletPath,
-		Contract: queueComponent.Queue, Observed: async.Deployment.Queue,
-	}
-	workerInput := &AsyncWorkerInput{
-		Component: workerName, Queue: workerComponent.Worker.Queue, GenerationID: workerGenerationID,
-		Revision: compiled.Revision.Name, ArtifactDigest: workerArtifact.Digest, SystemdUnit: workerUnit,
-		Admission: workerImplementation.Worker.Admission, Drain: workerImplementation.Worker.Drain,
-		Rollout:  workerImplementation.Rollout,
-		Previous: async.Deployment.ActiveWorker,
-	}
-	taskInput := &AsyncTaskInput{
-		Component: taskName, GenerationID: taskGenerationID, Revision: compiled.Revision.Name,
-		ArtifactDigest: taskArtifact.Digest, SystemdUnit: taskUnit, Timeout: taskComponent.Task.Timeout,
-		Rollout:  taskImplementation.Rollout,
-		Previous: async.Deployment.ActiveTask,
-	}
-	scheduleInput := &AsyncScheduleInput{
-		Component: scheduleName, Task: scheduleComponent.Schedule.Task, TaskGenerationID: taskGenerationID,
-		TimerUnit: timerUnit, Expression: scheduleComponent.Schedule.Expression, Timezone: scheduleComponent.Schedule.Timezone,
-		DaylightSaving: scheduleComponent.Schedule.DaylightSaving, Overlap: scheduleComponent.Schedule.Overlap,
-		Retry: scheduleComponent.Schedule.Retry, MissedRun: scheduleComponent.Schedule.MissedRun,
-		Failure: scheduleComponent.Schedule.Failure, AppletDigest: async.Capabilities.ScheduleAppletDigest,
-		Rollout:      scheduleImplementation.Rollout,
-		LedgerSchema: async.Capabilities.ScheduleLedgerSchema, Previous: async.Deployment.Schedule,
-	}
-	workerArtifactInput := &AsyncArtifactInput{Component: workerName, Role: "worker", Source: workerArtifact.Source, Digest: workerArtifact.Digest}
-	taskArtifactInput := &AsyncArtifactInput{Component: taskName, Role: "task", Source: taskArtifact.Source, Digest: taskArtifact.Digest}
-	runtimeInput := &AsyncRuntimeInput{AppletDigest: async.Capabilities.ScheduleAppletDigest, LedgerSchema: async.Capabilities.ScheduleLedgerSchema}
-	previousWorker := "none"
-	if workerInput.Previous != nil {
-		previousWorker = workerInput.Previous.ID
-	}
-	previousSchedule := "none"
-	if scheduleInput.Previous != nil {
-		previousSchedule = scheduleInput.Previous.TaskGenerationID
-	}
+func composeAsyncOperations(transitions hostasync.TransitionSet) []Operation {
 	operations := []Operation{
-		{ID: "op-01", Kind: PrepareQueue, DependsOn: []string{}, Input: OperationInput{Async: &AsyncOperationInput{Queue: queueInput}}, Preconditions: conditions("rabbitmq-qualification", hostasync.QualificationDigest, "matched"), ExpectedObservations: conditions("queue-generation", queueInput.LogicalID, "ready-single-member-quorum"), Recovery: RetainQueue},
-		{ID: "op-02", Kind: StageArtifact, DependsOn: []string{"op-01"}, Input: OperationInput{Async: &AsyncOperationInput{Artifact: workerArtifactInput}}, Preconditions: conditions("artifact-digest", workerArtifact.Source, workerArtifact.Digest), ExpectedObservations: conditions("artifact-cache", workerArtifact.Digest, "verified"), Recovery: DiscardAsyncArtifact},
-		{ID: "op-03", Kind: StageArtifact, DependsOn: []string{"op-01"}, Input: OperationInput{Async: &AsyncOperationInput{Artifact: taskArtifactInput}}, Preconditions: conditions("artifact-digest", taskArtifact.Source, taskArtifact.Digest), ExpectedObservations: conditions("artifact-cache", taskArtifact.Digest, "verified"), Recovery: DiscardAsyncArtifact},
-		{ID: "op-04", Kind: InstallTaskGeneration, DependsOn: []string{"op-03"}, Input: OperationInput{Async: &AsyncOperationInput{Task: taskInput}}, Preconditions: conditions("artifact-cache", taskArtifact.Digest, "verified"), ExpectedObservations: conditions("task-generation", taskGenerationID, "installed"), Recovery: RemoveTaskCandidate},
-		{ID: "op-04-verify", Kind: VerifyTaskGeneration, DependsOn: []string{"op-04"}, Input: OperationInput{Async: &AsyncOperationInput{Task: taskInput}}, Preconditions: conditions("task-generation", taskGenerationID, "installed"), ExpectedObservations: conditions("task-generation", taskGenerationID, "verified-runnable"), Recovery: RemoveTaskCandidate},
-		{ID: "op-05", Kind: InstallWorkerGeneration, DependsOn: []string{"op-02", "op-01"}, Input: OperationInput{Async: &AsyncOperationInput{Worker: workerInput}}, Preconditions: conditions("queue-generation", queueInput.LogicalID, "ready"), ExpectedObservations: conditions("worker-generation", workerGenerationID, "installed-gated"), Recovery: RemoveWorkerCandidate},
-		{ID: "op-06", Kind: StartWorkerCandidate, DependsOn: []string{"op-05"}, Input: OperationInput{Async: &AsyncOperationInput{Worker: workerInput}}, Preconditions: conditions("worker-admission", workerGenerationID, "closed"), ExpectedObservations: conditions("systemd-unit", workerUnit, "active-gated"), Recovery: KeepCandidateGated},
-		{ID: "op-07", Kind: VerifyWorkerCandidate, DependsOn: []string{"op-06"}, Input: OperationInput{Async: &AsyncOperationInput{Worker: workerInput}}, Preconditions: conditions("worker-admission", workerGenerationID, "closed"), ExpectedObservations: conditions("worker-candidate", workerGenerationID, "gated-queue-connected"), Recovery: KeepCandidateGated},
-		{ID: "op-08", Kind: FenceWorkerIntake, DependsOn: []string{"op-07"}, Input: OperationInput{Async: &AsyncOperationInput{Worker: workerInput}}, Preconditions: conditions("active-worker", previousWorker, "observed"), ExpectedObservations: conditions("previous-worker-admission", previousWorker, "closed"), Recovery: RestorePreviousWorkerIntake},
-		{ID: "op-09", Kind: DrainWorkerPrevious, DependsOn: []string{"op-08"}, Input: OperationInput{Async: &AsyncOperationInput{Worker: workerInput}}, Preconditions: conditions("previous-worker-admission", previousWorker, "closed"), ExpectedObservations: conditions("previous-worker-in-flight", previousWorker, "drained-or-safely-released"), Recovery: ReleaseInflight},
-		{ID: "op-10", Kind: ActivateWorkerIntake, DependsOn: []string{"op-09"}, Input: OperationInput{Async: &AsyncOperationInput{Worker: workerInput}}, Preconditions: conditions("worker-candidate", workerGenerationID, "verified"), ExpectedObservations: conditions("worker-admission", workerGenerationID, "open"), Recovery: RestorePreviousWorkerIntake},
-		{ID: "op-11", Kind: VerifyWorkerActive, DependsOn: []string{"op-10"}, Input: OperationInput{Async: &AsyncOperationInput{Worker: workerInput}}, Preconditions: conditions("worker-admission", workerGenerationID, "open"), ExpectedObservations: conditions("worker-processing", workerGenerationID, "verified-at-least-once"), Recovery: RestorePreviousWorkerIntake},
-		{ID: "op-12", Kind: InstallScheduleRuntime, DependsOn: []string{"op-04-verify"}, Input: OperationInput{Async: &AsyncOperationInput{Runtime: runtimeInput}}, Preconditions: conditions("runtime-asset", runtimeInput.AppletDigest, "verified"), ExpectedObservations: conditions("schedule-runtime", runtimeInput.AppletDigest, "installed"), Recovery: RetainQueue},
-		{ID: "op-13", Kind: HandoffSchedule, DependsOn: []string{"op-11", "op-12", "op-04-verify"}, Input: OperationInput{Async: &AsyncOperationInput{Schedule: scheduleInput}}, Preconditions: conditions("previous-schedule-generation", previousSchedule, "fenced-or-absent"), ExpectedObservations: conditions("schedule-task-generation", taskGenerationID, "active-with-new-fence"), Recovery: RestorePreviousScheduleFence},
-		{ID: "op-14", Kind: VerifySchedule, DependsOn: []string{"op-13"}, Input: OperationInput{Async: &AsyncOperationInput{Schedule: scheduleInput}}, Preconditions: conditions("schedule-task-generation", taskGenerationID, "active"), ExpectedObservations: conditions("schedule-occurrence", scheduleName, "recorded-before-invocation"), Recovery: RestorePreviousScheduleFence},
-		{ID: "op-15", Kind: RetainWorkerPrevious, DependsOn: []string{"op-11", "op-14"}, Input: OperationInput{Async: &AsyncOperationInput{Worker: workerInput}}, Preconditions: conditions("worker-generation", workerGenerationID, "verified-active"), ExpectedObservations: conditions("previous-worker-generation", previousWorker, "retained-for-rollback-window"), Recovery: RetainBothWorkerGenerations},
+		orderedOperation(transitions.QueuePreparation, "op-01"),
+		orderedOperation(transitions.WorkerArtifact, "op-02", "op-01"),
+		orderedOperation(transitions.TaskArtifact, "op-03", "op-01"),
+		orderedOperation(transitions.TaskInstallation, "op-04", "op-03"),
+		orderedOperation(transitions.TaskVerification, "op-04-verify", "op-04"),
+		orderedOperation(transitions.WorkerInstallation, "op-05", "op-02", "op-01"),
+		orderedOperation(transitions.WorkerStart, "op-06", "op-05"),
+		orderedOperation(transitions.WorkerVerification, "op-07", "op-06"),
 	}
-	if workerInput.Previous == nil {
-		filtered := make([]Operation, 0, len(operations)-3)
-		for _, operation := range operations {
-			switch operation.Kind {
-			case FenceWorkerIntake, DrainWorkerPrevious, RetainWorkerPrevious:
-				continue
-			case ActivateWorkerIntake:
-				operation.DependsOn = []string{"op-07"}
-				operation.Recovery = KeepCandidateGated
-			case VerifyWorkerActive:
-				operation.Recovery = KeepCandidateGated
-			}
-			filtered = append(filtered, operation)
-		}
-		operations = filtered
+	workerActivationDependency := "op-07"
+	if transitions.WorkerFence != nil && transitions.WorkerDrain != nil {
+		operations = append(operations,
+			orderedOperation(*transitions.WorkerFence, "op-08", "op-07"),
+			orderedOperation(*transitions.WorkerDrain, "op-09", "op-08"),
+		)
+		workerActivationDependency = "op-09"
+	}
+	operations = append(operations,
+		orderedOperation(transitions.WorkerActivation, "op-10", workerActivationDependency),
+		orderedOperation(transitions.WorkerActiveVerify, "op-11", "op-10"),
+		orderedOperation(transitions.ScheduleRuntime, "op-12", "op-04-verify"),
+		orderedOperation(transitions.ScheduleHandoff, "op-13", "op-11", "op-12", "op-04-verify"),
+		orderedOperation(transitions.ScheduleVerify, "op-14", "op-13"),
+	)
+	if transitions.PreviousWorkerStore != nil {
+		operations = append(operations, orderedOperation(*transitions.PreviousWorkerStore, "op-15", "op-11", "op-14"))
 	}
 	return operations
+}
+
+func orderedOperation(operation Operation, id string, dependencies ...string) Operation {
+	operation.ID = id
+	operation.DependsOn = dependencies
+	return operation
 }
 
 func capabilityIssues(observation host.BootstrapStatus, selection config.HostSelection) []string {

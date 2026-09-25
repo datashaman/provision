@@ -79,7 +79,7 @@ func Evaluate(observation host.BootstrapStatus, target config.TargetSelection) E
 	async := observation.Async
 	issues = append(issues, async.Findings...)
 	deployment := async.Deployment
-	if !async.ObservationComplete && !(deployment.Queue != nil && deployment.ActiveTask != nil && deployment.Schedule != nil) {
+	if !async.ObservationComplete {
 		issues = append(issues, "asynchronous deployment observation is incomplete")
 	}
 
@@ -95,7 +95,7 @@ func Evaluate(observation host.BootstrapStatus, target config.TargetSelection) E
 		capability.QuadletDefinitionRootOwned &&
 		capability.DataPathEnvironmentOwned &&
 		capability.EncryptedCredentialObserved
-	if !detailedPackaging && deployment.Queue == nil {
+	if !detailedPackaging {
 		issues = append(issues, "rootless Queue account, subordinate IDs, lingering manager, owned paths, or encrypted credential evidence is incomplete")
 	}
 	if !capability.WorkerAdmissionGate {

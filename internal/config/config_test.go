@@ -26,6 +26,10 @@ func TestLoadExampleDeterministically(t *testing.T) {
 	if first.Application.Name != "provision-example-http" || first.Environment.Name != "lab" || first.Revision.Name != "provision-example-http-v1" {
 		t.Fatalf("unexpected compiled configuration: %+v", first)
 	}
+	implementation := first.Environment.Implementations["web"]
+	if implementation.Endpoint.Drain.Mode != "bounded-http" || implementation.Endpoint.Drain.MaxDuration != "2s" {
+		t.Fatalf("unexpected compiled drain contract: %+v", implementation.Endpoint.Drain)
+	}
 }
 
 func TestEquivalentJSONRootHasSameDigest(t *testing.T) {
@@ -65,6 +69,13 @@ func TestRejectsUnsafeOrInvalidDocuments(t *testing.T) {
 		{"unsupported component", "application.yaml", "role: http", "role: worker", "must be an HTTP service"},
 		{"unsafe health path", "application.yaml", "path: /live", "path: /live check", "liveness health path"},
 		{"unsafe host", "environment.yaml", "address: base.local", "address: -oProxyCommand=evil", "existing remote host"},
+		{"missing drain mode", "environment.yaml", "mode: bounded-http", "mode: ''", "bounded-http drain mode"},
+		{"unsupported drain mode", "environment.yaml", "mode: bounded-http", "mode: websocket", "bounded-http drain mode"},
+		{"missing drain duration", "environment.yaml", "maxDuration: 2s", "maxDuration: ''", "valid canonical drain maxDuration"},
+		{"invalid drain duration", "environment.yaml", "maxDuration: 2s", "maxDuration: eventually", "valid canonical drain maxDuration"},
+		{"noncanonical drain duration", "environment.yaml", "maxDuration: 2s", "maxDuration: 2000ms", "valid canonical drain maxDuration"},
+		{"too short drain duration", "environment.yaml", "maxDuration: 2s", "maxDuration: 500ms", "supported drain maxDuration"},
+		{"too long drain duration", "environment.yaml", "maxDuration: 2s", "maxDuration: 10m0s", "supported drain maxDuration"},
 		{"artifact credential", "revision.yaml", "https://github.com", "https://user:secret@github.com", "immutable artifact source"},
 		{"artifact query", "revision.yaml", "provision-example-http-linux-amd64.tar.gz", "provision-example-http-linux-amd64.tar.gz?token=secret", "immutable artifact source"},
 		{"bad digest", "revision.yaml", "sha256:bac304a885179a21fc889fef25cf09f12d8af19e30aa49c1c05e719d10f031b5", "sha256:bad", "sha256 digest"},

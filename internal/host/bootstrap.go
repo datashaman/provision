@@ -13,7 +13,7 @@ import (
 const ExecutorPath = "/usr/local/libexec/provision-host-executor"
 
 func AllowedOperations() []string {
-	return []string{"inspect", "stageArtifact", "installGeneration", "startCandidate", "verifyCandidate", "switchEndpoint", "verifyActive"}
+	return []string{"inspect", "stageArtifact", "installGeneration", "startCandidate", "verifyCandidate", "switchEndpoint", "verifyActive", "drainPrevious"}
 }
 
 var environmentPattern = regexp.MustCompile(`^[a-z][a-z0-9-]{0,19}$`)
@@ -75,6 +75,10 @@ type ActiveGenerationRecord struct {
 	ListenPort                           int               `json:"listenPort"`
 	DrainPolicy                          string            `json:"drainPolicy"`
 	SwitchedAt                           time.Time         `json:"switchedAt"`
+	StableVerificationOperationDigest    string            `json:"stableVerificationOperationDigest,omitempty"`
+	StableVerifiedAt                     *time.Time        `json:"stableVerifiedAt,omitempty"`
+	PreviousDrainOperationDigest         string            `json:"previousDrainOperationDigest,omitempty"`
+	PreviousDrainedAt                    *time.Time        `json:"previousDrainedAt,omitempty"`
 }
 
 // CheckBootstrap invokes only the root-owned inspector. It cannot request a

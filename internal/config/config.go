@@ -15,6 +15,8 @@ import (
 	"strings"
 
 	"go.yaml.in/yaml/v3"
+
+	"provision/internal/drain"
 )
 
 const SchemaVersion = "provision.dev/v1alpha1"
@@ -72,7 +74,13 @@ type Implementation struct {
 }
 
 type Endpoint struct {
-	Port int `yaml:"port" json:"port"`
+	Port  int   `yaml:"port" json:"port"`
+	Drain Drain `yaml:"drain" json:"drain"`
+}
+
+type Drain struct {
+	Mode        drain.Mode  `yaml:"mode" json:"mode"`
+	MaxDuration drain.Bound `yaml:"maxDuration" json:"maxDuration"`
 }
 
 type Revision struct {
@@ -321,6 +329,16 @@ func (c Compiled) validate() error {
 		implementation, ok := c.Environment.Implementations[name]
 		if !ok || implementation.Kind != "systemd" || !validName(implementation.Target) || implementation.Endpoint.Port < 1024 || implementation.Endpoint.Port > 65535 {
 			return fmt.Errorf("component %q requires a systemd implementation and unprivileged endpoint port", name)
+		}
+		if implementation.Endpoint.Drain.Mode != drain.ModeBoundedHTTP {
+			return fmt.Errorf("component %q requires the bounded-http drain mode", name)
+		}
+		_, err := drain.ParseBound(string(implementation.Endpoint.Drain.MaxDuration))
+		if err != nil && strings.Contains(err.Error(), "canonical") {
+			return fmt.Errorf("component %q requires a valid canonical drain maxDuration", name)
+		}
+		if err != nil {
+			return fmt.Errorf("component %q requires a supported drain maxDuration from 1s through 5m", name)
 		}
 		switch implementation.Rollout {
 		case "required", "preferred", "replace":

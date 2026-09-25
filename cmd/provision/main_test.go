@@ -15,6 +15,7 @@ import (
 	"testing"
 
 	"provision/internal/host"
+	"provision/internal/planner"
 )
 
 func TestAuthorizedReleasePreparationIsJournaledAcrossRestart(t *testing.T) {
@@ -427,11 +428,9 @@ func TestPlanPreviewIsDeterministicAndReadOnly(t *testing.T) {
 		t.Fatalf("equivalent inputs produced different plans:\n%s\n%s", first, second)
 	}
 	var plan struct {
-		SchemaVersion string `json:"schemaVersion"`
-		ID            string `json:"id"`
-		Operations    []struct {
-			Kind string `json:"kind"`
-		} `json:"operations"`
+		SchemaVersion string              `json:"schemaVersion"`
+		ID            string              `json:"id"`
+		Operations    []planner.Operation `json:"operations"`
 	}
 	if err := json.Unmarshal(first, &plan); err != nil {
 		t.Fatalf("invalid plan JSON: %v\n%s", err, first)
@@ -444,9 +443,19 @@ func TestPlanPreviewIsDeterministicAndReadOnly(t *testing.T) {
 		t.Fatalf("operation count = %d, want %d: %s", len(plan.Operations), len(wantOperations), first)
 	}
 	for i, want := range wantOperations {
-		if plan.Operations[i].Kind != want {
+		if string(plan.Operations[i].Kind) != want {
 			t.Fatalf("operation %d = %q, want %q", i, plan.Operations[i].Kind, want)
 		}
+	}
+	drain := plan.Operations[6]
+	if drain.ID != "op-07" || len(drain.DependsOn) != 1 || drain.DependsOn[0] != "op-06" || drain.Input.Drain == nil {
+		t.Fatalf("drain operation is not bound after stable verification: %+v", drain)
+	}
+	if drain.Input.Drain.Mode != "bounded-http" || drain.Input.Drain.MaxDuration != "2s" || drain.Input.Drain.Endpoint.DrainPolicy != "caddy-graceful-config-reload" {
+		t.Fatalf("drain operation omits declared HTTP handoff contract: %+v", drain.Input.Drain)
+	}
+	if drain.Input.Drain.Previous.ID != "provision-example-http-v0-aaaaaaaaaaaa" || drain.Input.Drain.Previous.SystemdUnit != "provision-lab-web-aaaaaaaaaaaa.service" {
+		t.Fatalf("drain operation omits exact previous Generation: %+v", drain.Input.Drain.Previous)
 	}
 	for _, concreteInput := range []string{
 		`"source": "https://github.com/datashaman/provision-example-http/releases/download/v0.1.0/provision-example-http-linux-amd64.tar.gz"`,
@@ -742,7 +751,7 @@ func writeReadyBootstrapInspection(t *testing.T, operator, authorityKeyID string
 			Port: 28181, RouteID: "provision-lab-web", UnitActive: true, UnitMatches: true,
 			RouteObserved: true, RouteUpstream: "127.0.0.1:28181", RouteMatches: true,
 		}},
-		AllowedOperations: []string{"inspect", "stageArtifact", "installGeneration", "startCandidate", "verifyCandidate", "switchEndpoint", "verifyActive"}, Ready: true, Findings: []string{},
+		AllowedOperations: []string{"inspect", "stageArtifact", "installGeneration", "startCandidate", "verifyCandidate", "switchEndpoint", "verifyActive", "drainPrevious"}, Ready: true, Findings: []string{},
 	}
 	if err := json.NewEncoder(os.Stdout).Encode(status); err != nil {
 		t.Fatal(err)
@@ -786,6 +795,9 @@ implementations:
     rollout: required
     endpoint:
       port: 18080
+      drain:
+        mode: bounded-http
+        maxDuration: 2s
 `, targetFields)
 	if err := os.WriteFile(filepath.Join(dir, "environment.yaml"), []byte(environment), 0600); err != nil {
 		t.Fatal(err)
@@ -866,7 +878,7 @@ case "$*" in
     ports='18080,28181'
     if [ "${FAKE_CANDIDATE_BUSY:-0}" = 1 ]; then ports='18080,27811,28181'; fi
     executor_digest="${FAKE_EXECUTOR_DIGEST:-sha256:e066cdc1a1b8a625dfc32db5ec74c1e4ba7bc459a3a3fc09ccc6488c44d606c5}"
-    printf '{"schemaVersion":"provision.dev/host-inspection/v1alpha1","environment":"lab","operator":"marlinf","account":"provision-lab","os":"ubuntu","osVersion":"26.04","architecture":"x86_64","systemdVersion":"systemd 259 (259.5-0ubuntu3.4)","sshServerVersion":"OpenSSH_10.2p1","caddyVersion":"%s","caddyActive":true,"journaldActive":true,"cgroupV2":true,"executorDigest":"%s","authorityKeyId":"sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc","sshHostKeyFingerprint":"SHA256:ddddddddddddddddddddddddddddddddddddddddddd","generationStorageReady":true,"caddyConfigValid":true,"caddyAdminReachable":true,"caddyConfigDurable":true,"listeningTcpPorts":[%s],"deployment":{"active":{"id":"provision-example-http-v0-aaaaaaaaaaaa","revision":"provision-example-http-v0","artifactDigest":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","systemdUnit":"provision-lab-web-aaaaaaaaaaaa.service","releaseDirectory":"/var/lib/provision/environments/lab/releases/provision-example-http-v0-aaaaaaaaaaaa","port":28181,"routeId":"provision-lab-web","unitActive":true,"unitMatches":true,"routeObserved":true,"routeUpstream":"127.0.0.1:28181","routeMatches":true}},"allowedOperations":["inspect","stageArtifact","installGeneration","startCandidate","verifyCandidate","switchEndpoint","verifyActive"],"ready":true,"findings":[]}\n' "${FAKE_CADDY_VERSION:-2.6.2}" "$executor_digest" "$ports"
+    printf '{"schemaVersion":"provision.dev/host-inspection/v1alpha1","environment":"lab","operator":"marlinf","account":"provision-lab","os":"ubuntu","osVersion":"26.04","architecture":"x86_64","systemdVersion":"systemd 259 (259.5-0ubuntu3.4)","sshServerVersion":"OpenSSH_10.2p1","caddyVersion":"%s","caddyActive":true,"journaldActive":true,"cgroupV2":true,"executorDigest":"%s","authorityKeyId":"sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc","sshHostKeyFingerprint":"SHA256:ddddddddddddddddddddddddddddddddddddddddddd","generationStorageReady":true,"caddyConfigValid":true,"caddyAdminReachable":true,"caddyConfigDurable":true,"listeningTcpPorts":[%s],"deployment":{"active":{"id":"provision-example-http-v0-aaaaaaaaaaaa","revision":"provision-example-http-v0","artifactDigest":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","systemdUnit":"provision-lab-web-aaaaaaaaaaaa.service","releaseDirectory":"/var/lib/provision/environments/lab/releases/provision-example-http-v0-aaaaaaaaaaaa","port":28181,"routeId":"provision-lab-web","unitActive":true,"unitMatches":true,"routeObserved":true,"routeUpstream":"127.0.0.1:28181","routeMatches":true}},"allowedOperations":["inspect","stageArtifact","installGeneration","startCandidate","verifyCandidate","switchEndpoint","verifyActive","drainPrevious"],"ready":true,"findings":[]}\n' "${FAKE_CADDY_VERSION:-2.6.2}" "$executor_digest" "$ports"
     ;;
   *) exit 23 ;;
 esac

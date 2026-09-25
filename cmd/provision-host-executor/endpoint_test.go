@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/ed25519"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -15,8 +16,10 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"provision/internal/authority"
+	"provision/internal/drain"
 	"provision/internal/host"
 	"provision/internal/operation"
 	"provision/internal/planner"
@@ -74,6 +77,202 @@ func TestAuthorizedEndpointSwitchRequiresVerificationAndRetainsPreviousGeneratio
 	upstream, listen, routeOK, err := observeCaddyEndpoint(context.Background(), paths.caddy, secondEndpoint.RouteID)
 	if err != nil || !routeOK || upstream != secondEndpoint.Upstream || listen != secondEndpoint.ListenPort {
 		t.Fatalf("stable Caddy route = %q, %d, %t, %v", upstream, listen, routeOK, err)
+	}
+}
+
+func TestAuthorizedHTTPDrainStopsOnlyExactPreviousUnitAndRetainsRollbackAssets(t *testing.T) {
+	paths, record, signer, publicKey, firstGeneration, firstSystemd := authorizedCandidateFixture(t)
+	stable, stablePort := startStableEndpoint(t, paths, "provision-lab-web")
+	defer stable.Close()
+	firstCandidate := prepareHealthyCandidate(t, paths, record, signer, publicKey, firstGeneration, firstSystemd, 1)
+	defer firstCandidate.Close()
+	firstEndpoint := endpointInput(firstGeneration.GenerationReference, firstSystemd.Unit, firstSystemd.Port)
+	firstEndpoint.ListenPort = stablePort
+	firstSwitch := planner.Operation{ID: "op-05", Kind: planner.SwitchEndpoint, DependsOn: []string{"op-04"}, Input: planner.OperationInput{Endpoint: &firstEndpoint}, Recovery: planner.RestorePreviousRoute}
+	firstResult, _ := executeCandidateOperation(t, paths, record, signer, publicKey, firstSwitch, 4)
+	var firstObserved host.EndpointObservation
+	if err := json.Unmarshal(firstResult.Observation, &firstObserved); err != nil || firstResult.Outcome != operation.OutcomeSucceeded {
+		t.Fatalf("first Endpoint switch = %+v, %+v, %v", firstResult, firstObserved, err)
+	}
+
+	secondGeneration, secondSystemd := anotherCandidateFixture(t, paths, firstGeneration, firstSystemd)
+	secondCandidate := prepareHealthyCandidate(t, paths, record, signer, publicKey, secondGeneration, secondSystemd, 5)
+	defer secondCandidate.Close()
+	previous := firstObserved.Active
+	secondEndpoint := endpointInput(secondGeneration.GenerationReference, secondSystemd.Unit, secondSystemd.Port)
+	secondEndpoint.ListenPort = stablePort
+	secondSwitch := planner.Operation{ID: "op-05", Kind: planner.SwitchEndpoint, DependsOn: []string{"op-04"}, Input: planner.OperationInput{Endpoint: &secondEndpoint, Previous: &previous}, Recovery: planner.RestorePreviousRoute}
+	secondResult, _ := executeCandidateOperation(t, paths, record, signer, publicKey, secondSwitch, 8)
+	if secondResult.Outcome != operation.OutcomeSucceeded {
+		t.Fatalf("second Endpoint switch = %+v", secondResult)
+	}
+	verify := activeVerificationOperation(secondEndpoint, &previous)
+	verified, _ := executeCandidateOperation(t, paths, record, signer, publicKey, verify, 9)
+	if verified.Outcome != operation.OutcomeSucceeded {
+		t.Fatalf("stable verification = %+v", verified)
+	}
+	ageStableVerification(t, paths, 10*time.Second)
+
+	drainInput := planner.DrainInput{Endpoint: secondEndpoint, Previous: previous, Mode: "bounded-http", MaxDuration: "2s"}
+	drain := planner.Operation{ID: "op-07", Kind: planner.DrainPrevious, DependsOn: []string{"op-06"}, Input: planner.OperationInput{Drain: &drainInput}, Recovery: planner.RestorePreviousRoute}
+	result, _ := executeCandidateOperation(t, paths, record, signer, publicKey, drain, 10)
+	var observed host.DrainObservation
+	if err := json.Unmarshal(result.Observation, &observed); err != nil || result.Outcome != operation.OutcomeSucceeded || observed.Status != host.DrainCompleted || !observed.BoundElapsed || !observed.StableRouteVerified || observed.PreviousUnitActive || !observed.PreviousUnitRetained || !observed.PreviousReleaseRetained {
+		t.Fatalf("HTTP drain = %+v, observation=%+v, error=%v", result, observed, err)
+	}
+	controller := paths.systemd.(*fakeSystemdController)
+	if controller.active[firstSystemd.Unit] || !controller.active[secondSystemd.Unit] || len(controller.stopped) != 1 || controller.stopped[0] != firstSystemd.Unit {
+		t.Fatalf("drain stopped the wrong units: active=%+v stopped=%+v", controller.active, controller.stopped)
+	}
+	if _, err := os.Stat(filepath.Join(paths.systemdUnits, firstSystemd.Unit)); err != nil {
+		t.Fatalf("previous unit definition was not retained: %v", err)
+	}
+	if observed := observeGeneration(firstGeneration); observed.Status != host.CandidateInstalled {
+		t.Fatalf("previous release was not retained: %+v", observed)
+	}
+	resumed, err := observeCandidateOperation(context.Background(), drain, record, paths)
+	if err != nil || resumed.State != "satisfied" {
+		t.Fatalf("completed drain resumption = %+v, %v", resumed, err)
+	}
+}
+
+func TestAuthorizedHTTPDrainRequiresExactStableVerification(t *testing.T) {
+	paths, record, signer, publicKey, endpoint, previous := prepareSwitchedTwoGenerationEndpoint(t, false)
+	drain := httpDrainOperation(endpoint, previous, "2s")
+	result, _ := executeCandidateOperation(t, paths, record, signer, publicKey, drain, 9)
+	var observed host.DrainObservation
+	if err := json.Unmarshal(result.Observation, &observed); err != nil || result.Outcome != operation.OutcomeFailed || observed.Status != host.DrainFailed || !strings.Contains(observed.Reason, "no successful exact stable Endpoint verification") {
+		t.Fatalf("unverified HTTP drain = %+v, observation=%+v, error=%v", result, observed, err)
+	}
+	controller := paths.systemd.(*fakeSystemdController)
+	if !controller.active[previous.SystemdUnit] || len(controller.stopped) != 0 {
+		t.Fatalf("unverified drain changed previous unit: active=%+v stopped=%+v", controller.active, controller.stopped)
+	}
+}
+
+func TestAuthorizedHTTPDrainFailsClosedOnRouteDrift(t *testing.T) {
+	paths, record, signer, publicKey, endpoint, previous := prepareSwitchedTwoGenerationEndpoint(t, true)
+	drifted := endpoint
+	drifted.Upstream = "127.0.0.1:29999"
+	server, err := caddyServerConfiguration(drifted)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := paths.caddy.Replace(context.Background(), "/config/apps/http/servers/"+endpoint.RouteID, server); err != nil {
+		t.Fatal(err)
+	}
+	result, _ := executeCandidateOperation(t, paths, record, signer, publicKey, httpDrainOperation(endpoint, previous, "2s"), 10)
+	var observed host.DrainObservation
+	if err := json.Unmarshal(result.Observation, &observed); err != nil || result.Outcome != operation.OutcomeUncertain || observed.Status != host.DrainUncertain || observed.RecoveryAction == "" {
+		t.Fatalf("route-drift HTTP drain = %+v, observation=%+v, error=%v", result, observed, err)
+	}
+	controller := paths.systemd.(*fakeSystemdController)
+	if !controller.active[previous.SystemdUnit] || len(controller.stopped) != 0 {
+		t.Fatalf("route-drift drain changed previous unit: active=%+v stopped=%+v", controller.active, controller.stopped)
+	}
+}
+
+func TestAuthorizedHTTPDrainReportsKnownStopFailure(t *testing.T) {
+	paths, record, signer, publicKey, endpoint, previous := prepareSwitchedTwoGenerationEndpoint(t, true)
+	controller := paths.systemd.(*fakeSystemdController)
+	controller.stopErr = errors.New("systemd refused stop")
+	result, _ := executeCandidateOperation(t, paths, record, signer, publicKey, httpDrainOperation(endpoint, previous, "2s"), 10)
+	var observed host.DrainObservation
+	if err := json.Unmarshal(result.Observation, &observed); err != nil || result.Outcome != operation.OutcomeFailed || observed.Status != host.DrainFailed || observed.Reason == "" {
+		t.Fatalf("failed HTTP drain = %+v, observation=%+v, error=%v", result, observed, err)
+	}
+	if !controller.active[previous.SystemdUnit] {
+		t.Fatal("known stop failure was reported after previous unit became inactive")
+	}
+}
+
+func TestAuthorizedHTTPDrainReconcilesStoppedUnitWithoutBlindReplay(t *testing.T) {
+	paths, record, signer, publicKey, endpoint, previous := prepareSwitchedTwoGenerationEndpoint(t, true)
+	controller := paths.systemd.(*fakeSystemdController)
+	controller.active[previous.SystemdUnit] = false
+	result, _ := executeCandidateOperation(t, paths, record, signer, publicKey, httpDrainOperation(endpoint, previous, "2s"), 10)
+	var observed host.DrainObservation
+	if err := json.Unmarshal(result.Observation, &observed); err != nil || result.Outcome != operation.OutcomeSucceeded || observed.Status != host.DrainCompleted {
+		t.Fatalf("reconciled HTTP drain = %+v, observation=%+v, error=%v", result, observed, err)
+	}
+	if len(controller.stopped) != 0 {
+		t.Fatalf("reconciliation blindly replayed systemd stop: %+v", controller.stopped)
+	}
+}
+
+func TestAuthorizedHTTPDrainWaitsOnlyRemainingBound(t *testing.T) {
+	paths, record, signer, publicKey, endpoint, previous := prepareSwitchedTwoGenerationEndpoint(t, true)
+	activePath := filepath.Join(paths.environmentHome, "active-generation.json")
+	current, err := readActiveGenerationRecord(activePath)
+	if err != nil || current == nil {
+		t.Fatalf("read active record: %+v, %v", current, err)
+	}
+	drainNow := time.Now().UTC()
+	stableVerifiedAt := drainNow.Add(-800 * time.Millisecond)
+	current.StableVerifiedAt = &stableVerifiedAt
+	if err := writeJSONAtomic(activePath, *current, 0644); err != nil {
+		t.Fatal(err)
+	}
+	started := time.Now()
+	result, _ := executeCandidateOperation(t, paths, record, signer, publicKey, httpDrainOperation(endpoint, previous, "1s"), 10)
+	elapsed := time.Since(started)
+	if result.Outcome != operation.OutcomeSucceeded || elapsed < 150*time.Millisecond || elapsed > 800*time.Millisecond {
+		t.Fatalf("remaining drain wait = %s, result=%+v", elapsed, result)
+	}
+}
+
+func TestAuthorizedHTTPDrainInterruptionResumesFromRecordedSwitchTime(t *testing.T) {
+	paths, record, signer, publicKey, endpoint, previous := prepareSwitchedTwoGenerationEndpoint(t, true)
+	drain := httpDrainOperation(endpoint, previous, "1s")
+	digest, err := planner.OperationDigest(drain)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 9, 24, 12, 10, 0, 0, time.UTC)
+	activePath := filepath.Join(paths.environmentHome, "active-generation.json")
+	current, err := readActiveGenerationRecord(activePath)
+	if err != nil || current == nil {
+		t.Fatalf("read active record: %+v, %v", current, err)
+	}
+	stableVerifiedAt := time.Now().UTC()
+	current.StableVerifiedAt = &stableVerifiedAt
+	if err := writeJSONAtomic(activePath, *current, 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	interrupted := signedTestEnvelope(t, signer, drain, digest, record, "attempt-0000000000000000000000000000000a", 10, now, now.Add(time.Minute))
+	ctx, cancel := context.WithCancel(context.Background())
+	time.AfterFunc(50*time.Millisecond, cancel)
+	result, err := executeAuthorized(ctx, interrupted, record, publicKey, paths, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var observed host.DrainObservation
+	if err := json.Unmarshal(result.Observation, &observed); err != nil || result.Outcome != operation.OutcomeUncertain || observed.Status != host.DrainUncertain || !strings.Contains(observed.Reason, "interrupted") {
+		t.Fatalf("interrupted HTTP drain = %+v, observation=%+v, error=%v", result, observed, err)
+	}
+	controller := paths.systemd.(*fakeSystemdController)
+	if !controller.active[previous.SystemdUnit] || len(controller.stopped) != 0 {
+		t.Fatalf("interrupted wait changed previous unit: active=%+v stopped=%+v", controller.active, controller.stopped)
+	}
+
+	current, err = readActiveGenerationRecord(activePath)
+	if err != nil || current == nil {
+		t.Fatalf("reread active record: %+v, %v", current, err)
+	}
+	stableVerifiedAt = time.Now().UTC().Add(-2 * time.Second)
+	current.StableVerifiedAt = &stableVerifiedAt
+	if err := writeJSONAtomic(activePath, *current, 0644); err != nil {
+		t.Fatal(err)
+	}
+	resumedAt := now.Add(2 * time.Second)
+	resumed := signedTestEnvelope(t, signer, drain, digest, record, "attempt-0000000000000000000000000000000b", 11, resumedAt, resumedAt.Add(time.Minute))
+	result, err = executeAuthorized(context.Background(), resumed, record, publicKey, paths, resumedAt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(result.Observation, &observed); err != nil || result.Outcome != operation.OutcomeSucceeded || observed.Status != host.DrainCompleted || len(controller.stopped) != 1 || controller.stopped[0] != previous.SystemdUnit {
+		t.Fatalf("resumed HTTP drain = %+v, observation=%+v, stopped=%+v, error=%v", result, observed, controller.stopped, err)
 	}
 }
 
@@ -360,6 +559,65 @@ func activeVerificationOperation(endpoint planner.EndpointInput, previous *host.
 		LivenessPath: "/live", ReadinessPath: "/ready", CandidateVerifyPath: "/verify", Port: endpoint.ListenPort,
 	}
 	return planner.Operation{ID: "op-06", Kind: planner.VerifyActive, DependsOn: []string{"op-05"}, Input: planner.OperationInput{Health: &health, Endpoint: &endpoint, Previous: previous}, Recovery: planner.RestorePreviousRoute}
+}
+
+func httpDrainOperation(endpoint planner.EndpointInput, previous host.GenerationStatus, maxDuration string) planner.Operation {
+	plannedDrain := planner.DrainInput{Endpoint: endpoint, Previous: previous, Mode: drain.ModeBoundedHTTP, MaxDuration: drain.Bound(maxDuration)}
+	return planner.Operation{ID: "op-07", Kind: planner.DrainPrevious, DependsOn: []string{"op-06"}, Input: planner.OperationInput{Drain: &plannedDrain}, Recovery: planner.RestorePreviousRoute}
+}
+
+func prepareSwitchedTwoGenerationEndpoint(t *testing.T, verifyActive bool) (executionPaths, bootstrapRecord, authority.Signer, ed25519.PublicKey, planner.EndpointInput, host.GenerationStatus) {
+	t.Helper()
+	paths, record, signer, publicKey, firstGeneration, firstSystemd := authorizedCandidateFixture(t)
+	stable, stablePort := startStableEndpoint(t, paths, "provision-lab-web")
+	t.Cleanup(stable.Close)
+	firstCandidate := prepareHealthyCandidate(t, paths, record, signer, publicKey, firstGeneration, firstSystemd, 1)
+	t.Cleanup(firstCandidate.Close)
+	firstEndpoint := endpointInput(firstGeneration.GenerationReference, firstSystemd.Unit, firstSystemd.Port)
+	firstEndpoint.ListenPort = stablePort
+	firstSwitch := planner.Operation{ID: "op-05", Kind: planner.SwitchEndpoint, DependsOn: []string{"op-04"}, Input: planner.OperationInput{Endpoint: &firstEndpoint}, Recovery: planner.RestorePreviousRoute}
+	firstResult, _ := executeCandidateOperation(t, paths, record, signer, publicKey, firstSwitch, 4)
+	var firstObserved host.EndpointObservation
+	if err := json.Unmarshal(firstResult.Observation, &firstObserved); err != nil || firstResult.Outcome != operation.OutcomeSucceeded {
+		t.Fatalf("first Endpoint switch = %+v, %+v, %v", firstResult, firstObserved, err)
+	}
+
+	secondGeneration, secondSystemd := anotherCandidateFixture(t, paths, firstGeneration, firstSystemd)
+	secondCandidate := prepareHealthyCandidate(t, paths, record, signer, publicKey, secondGeneration, secondSystemd, 5)
+	t.Cleanup(secondCandidate.Close)
+	previous := firstObserved.Active
+	secondEndpoint := endpointInput(secondGeneration.GenerationReference, secondSystemd.Unit, secondSystemd.Port)
+	secondEndpoint.ListenPort = stablePort
+	secondSwitch := planner.Operation{ID: "op-05", Kind: planner.SwitchEndpoint, DependsOn: []string{"op-04"}, Input: planner.OperationInput{Endpoint: &secondEndpoint, Previous: &previous}, Recovery: planner.RestorePreviousRoute}
+	secondResult, _ := executeCandidateOperation(t, paths, record, signer, publicKey, secondSwitch, 8)
+	if secondResult.Outcome != operation.OutcomeSucceeded {
+		t.Fatalf("second Endpoint switch = %+v", secondResult)
+	}
+	if verifyActive {
+		verified, _ := executeCandidateOperation(t, paths, record, signer, publicKey, activeVerificationOperation(secondEndpoint, &previous), 9)
+		if verified.Outcome != operation.OutcomeSucceeded {
+			t.Fatalf("stable verification = %+v", verified)
+		}
+		ageStableVerification(t, paths, 10*time.Second)
+	}
+	return paths, record, signer, publicKey, secondEndpoint, previous
+}
+
+func ageStableVerification(t *testing.T, paths executionPaths, age time.Duration) {
+	t.Helper()
+	activePath := filepath.Join(paths.environmentHome, "active-generation.json")
+	current, err := readActiveGenerationRecord(activePath)
+	if err != nil || current == nil || current.StableVerifiedAt == nil {
+		t.Fatalf("read stable verification marker: %+v, %v", current, err)
+	}
+	verifiedAt := time.Now().UTC().Add(-age)
+	if verifiedAt.Before(current.SwitchedAt) {
+		verifiedAt = current.SwitchedAt
+	}
+	current.StableVerifiedAt = &verifiedAt
+	if err := writeJSONAtomic(activePath, *current, 0644); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func anotherCandidateFixture(t *testing.T, paths executionPaths, first planner.GenerationInput, firstSystemd planner.SystemdInput) (planner.GenerationInput, planner.SystemdInput) {

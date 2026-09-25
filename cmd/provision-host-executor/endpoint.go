@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"provision/internal/authority"
+	"provision/internal/drain"
 	"provision/internal/host"
 	"provision/internal/planner"
 )
@@ -130,6 +131,19 @@ func validateActiveVerificationInput(health planner.HealthInput, endpoint planne
 	return nil
 }
 
+func validateHTTPDrainInput(input planner.DrainInput, record bootstrapRecord, paths executionPaths) error {
+	if input.Mode != drain.ModeBoundedHTTP {
+		return errors.New("HTTP drain mode is unsupported")
+	}
+	if _, err := input.MaxDuration.Duration(); err != nil {
+		return errors.New("HTTP drain maxDuration is invalid or unsupported")
+	}
+	if err := validateEndpointInput(input.Endpoint, &input.Previous, record, paths); err != nil {
+		return err
+	}
+	return nil
+}
+
 func validatePlannedPrevious(previous host.GenerationStatus, record bootstrapRecord, paths executionPaths, routeID string) error {
 	reference := planner.GenerationReference{ID: previous.ID, Revision: previous.Revision, ArtifactDigest: previous.ArtifactDigest, Account: record.Account, ReleaseDirectory: previous.ReleaseDirectory}
 	if err := validateSystemdInput(planner.SystemdInput{GenerationReference: reference, Unit: previous.SystemdUnit, Port: previous.Port}, record, paths); err != nil || previous.RouteID != routeID || !previous.UnitActive || !previous.UnitMatches || !previous.RouteObserved || !previous.RouteMatches || previous.RouteUpstream != fmt.Sprintf("127.0.0.1:%d", previous.Port) {
@@ -177,6 +191,167 @@ func observeEndpoint(ctx context.Context, paths executionPaths, input planner.En
 		result.GracefulReload = true
 	}
 	return result
+}
+
+func observeHTTPDrain(ctx context.Context, paths executionPaths, input planner.DrainInput, operationDigest string, now time.Time) host.DrainObservation {
+	observed := host.DrainObservation{
+		Status: host.DrainUncertain, Active: generationStatusFromEndpoint(input.Endpoint), Previous: input.Previous,
+		Mode: input.Mode, HandoffPolicy: input.Endpoint.DrainPolicy, MaxDuration: input.MaxDuration, OperationDigest: operationDigest,
+		RecoveryAction: "inspect the stable Endpoint and exact previous Generation before resuming the drain",
+	}
+	duration, err := input.MaxDuration.Duration()
+	if err != nil {
+		observed.Reason = "planned HTTP drain bound is invalid"
+		return observed
+	}
+	current, err := readActiveGenerationRecord(filepath.Join(paths.environmentHome, "active-generation.json"))
+	if err != nil || current == nil {
+		observed.Reason = "active Generation record is unavailable"
+		if err != nil {
+			observed.Reason = err.Error()
+		}
+		return observed
+	}
+	if !sameGenerationIdentity(current.Active, observed.Active) || current.Previous == nil || !sameGenerationIdentity(*current.Previous, input.Previous) || current.ListenPort != input.Endpoint.ListenPort || current.DrainPolicy != input.Endpoint.DrainPolicy || !digestPattern.MatchString(current.StableVerificationOperationDigest) || current.StableVerifiedAt == nil {
+		observed.Reason = "recorded active and previous Generations do not match the approved drain"
+		return observed
+	}
+	observed.Active = current.Active
+	observed.Previous = *current.Previous
+	switchedAt := current.SwitchedAt.UTC()
+	observed.SwitchedAt = &switchedAt
+	stableVerifiedAt := current.StableVerifiedAt.UTC()
+	observed.StableVerifiedAt = &stableVerifiedAt
+	deadline := current.StableVerifiedAt.Add(duration).UTC()
+	observed.Deadline = &deadline
+	observed.BoundElapsed = !now.Before(deadline)
+
+	active := observeSystemdCandidate(ctx, paths, planner.SystemdInput{GenerationReference: input.Endpoint.GenerationReference, Unit: input.Endpoint.Unit, Port: input.Endpoint.UpstreamPort})
+	upstream, listen, routeOK, routeErr := observeCaddyEndpoint(ctx, paths.caddy, input.Endpoint.RouteID)
+	observed.Active.UnitActive = active.Status == host.CandidateActive
+	observed.Active.UnitMatches = active.Status == host.CandidateActive
+	observed.Active.RouteObserved = routeOK
+	observed.Active.RouteUpstream = upstream
+	observed.Active.RouteMatches = routeErr == nil && routeOK && listen == input.Endpoint.ListenPort && upstream == input.Endpoint.Upstream
+	observed.StableRouteVerified = observed.Active.UnitActive && observed.Active.UnitMatches && observed.Active.RouteMatches
+	if !observed.StableRouteVerified {
+		observed.Reason = "active Generation or stable route no longer matches the approved drain"
+		return observed
+	}
+
+	previousReference := planner.GenerationReference{ID: input.Previous.ID, Revision: input.Previous.Revision, ArtifactDigest: input.Previous.ArtifactDigest, Account: input.Endpoint.Account, ReleaseDirectory: input.Previous.ReleaseDirectory}
+	previousSystemd := observeSystemdCandidate(ctx, paths, planner.SystemdInput{GenerationReference: previousReference, Unit: input.Previous.SystemdUnit, Port: input.Previous.Port})
+	previousGeneration := observeGeneration(planner.GenerationInput{GenerationReference: previousReference})
+	observed.PreviousUnitActive = previousSystemd.Status == host.CandidateActive
+	observed.PreviousUnitRetained = previousSystemd.Status == host.CandidateActive || previousSystemd.Status == host.CandidateInstalled
+	observed.PreviousReleaseRetained = previousGeneration.Status == host.CandidateInstalled
+	observed.Previous.UnitActive = observed.PreviousUnitActive
+	observed.Previous.UnitMatches = observed.PreviousUnitRetained
+	observed.Previous.RouteObserved = false
+	observed.Previous.RouteUpstream = ""
+	observed.Previous.RouteMatches = false
+	if !observed.PreviousUnitRetained || !observed.PreviousReleaseRetained {
+		observed.Reason = "previous Generation rollback assets are missing or do not match the approved drain"
+		return observed
+	}
+
+	markerPresent := current.PreviousDrainOperationDigest != "" || current.PreviousDrainedAt != nil
+	if markerPresent {
+		if current.PreviousDrainOperationDigest != operationDigest || current.PreviousDrainedAt == nil {
+			observed.Reason = "recorded HTTP drain completion does not match this operation"
+			return observed
+		}
+		if observed.PreviousUnitActive {
+			observed.Reason = "previous Generation is active after recorded HTTP drain completion"
+			return observed
+		}
+		observed.Status = host.DrainCompleted
+		observed.RecoveryAction = ""
+		return observed
+	}
+
+	observed.Status = host.DrainPending
+	observed.RecoveryAction = ""
+	if !observed.PreviousUnitActive {
+		observed.Reason = "previous unit is stopped but drain completion is not yet durably recorded"
+	}
+	return observed
+}
+
+func applyHTTPDrain(ctx context.Context, planned planner.Operation, claim authority.Claim, record bootstrapRecord, paths executionPaths, now time.Time) (json.RawMessage, error) {
+	input := *planned.Input.Drain
+	verificationDigest, err := requireSuccessfulActiveVerification(paths, claim, planned)
+	if err != nil {
+		return encodeHTTPDrainFailure(input, claim.OperationDigest, now, err.Error(), false)
+	}
+	activePath := filepath.Join(paths.environmentHome, "active-generation.json")
+	current, err := readActiveGenerationRecord(activePath)
+	if err != nil || current == nil || current.PlanID != claim.PlanID || current.StableVerificationOperationDigest != verificationDigest || current.StableVerifiedAt == nil {
+		return encodeHTTPDrainUncertain(input, claim.OperationDigest, now, "durable active Generation state does not match the signed drain Plan")
+	}
+	observed := observeHTTPDrain(ctx, paths, input, claim.OperationDigest, time.Now().UTC())
+	if observed.Status == host.DrainCompleted {
+		return json.Marshal(observed)
+	}
+	if observed.Status != host.DrainPending {
+		return encodeHTTPDrainUncertain(input, claim.OperationDigest, now, observed.Reason)
+	}
+
+	duration, _ := input.MaxDuration.Duration()
+	deadline := current.StableVerifiedAt.Add(duration)
+	if remaining := time.Until(deadline); remaining > 0 {
+		timer := time.NewTimer(remaining)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return encodeHTTPDrainUncertain(input, claim.OperationDigest, now, "HTTP drain wait was interrupted before its bound elapsed")
+		case <-timer.C:
+		}
+	}
+
+	observed = observeHTTPDrain(ctx, paths, input, claim.OperationDigest, time.Now().UTC())
+	if observed.Status != host.DrainPending {
+		if observed.Status == host.DrainCompleted {
+			return json.Marshal(observed)
+		}
+		return encodeHTTPDrainUncertain(input, claim.OperationDigest, deadline, observed.Reason)
+	}
+	if observed.PreviousUnitActive {
+		if output, stopErr := paths.systemd.Run(ctx, "stop", input.Previous.SystemdUnit); stopErr != nil {
+			after := observeHTTPDrain(context.Background(), paths, input, claim.OperationDigest, time.Now().UTC())
+			if after.Status != host.DrainPending {
+				return encodeHTTPDrainUncertain(input, claim.OperationDigest, time.Now().UTC(), "systemd stop failed and the previous Generation state cannot be reconciled: "+after.Reason)
+			}
+			if after.PreviousUnitActive {
+				reason := "stop exact previous systemd unit: " + strings.TrimSpace(string(output))
+				return encodeHTTPDrainFailure(input, claim.OperationDigest, time.Now().UTC(), reason, after.BoundElapsed)
+			}
+		}
+	}
+
+	afterStop := observeHTTPDrain(context.Background(), paths, input, claim.OperationDigest, time.Now().UTC())
+	if afterStop.Status != host.DrainPending || afterStop.PreviousUnitActive || !afterStop.StableRouteVerified || !afterStop.PreviousUnitRetained || !afterStop.PreviousReleaseRetained {
+		return encodeHTTPDrainUncertain(input, claim.OperationDigest, time.Now().UTC(), "exact previous unit stop could not be reconciled with retained rollback assets")
+	}
+	current, err = readActiveGenerationRecord(activePath)
+	if err != nil || current == nil || current.PlanID != claim.PlanID || !sameGenerationIdentity(current.Active, generationStatusFromEndpoint(input.Endpoint)) || current.Previous == nil || !sameGenerationIdentity(*current.Previous, input.Previous) {
+		return encodeHTTPDrainUncertain(input, claim.OperationDigest, time.Now().UTC(), "durable active Generation state changed while completing the drain")
+	}
+	completedAt := time.Now().UTC()
+	current.PreviousDrainOperationDigest = claim.OperationDigest
+	current.PreviousDrainedAt = &completedAt
+	if err := writeJSONAtomic(activePath, *current, 0644); err != nil {
+		return encodeHTTPDrainUncertain(input, claim.OperationDigest, completedAt, "previous unit is stopped but drain completion could not be recorded")
+	}
+	completed := observeHTTPDrain(context.Background(), paths, input, claim.OperationDigest, completedAt)
+	encoded, err := json.Marshal(completed)
+	if err != nil {
+		return nil, err
+	}
+	if completed.Status != host.DrainCompleted {
+		return encoded, fmt.Errorf("%w: completed HTTP drain failed exact observation", errUncertainRecovery)
+	}
+	return encoded, nil
 }
 
 func applySwitchEndpoint(ctx context.Context, planned planner.Operation, claim authority.Claim, record bootstrapRecord, paths executionPaths, now time.Time) (json.RawMessage, error) {
@@ -337,6 +512,12 @@ func applyVerifyActive(ctx context.Context, planned planner.Operation, claim aut
 		return encodeUncertainActiveVerification(observed, "durable active Generation state does not match the signed post-switch Plan")
 	}
 	if observed.Candidate.RouteMatches && observed.Candidate.UnitActive && observed.Status == host.ActiveVerificationHealthy {
+		verifiedAt := time.Now().UTC()
+		current.StableVerificationOperationDigest = claim.OperationDigest
+		current.StableVerifiedAt = &verifiedAt
+		if writeErr := writeJSONAtomic(activePath, *current, 0644); writeErr != nil {
+			return encodeUncertainActiveVerification(observed, "stable Endpoint is healthy but its signed verification completion could not be recorded")
+		}
 		encoded, encodeErr := json.Marshal(observed)
 		return encoded, encodeErr
 	}
@@ -404,6 +585,10 @@ func applyVerifyActive(ctx context.Context, planned planner.Operation, claim aut
 	current.Active = restored
 	current.Previous = &failedCandidate
 	current.SwitchedAt = now.UTC()
+	current.StableVerificationOperationDigest = ""
+	current.StableVerifiedAt = nil
+	current.PreviousDrainOperationDigest = ""
+	current.PreviousDrainedAt = nil
 	if writeErr := writeJSONAtomic(activePath, *current, 0644); writeErr != nil {
 		observed.Restored = &restored
 		return encodeUncertainActiveVerification(observed, activeFailure+"; previous route is healthy but durable active Generation state could not be recorded")
@@ -483,10 +668,53 @@ func encodeUncertainActiveVerification(observed host.ActiveVerificationObservati
 }
 
 func requireSuccessfulCandidateVerification(paths executionPaths, claim authority.Claim, planned planner.Operation) (string, error) {
+	consumedOperations, err := successfulDependencyAuthorizations(paths, claim, planned.DependsOn[0], planner.VerifyCandidate)
+	if err != nil {
+		return "", err
+	}
+	for _, consumed := range consumedOperations {
+		if consumed.Operation.Input.Health == nil || !healthMatchesEndpoint(*consumed.Operation.Input.Health, *planned.Input.Endpoint) {
+			continue
+		}
+		var observed host.HealthObservation
+		if decodeExactJSON(consumed.Observation, &observed) != nil || observed.Status != host.CandidateHealthy || !observed.CandidateActive || !observed.SwitchEligible || observed.GenerationID != planned.Input.Endpoint.ID || observed.Revision != planned.Input.Endpoint.Revision || observed.ArtifactDigest != planned.Input.Endpoint.ArtifactDigest || observed.Unit != planned.Input.Endpoint.Unit || observed.Port != planned.Input.Endpoint.UpstreamPort {
+			continue
+		}
+		return consumed.Claim.OperationDigest, nil
+	}
+	return "", errors.New("host has no successful exact candidate verification for this Plan")
+}
+
+func requireSuccessfulActiveVerification(paths executionPaths, claim authority.Claim, planned planner.Operation) (string, error) {
+	consumedOperations, err := successfulDependencyAuthorizations(paths, claim, planned.DependsOn[0], planner.VerifyActive)
+	if err != nil {
+		return "", err
+	}
+	for _, consumed := range consumedOperations {
+		if consumed.Operation.Input.Endpoint == nil || consumed.Operation.Input.Health == nil || consumed.Operation.Input.Previous == nil || !endpointInputMatches(consumed.Operation.Input.Endpoint, &planned.Input.Drain.Endpoint) || !sameGenerationIdentity(*consumed.Operation.Input.Previous, planned.Input.Drain.Previous) {
+			continue
+		}
+		var observed host.ActiveVerificationObservation
+		if decodeExactJSON(consumed.Observation, &observed) != nil || observed.Status != host.ActiveVerificationHealthy || !sameGenerationIdentity(observed.Candidate, generationStatusFromEndpoint(planned.Input.Drain.Endpoint)) || observed.Previous == nil || !sameGenerationIdentity(*observed.Previous, planned.Input.Drain.Previous) || observed.ObservedUpstream != planned.Input.Drain.Endpoint.Upstream || len(observed.ActiveChecks) != 3 {
+			continue
+		}
+		healthy := true
+		for _, check := range observed.ActiveChecks {
+			healthy = healthy && check.Healthy && check.StatusCode >= 200 && check.StatusCode < 300 && check.Reason == ""
+		}
+		if healthy {
+			return consumed.Claim.OperationDigest, nil
+		}
+	}
+	return "", errors.New("host has no successful exact stable Endpoint verification for this Plan")
+}
+
+func successfulDependencyAuthorizations(paths executionPaths, claim authority.Claim, dependencyID string, kind planner.OperationKind) ([]consumedAuthorization, error) {
 	entries, err := os.ReadDir(paths.authorityState)
 	if err != nil {
-		return "", errors.New("read host authorization history")
+		return nil, errors.New("read host authorization history")
 	}
+	result := []consumedAuthorization{}
 	for _, entry := range entries {
 		if entry.IsDir() || !attemptID.MatchString(strings.TrimSuffix(entry.Name(), ".json")) {
 			continue
@@ -506,20 +734,20 @@ func requireSuccessfulCandidateVerification(paths executionPaths, claim authorit
 		decodeErr := decoder.Decode(&consumed)
 		var extra any
 		trailingErr := decoder.Decode(&extra)
-		if decodeErr != nil || trailingErr != io.EOF || consumed.SchemaVersion != "provision.dev/consumed-authorization/v1alpha2" || consumed.Outcome != "succeeded" || consumed.Claim.PlanID != claim.PlanID || consumed.Claim.Application != claim.Application || consumed.Claim.Environment != claim.Environment || consumed.Operation.ID != planned.DependsOn[0] || consumed.Operation.Kind != planner.VerifyCandidate || consumed.Claim.OperationID != consumed.Operation.ID || consumed.Claim.OperationKind != string(consumed.Operation.Kind) {
+		if decodeErr != nil || trailingErr != io.EOF || consumed.SchemaVersion != "provision.dev/consumed-authorization/v1alpha2" || consumed.Outcome != "succeeded" || consumed.Claim.PlanID != claim.PlanID || consumed.Claim.Application != claim.Application || consumed.Claim.Environment != claim.Environment || consumed.Operation.ID != dependencyID || consumed.Operation.Kind != kind || consumed.Claim.OperationID != consumed.Operation.ID || consumed.Claim.OperationKind != string(consumed.Operation.Kind) {
 			continue
 		}
 		digest, digestErr := planner.OperationDigest(consumed.Operation)
-		if digestErr != nil || digest != consumed.Claim.OperationDigest || consumed.Operation.Input.Health == nil || !healthMatchesEndpoint(*consumed.Operation.Input.Health, *planned.Input.Endpoint) {
+		if digestErr != nil || digest != consumed.Claim.OperationDigest {
 			continue
 		}
-		var observed host.HealthObservation
-		if decodeExactJSON(consumed.Observation, &observed) != nil || observed.Status != host.CandidateHealthy || !observed.CandidateActive || !observed.SwitchEligible || observed.GenerationID != planned.Input.Endpoint.ID || observed.Revision != planned.Input.Endpoint.Revision || observed.ArtifactDigest != planned.Input.Endpoint.ArtifactDigest || observed.Unit != planned.Input.Endpoint.Unit || observed.Port != planned.Input.Endpoint.UpstreamPort {
-			continue
-		}
-		return digest, nil
+		result = append(result, consumed)
 	}
-	return "", errors.New("host has no successful exact candidate verification for this Plan")
+	return result, nil
+}
+
+func endpointInputMatches(left, right *planner.EndpointInput) bool {
+	return left != nil && right != nil && *left == *right
 }
 
 func healthMatchesEndpoint(health planner.HealthInput, endpoint planner.EndpointInput) bool {
@@ -654,7 +882,9 @@ func readActiveGenerationRecord(path string) (*host.ActiveGenerationRecord, erro
 	var extra any
 	trailingErr := decoder.Decode(&extra)
 	releaseRoot := filepath.Join(filepath.Dir(path), "releases")
-	if decodeErr != nil || trailingErr != io.EOF || record.SchemaVersion != activeGenerationSchema || !digestPattern.MatchString(record.PlanID) || !digestPattern.MatchString(record.CandidateVerificationOperationDigest) || record.ListenPort < 1024 || record.ListenPort > 65535 || record.DrainPolicy != httpDrainPolicy || record.SwitchedAt.IsZero() || validateRecordedGeneration(record.Active, releaseRoot) != nil || record.Previous != nil && validateRecordedGeneration(*record.Previous, releaseRoot) != nil {
+	stableMarkerValid := record.StableVerificationOperationDigest == "" && record.StableVerifiedAt == nil || digestPattern.MatchString(record.StableVerificationOperationDigest) && record.StableVerifiedAt != nil && !record.StableVerifiedAt.IsZero() && !record.StableVerifiedAt.Before(record.SwitchedAt)
+	drainMarkerValid := record.PreviousDrainOperationDigest == "" && record.PreviousDrainedAt == nil || digestPattern.MatchString(record.PreviousDrainOperationDigest) && record.PreviousDrainedAt != nil && !record.PreviousDrainedAt.IsZero() && record.StableVerifiedAt != nil && !record.PreviousDrainedAt.Before(*record.StableVerifiedAt) && record.Previous != nil
+	if decodeErr != nil || trailingErr != io.EOF || record.SchemaVersion != activeGenerationSchema || !digestPattern.MatchString(record.PlanID) || !digestPattern.MatchString(record.CandidateVerificationOperationDigest) || record.ListenPort < 1024 || record.ListenPort > 65535 || record.DrainPolicy != httpDrainPolicy || record.SwitchedAt.IsZero() || !stableMarkerValid || !drainMarkerValid || validateRecordedGeneration(record.Active, releaseRoot) != nil || record.Previous != nil && validateRecordedGeneration(*record.Previous, releaseRoot) != nil {
 		return nil, errors.New("active Generation record is invalid")
 	}
 	return &record, nil
@@ -692,6 +922,43 @@ func encodeEndpointUncertain(input planner.EndpointInput, previous *host.Generat
 		return nil, err
 	}
 	return encoded, fmt.Errorf("%w: %s", errUncertainRecovery, reason)
+}
+
+func encodeHTTPDrainFailure(input planner.DrainInput, operationDigest string, now time.Time, reason string, boundElapsed bool) (json.RawMessage, error) {
+	return encodeHTTPDrainError(input, operationDigest, now, host.DrainFailed, reason, "", boundElapsed)
+}
+
+func encodeHTTPDrainUncertain(input planner.DrainInput, operationDigest string, now time.Time, reason string) (json.RawMessage, error) {
+	return encodeHTTPDrainError(input, operationDigest, now, host.DrainUncertain, reason, "inspect the stable Endpoint, previous unit, and retained release before resuming", false)
+}
+
+func encodeHTTPDrainError(input planner.DrainInput, operationDigest string, now time.Time, status host.DrainStatus, reason, recoveryAction string, boundElapsed bool) (json.RawMessage, error) {
+	observed := host.DrainObservation{
+		Status: status, Active: generationStatusFromEndpoint(input.Endpoint), Previous: input.Previous,
+		Mode: input.Mode, HandoffPolicy: input.Endpoint.DrainPolicy, MaxDuration: input.MaxDuration, OperationDigest: operationDigest,
+		BoundElapsed: boundElapsed, Reason: reason, RecoveryAction: recoveryAction,
+	}
+	if current, err := readActiveGenerationRecord(filepath.Join(filepath.Dir(input.Previous.ReleaseDirectory), "..", "active-generation.json")); err == nil && current != nil {
+		switchedAt := current.SwitchedAt.UTC()
+		observed.SwitchedAt = &switchedAt
+		if current.StableVerifiedAt != nil {
+			stableVerifiedAt := current.StableVerifiedAt.UTC()
+			observed.StableVerifiedAt = &stableVerifiedAt
+		}
+		if duration, parseErr := input.MaxDuration.Duration(); parseErr == nil && current.StableVerifiedAt != nil {
+			deadline := current.StableVerifiedAt.Add(duration).UTC()
+			observed.Deadline = &deadline
+			observed.BoundElapsed = !now.Before(current.StableVerifiedAt.Add(duration))
+		}
+	}
+	encoded, err := json.Marshal(observed)
+	if err != nil {
+		return nil, err
+	}
+	if status == host.DrainUncertain {
+		return encoded, fmt.Errorf("%w: %s", errUncertainRecovery, reason)
+	}
+	return encoded, errors.New(reason)
 }
 
 func decodeExactJSON(data []byte, target any) error {

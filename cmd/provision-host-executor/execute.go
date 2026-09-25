@@ -264,6 +264,8 @@ func executeAuthorized(ctx context.Context, envelope operation.Envelope, record 
 			encoded, actionErr = applySwitchEndpoint(ctx, envelope.Operation, claim, record, paths, now)
 		} else if envelope.Operation.Kind == planner.VerifyActive {
 			encoded, actionErr = applyVerifyActive(ctx, envelope.Operation, claim, record, paths, now)
+		} else if envelope.Operation.Kind == planner.DrainPrevious {
+			encoded, actionErr = applyHTTPDrain(ctx, envelope.Operation, claim, record, paths, now)
 		} else {
 			encoded, actionErr = applyCandidateOperation(ctx, envelope.Operation, record, paths, claim.AttemptID)
 		}
@@ -376,7 +378,7 @@ func cleanupInterruptedArtifactStages(authorityState, cacheRoot, currentAttempt 
 }
 
 func validateStageArtifact(planned planner.Operation) error {
-	if planned.Kind != planner.StageArtifact || len(planned.DependsOn) != 0 || planned.Input.Artifact == nil || planned.Input.Generation != nil || planned.Input.Systemd != nil || planned.Input.Health != nil || planned.Input.Endpoint != nil || planned.Input.Previous != nil || planned.Input.Retention != nil {
+	if planned.Kind != planner.StageArtifact || len(planned.DependsOn) != 0 || planned.Input.Artifact == nil || planned.Input.Generation != nil || planned.Input.Systemd != nil || planned.Input.Health != nil || planned.Input.Endpoint != nil || planned.Input.Previous != nil || planned.Input.Drain != nil || planned.Input.Retention != nil {
 		return errors.New("only the typed stageArtifact operation is enabled")
 	}
 	artifact := planned.Input.Artifact

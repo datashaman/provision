@@ -103,6 +103,9 @@ func TestSQLiteBackendRequiresSuccessfulOperationDependencies(t *testing.T) {
 	plan.Operations = append(plan.Operations, planner.Operation{
 		ID: "op-06", Kind: planner.VerifyActive, DependsOn: []string{"op-05"},
 	})
+	plan.Operations = append(plan.Operations, planner.Operation{
+		ID: "op-07", Kind: planner.DrainPrevious, DependsOn: []string{"op-06"},
+	})
 	plan.ID = ""
 	encoded, err := json.Marshal(plan)
 	if err != nil {
@@ -141,8 +144,18 @@ func TestSQLiteBackendRequiresSuccessfulOperationDependencies(t *testing.T) {
 	if err := backend.CompleteOperation(context.Background(), CompleteOperationRequest{AttemptID: endpointAttempt.AttemptID, Holder: endpointAttempt.Holder, PlanID: plan.ID, OperationID: "op-05", FencingToken: endpointAttempt.FencingToken, Outcome: ExecutionSucceeded, Observation: json.RawMessage(`{"status":"active"}`), CompletedAt: now.Add(4*time.Minute + time.Second)}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := backend.BeginOperation(context.Background(), BeginOperationRequest{PlanID: plan.ID, OperationID: "op-06", Holder: "holder", StartedAt: now.Add(5 * time.Minute), LeaseDuration: time.Minute}); err != nil {
+	verifyAttempt, err := backend.BeginOperation(context.Background(), BeginOperationRequest{PlanID: plan.ID, OperationID: "op-06", Holder: "holder", StartedAt: now.Add(5 * time.Minute), LeaseDuration: time.Minute})
+	if err != nil {
 		t.Fatalf("post-switch verification did not begin after successful Endpoint switch: %v", err)
+	}
+	if _, err := backend.BeginOperation(context.Background(), BeginOperationRequest{PlanID: plan.ID, OperationID: "op-07", Holder: "holder", StartedAt: now.Add(6 * time.Minute), LeaseDuration: time.Minute}); err == nil || !strings.Contains(err.Error(), "op-06 has no recorded outcome") {
+		t.Fatalf("HTTP drain began while stable verification was active: %v", err)
+	}
+	if err := backend.CompleteOperation(context.Background(), CompleteOperationRequest{AttemptID: verifyAttempt.AttemptID, Holder: verifyAttempt.Holder, PlanID: plan.ID, OperationID: "op-06", FencingToken: verifyAttempt.FencingToken, Outcome: ExecutionSucceeded, Observation: json.RawMessage(`{"status":"healthy"}`), CompletedAt: now.Add(5*time.Minute + time.Second)}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := backend.BeginOperation(context.Background(), BeginOperationRequest{PlanID: plan.ID, OperationID: "op-07", Holder: "holder", StartedAt: now.Add(6 * time.Minute), LeaseDuration: time.Minute}); err != nil {
+		t.Fatalf("HTTP drain did not begin after successful stable verification: %v", err)
 	}
 }
 

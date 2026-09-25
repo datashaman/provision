@@ -187,7 +187,7 @@ func inspect(environment, operator string) host.BootstrapStatus {
 			previousDirectory := command("systemctl", "show", previous.SystemdUnit, "--property=WorkingDirectory", "--value")
 			previousEnvironment := strings.Fields(command("systemctl", "show", previous.SystemdUnit, "--property=Environment", "--value"))
 			previous.UnitMatches = previousDirectory == previous.ReleaseDirectory && contains(previousEnvironment, fmt.Sprintf("PROVISION_HTTP_LISTEN=127.0.0.1:%d", previous.Port)) && contains(previousEnvironment, "PROVISION_REVISION="+previous.Revision)
-			if !previous.UnitActive || !previous.UnitMatches {
+			if !previous.UnitMatches || !previous.UnitActive && activeRecord.PreviousDrainedAt == nil {
 				result.Findings = append(result.Findings, "retained previous Generation is not runnable")
 			}
 			result.Deployment.Previous = previous

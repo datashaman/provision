@@ -26,13 +26,14 @@ The work directory must not exist before the run. The script obtains one `sudo` 
 | Healthy rollout | none | Candidate becomes active and healthy through the stable Endpoint. |
 | Pre-switch failure | candidate verification | Failed candidate is removed; the stable Endpoint and active Generation do not change. |
 | Endpoint switch failure | Caddy unavailable during `switchEndpoint` | Outcome is uncertain, Caddy is restored, and explicit resume completes the switch. |
+| Bounded HTTP drain | A one-second ordinary request spans the Caddy handoff; the CLI then loses the completed `drainPrevious` response | The request completes on the previous revision within the declared bound; only that previous unit stops; its unit and release remain; resume records `drained` from fresh evidence without replay. |
 | Post-switch failure | stable-only health failure | Exact retained previous Generation is verified and restored; outcome remains failed with proved rollback. |
 | Process interruption | CLI killed after Caddy switched but before the result was committed | Journal retains intent; resume observes the completed switch and does not replay it. |
 | Stale executor | separately authorized old Plan attempts to record its own candidate verification after the main lineage advanced the host fence | Executor rejects the stale fencing token; the isolated lineage records an uncertain outcome and stable traffic does not move. |
 
 The shell's `Killed` diagnostic in the interruption scenario is expected evidence of the injected process termination. It is not a failed assertion.
 
-Every scenario checks the stable revision and the latest journal state. The final checks also require the expected active and previous identities, the exact Provision-owned unit and release sets, active Caddy, and the continued absence of `/srv/gimme` and `gimme-*` units.
+Every scenario checks the stable revision and the latest journal state. The final checks also require the expected active and previous identities, the exact Provision-owned unit and release sets, active Caddy, and the continued absence of `/srv/gimme` and `gimme-*` units. Drain status is explicitly `mode: bounded-http`; the harness does not qualify WebSocket or other long-lived streams.
 
 ## Evidence
 

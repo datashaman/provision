@@ -14,3 +14,6 @@ implementations:
     rollout: required
     endpoint:
       port: 18080
+      drain:
+        mode: bounded-http
+        maxDuration: 2s

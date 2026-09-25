@@ -137,7 +137,7 @@ PY
 assert_stable_revision() {
   local revision="$1" label="$2"
   local output="$work_dir/$label-stable.json"
-  curl --fail --silent --show-error --max-time 5 "http://$target_address:18080/verify" >"$output"
+  curl --noproxy '*' --fail --silent --show-error --max-time 5 "http://$target_address:18080/verify" >"$output"
   json_assert "$output" revision "\"$revision\""
 }
 
@@ -334,8 +334,11 @@ assert_no_gimme
 "$provision" host bootstrap check --address "$target_address" --user "$target_user" --environment lab --operator "$target_user" >"$work_dir/initial-host.json"
 json_assert "$work_dir/initial-host.json" ready true
 json_assert "$work_dir/initial-host.json" deployment '{}'
+known_fingerprint="$(ssh-keygen -F "$target_address" | ssh-keygen -lf - -E sha256 | awk '$NF == "(ED25519)" {print $2}' | sort -u)"
+[[ "$known_fingerprint" =~ ^SHA256:[A-Za-z0-9+/]{43}$ ]] || fail "exactly one pinned ED25519 identity is required for $target_address"
+json_assert "$work_dir/initial-host.json" sshHostKeyFingerprint "\"$known_fingerprint\""
 remote 'curl --fail --silent --show-error --max-time 5 http://127.0.0.1:2019/config/' >"$work_dir/initial-caddy-config.json"
-if curl --silent --max-time 1 "http://$target_address:18080/verify" >/dev/null 2>&1; then fail "remote stable Endpoint already exists"; fi
+if curl --noproxy '*' --silent --max-time 1 "http://$target_address:18080/verify" >/dev/null 2>&1; then fail "remote stable Endpoint already exists"; fi
 if remote 'find /etc/systemd/system -maxdepth 1 -name "provision-lab-web-*.service" -print -quit | grep -q .' ; then fail "remote Provision application units already exist"; fi
 if remote 'find /var/lib/provision/environments/lab/releases -mindepth 1 -maxdepth 1 -print -quit | grep -q .' ; then fail "remote Provision release storage is not empty"; fi
 

@@ -53,11 +53,25 @@ func TestVerifyEndpointResultBindsActiveAndPreviousGenerations(t *testing.T) {
 		t.Fatalf("valid Endpoint result rejected: %v", err)
 	}
 	result.Outcome = operation.OutcomeUncertain
-	if err := verifyHostResult(envelope, result); err == nil || !strings.Contains(err.Error(), "cannot return an uncertain") {
-		t.Fatalf("uncertain Endpoint switch result accepted: %v", err)
+	if err := verifyHostResult(envelope, result); err == nil {
+		t.Fatal("active Endpoint observation accepted as uncertain")
+	}
+	observed.Status = host.EndpointUncertain
+	observed.CandidateVerified = false
+	observed.GracefulReload = false
+	observed.Reason = "route matches neither signed Generation"
+	observed.RecoveryAction = "inspect the stable Endpoint"
+	result.Observation = mustJSON(t, observed)
+	if err := verifyHostResult(envelope, result); err != nil {
+		t.Fatalf("valid uncertain Endpoint result rejected: %v", err)
 	}
 
 	result.Outcome = operation.OutcomeSucceeded
+	observed.Status = host.EndpointActive
+	observed.CandidateVerified = true
+	observed.GracefulReload = true
+	observed.Reason = ""
+	observed.RecoveryAction = ""
 	observed.Previous.ID = "different-generation"
 	result.Observation, _ = json.Marshal(observed)
 	if err := verifyHostResult(envelope, result); err == nil || !strings.Contains(err.Error(), "previous Generation") {

@@ -45,6 +45,13 @@ func TestAuthorizedEndpointSwitchRequiresVerificationAndRetainsPreviousGeneratio
 	previous := firstObserved.Active
 	secondEndpoint := endpointInput(secondGeneration.GenerationReference, secondSystemd.Unit, secondSystemd.Port)
 	secondSwitch := planner.Operation{ID: "op-05", Kind: planner.SwitchEndpoint, DependsOn: []string{"op-04"}, Input: planner.OperationInput{Endpoint: &secondEndpoint, Previous: &previous}, Recovery: planner.RestorePreviousRoute}
+	partiallySwitched, err := caddyServerConfiguration(secondEndpoint)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := paths.caddy.Replace(context.Background(), "/config/apps/http/servers/"+secondEndpoint.RouteID, partiallySwitched); err != nil {
+		t.Fatal(err)
+	}
 	secondResult, _ := executeCandidateOperation(t, paths, record, signer, publicKey, secondSwitch, 8)
 	if secondResult.Outcome != operation.OutcomeSucceeded {
 		t.Fatalf("second Endpoint switch = %+v", secondResult)
@@ -67,6 +74,45 @@ func TestAuthorizedEndpointSwitchRequiresVerificationAndRetainsPreviousGeneratio
 	upstream, listen, routeOK, err := observeCaddyEndpoint(context.Background(), paths.caddy, secondEndpoint.RouteID)
 	if err != nil || !routeOK || upstream != secondEndpoint.Upstream || listen != secondEndpoint.ListenPort {
 		t.Fatalf("stable Caddy route = %q, %d, %t, %v", upstream, listen, routeOK, err)
+	}
+}
+
+func TestEndpointSwitchReportsUncertainForUnreconcilableRoute(t *testing.T) {
+	paths, record, signer, publicKey, firstGeneration, firstSystemd := authorizedCandidateFixture(t)
+	firstServer := prepareHealthyCandidate(t, paths, record, signer, publicKey, firstGeneration, firstSystemd, 1)
+	defer firstServer.Close()
+	firstEndpoint := endpointInput(firstGeneration.GenerationReference, firstSystemd.Unit, firstSystemd.Port)
+	firstSwitch := planner.Operation{ID: "op-05", Kind: planner.SwitchEndpoint, DependsOn: []string{"op-04"}, Input: planner.OperationInput{Endpoint: &firstEndpoint}, Recovery: planner.RestorePreviousRoute}
+	firstResult, _ := executeCandidateOperation(t, paths, record, signer, publicKey, firstSwitch, 4)
+	var firstObserved host.EndpointObservation
+	if err := json.Unmarshal(firstResult.Observation, &firstObserved); err != nil || firstResult.Outcome != operation.OutcomeSucceeded {
+		t.Fatalf("first Endpoint switch = %+v, %+v, %v", firstResult, firstObserved, err)
+	}
+
+	secondGeneration, secondSystemd := anotherCandidateFixture(t, paths, firstGeneration, firstSystemd)
+	secondServer := prepareHealthyCandidate(t, paths, record, signer, publicKey, secondGeneration, secondSystemd, 5)
+	defer secondServer.Close()
+	previous := firstObserved.Active
+	secondEndpoint := endpointInput(secondGeneration.GenerationReference, secondSystemd.Unit, secondSystemd.Port)
+	driftedEndpoint := secondEndpoint
+	driftedEndpoint.Upstream = "127.0.0.1:29999"
+	drifted, err := caddyServerConfiguration(driftedEndpoint)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := paths.caddy.Replace(context.Background(), "/config/apps/http/servers/"+secondEndpoint.RouteID, drifted); err != nil {
+		t.Fatal(err)
+	}
+
+	secondSwitch := planner.Operation{ID: "op-05", Kind: planner.SwitchEndpoint, DependsOn: []string{"op-04"}, Input: planner.OperationInput{Endpoint: &secondEndpoint, Previous: &previous}, Recovery: planner.RestorePreviousRoute}
+	result, _ := executeCandidateOperation(t, paths, record, signer, publicKey, secondSwitch, 8)
+	var observed host.EndpointObservation
+	if err := json.Unmarshal(result.Observation, &observed); err != nil || result.Outcome != operation.OutcomeUncertain || observed.Status != host.EndpointUncertain || observed.Reason == "" || observed.RecoveryAction == "" {
+		t.Fatalf("drifted Endpoint result = %+v, observation=%+v, error=%v", result, observed, err)
+	}
+	recorded, err := readActiveGenerationRecord(filepath.Join(paths.environmentHome, "active-generation.json"))
+	if err != nil || recorded == nil || recorded.Active.ID != firstGeneration.ID {
+		t.Fatalf("ambiguous route changed durable active Generation: %+v, %v", recorded, err)
 	}
 }
 
@@ -177,6 +223,11 @@ func TestPostSwitchVerificationRollsBackToHealthyPreviousGeneration(t *testing.T
 	upstream, _, routeOK, err := observeCaddyEndpoint(context.Background(), paths.caddy, secondEndpoint.RouteID)
 	if err != nil || !routeOK || upstream != fmt.Sprintf("127.0.0.1:%d", previous.Port) {
 		t.Fatalf("rolled-back stable route = %q, %t, %v", upstream, routeOK, err)
+	}
+	resumedResult, _ := executeCandidateOperation(t, paths, record, signer, publicKey, verify, 10)
+	var resumed host.ActiveVerificationObservation
+	if err := json.Unmarshal(resumedResult.Observation, &resumed); err != nil || resumedResult.Outcome != operation.OutcomeFailed || resumed.Status != host.ActiveVerificationRolledBack || !resumed.RollbackSucceeded || resumed.Restored == nil || resumed.Restored.ID != previous.ID || len(resumed.PreviousChecks) != 3 || len(resumed.RollbackChecks) != 3 || !strings.Contains(resumed.Reason, "interrupted attempt") {
+		t.Fatalf("resumed rollback = %+v, observation=%+v, error=%v", resumedResult, resumed, err)
 	}
 }
 

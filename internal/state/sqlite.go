@@ -446,6 +446,17 @@ func (b *sqliteBackend) BeginOperation(ctx context.Context, request BeginOperati
 			return OperationAttempt{}, fmt.Errorf("operation dependency %s did not succeed", dependency)
 		}
 	}
+	if request.ResumeOfAttemptID != "" {
+		var latestAttemptID, latestKind, latestOutcome string
+		if err := tx.QueryRowContext(ctx, `SELECT attempt_id, kind, outcome FROM journal_events WHERE plan_id = ? AND operation_id = ? ORDER BY sequence DESC LIMIT 1`, request.PlanID, request.OperationID).
+			Scan(&latestAttemptID, &latestKind, &latestOutcome); err != nil {
+			return OperationAttempt{}, errors.New("interrupted operation is not present in the journal")
+		}
+		resumable := latestKind == string(JournalIntent) || latestKind == string(JournalOutcome) && latestOutcome == string(ExecutionUncertain)
+		if latestAttemptID != request.ResumeOfAttemptID || !resumable {
+			return OperationAttempt{}, errors.New("interrupted operation is no longer the latest resumable journal state")
+		}
+	}
 
 	var priorToken int64
 	var priorExpiry string
@@ -489,9 +500,10 @@ func (b *sqliteBackend) BeginOperation(ctx context.Context, request BeginOperati
 		return OperationAttempt{}, err
 	}
 	intent, err := json.Marshal(struct {
-		OperationDigest string         `json:"operationDigest"`
-		Target          planner.Target `json:"target"`
-	}{operationDigest, plan.Target})
+		OperationDigest   string         `json:"operationDigest"`
+		Target            planner.Target `json:"target"`
+		ResumeOfAttemptID string         `json:"resumeOfAttemptId,omitempty"`
+	}{operationDigest, plan.Target, request.ResumeOfAttemptID})
 	if err != nil {
 		return OperationAttempt{}, fmt.Errorf("encode operation intent: %w", err)
 	}
@@ -504,13 +516,14 @@ func (b *sqliteBackend) BeginOperation(ctx context.Context, request BeginOperati
 		return OperationAttempt{}, fmt.Errorf("commit operation intent: %w", err)
 	}
 	return OperationAttempt{
-		AttemptID:      attemptID,
-		Holder:         request.Holder,
-		FencingToken:   token,
-		StartedAt:      request.StartedAt,
-		LeaseExpiresAt: leaseExpiresAt,
-		Plan:           plan,
-		Operation:      operation,
+		AttemptID:         attemptID,
+		ResumeOfAttemptID: request.ResumeOfAttemptID,
+		Holder:            request.Holder,
+		FencingToken:      token,
+		StartedAt:         request.StartedAt,
+		LeaseExpiresAt:    leaseExpiresAt,
+		Plan:              plan,
+		Operation:         operation,
 	}, nil
 }
 

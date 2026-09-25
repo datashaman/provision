@@ -164,6 +164,7 @@ func TestRemoteConnectionLossRecordsExplicitUncertainOutcome(t *testing.T) {
 		"PATH="+dir+string(os.PathListSeparator)+os.Getenv("PATH"),
 		"FAKE_AUTHORITY_KEY_ID="+keyID,
 		"FAKE_SSH_LOG="+filepath.Join(dir, "ssh.jsonl"),
+		"FAKE_EXECUTION_LOG="+filepath.Join(dir, "execution.json"),
 		"FAKE_REMOTE_MODE=connection-loss",
 		"FAKE_OBSERVE_MARKER="+filepath.Join(dir, "observed-once"),
 	)
@@ -190,6 +191,35 @@ func TestRemoteConnectionLossRecordsExplicitUncertainOutcome(t *testing.T) {
 		if !strings.Contains(string(statusOutput), evidence) {
 			t.Fatalf("uncertain remote journal omitted %s:\n%s", evidence, statusOutput)
 		}
+	}
+
+	resume := exec.Command("go", "run", ".", "deployment", "resume",
+		"--plan", planID,
+		"--state", statePath,
+		"--signing-key", privateKeyPath,
+	)
+	resume.Env = append(commandEnv, "FAKE_REMOTE_MODE=resume-satisfied")
+	resumeOutput, err := resume.CombinedOutput()
+	if err != nil || !strings.Contains(string(resumeOutput), `"outcome": "succeeded"`) || !strings.Contains(string(resumeOutput), `"status": "already-present"`) {
+		t.Fatalf("interrupted preparation did not resume from fresh Host evidence: %v\n%s", err, resumeOutput)
+	}
+
+	status = exec.Command("go", "run", ".", "deployment", "status", "--plan", planID, "--state", statePath)
+	statusOutput, statusErr = status.CombinedOutput()
+	if statusErr != nil {
+		t.Fatalf("resumed remote journal status failed: %v\n%s", statusErr, statusOutput)
+	}
+	for _, evidence := range []string{`"outcome": "uncertain"`, `"outcome": "succeeded"`, `"resumeOfAttemptId"`, `"status": "already-present"`} {
+		if !strings.Contains(string(statusOutput), evidence) {
+			t.Fatalf("resumed journal omitted %s:\n%s", evidence, statusOutput)
+		}
+	}
+	sshCalls, readErr := os.ReadFile(filepath.Join(dir, "ssh.jsonl"))
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	if count := strings.Count(string(sshCalls), `"execute"`); count != 1 {
+		t.Fatalf("resume replayed the already-satisfied operation; execute calls = %d:\n%s", count, sshCalls)
 	}
 }
 
@@ -257,6 +287,13 @@ func TestProvisionRemoteSSHHelper(t *testing.T) {
 		os.Exit(0)
 	}
 	if strings.Contains(joined, " observe-artifact ") {
+		if os.Getenv("FAKE_REMOTE_MODE") == "resume-satisfied" {
+			digest := arguments[len(arguments)-1]
+			_ = json.NewEncoder(os.Stdout).Encode(map[string]any{
+				"status": "already-present", "path": "/var/lib/provision/artifacts/sha256/" + strings.TrimPrefix(digest, "sha256:"), "digest": digest, "size": 123,
+			})
+			os.Exit(0)
+		}
 		if os.Getenv("FAKE_REMOTE_MODE") == "connection-loss" {
 			marker := os.Getenv("FAKE_OBSERVE_MARKER")
 			if _, err := os.Stat(marker); err == nil {

@@ -134,7 +134,26 @@ If stable-route health fails, the executor does not immediately move traffic. It
 
 If there is no signed previous Generation, the previous Generation is unhealthy, Caddy cannot establish the rollback route, stable-route recovery cannot be verified, or durable active state cannot be recorded, the executor returns a structured `uncertain` result with an explicit recovery action. Provision commits that result to the State Backend and requires operator inspection; it never converts ambiguity into success. Both Generations remain retained by this slice.
 
-## 8. Read the durable journal
+## 8. Resume an interrupted or uncertain operation
+
+After the original execution lease has expired or been released, resume the latest interrupted or uncertain operation recorded for the Plan:
+
+```sh
+go run ./cmd/provision deployment resume \
+  --plan sha256:PLAN_DIGEST \
+  --state .provision/state.db \
+  --signing-key .provision/host-authority.key
+```
+
+Resume selects the operation from the append-only journal; the operator does not re-specify an operation ID. The State Backend atomically requires the selected attempt to remain that operation's latest resumable event, grants a higher fencing token, and records `resumeOfAttemptId` in the new intent. A still-live execution lease must expire before another executor can resume it. A known `failed` outcome is not silently retried: it requires an explicit new execution decision.
+
+The new executor observes the Host Target before causing another side effect. If the intended result is already proved, it records success from that fresh evidence without dispatching the mutation again. If the operation is still pending, its typed idempotent implementation may continue under the new fence. If observation is ambiguous, it records another `uncertain` outcome with the evidence, declared recovery mode, and an actionable `recoveryAction`; no mutation is replayed.
+
+Traffic switching has an additional host-side recovery boundary. If Caddy already points to the signed candidate but the durable active-generation record still names the signed previous Generation, the executor verifies that exact partial state and completes the durable record instead of loading the route again. A route matching neither signed Generation is uncertain. Post-switch verification similarly recognizes a rollback already completed by an interrupted attempt, rechecks the restored Generation directly and through the stable Endpoint, and records the reconstructed rolled-back result.
+
+Every resume handles one journaled operation. Run `deployment status` after it, and invoke resume again only if the latest outcome remains uncertain and the reported recovery action has been completed.
+
+## 9. Read the durable journal
 
 ```sh
 go run ./cmd/provision deployment status \
@@ -142,7 +161,7 @@ go run ./cmd/provision deployment status \
   --state .provision/state.db
 ```
 
-The output contains append-only authoritative intent and outcome events, including the attempt identity and fencing token. It survives process restart. The State Backend rejects a concurrent Environment mutation and refuses a late result from an expired or replaced execution lease. A stale token cannot append to that journal, advance state, or release the current lease. Its submitted observation is retained separately under `rejectedResults` as non-authoritative audit evidence so the interrupted history does not disappear.
+The output contains append-only authoritative intent and outcome events, including the attempt identity, resume provenance, fencing token, and structured evidence. It survives process restart. The State Backend rejects a concurrent Environment mutation and refuses a late result from an expired or replaced execution lease. A stale token cannot append to that journal, advance state, or release the current lease. Its submitted observation is retained separately under `rejectedResults` as non-authoritative audit evidence so the interrupted history does not disappear.
 
 ## Current boundary
 

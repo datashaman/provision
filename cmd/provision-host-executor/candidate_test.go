@@ -99,11 +99,19 @@ func TestAuthorizedCandidateLifecyclePreservesActiveAndCleansFailedCandidate(t *
 	if installResult.Outcome != operation.OutcomeSucceeded || !strings.Contains(string(installResult.Observation), `"status":"installed"`) {
 		t.Fatalf("authorized install = %+v", installResult)
 	}
+	installed, err := observeCandidateOperation(context.Background(), install, record, paths)
+	if err != nil || installed.State != "satisfied" {
+		t.Fatalf("installed Generation resumption observation = %+v, %v", installed, err)
+	}
 
 	start := planner.Operation{ID: "op-03", Kind: planner.StartCandidate, DependsOn: []string{"op-02"}, Input: planner.OperationInput{Systemd: &systemd}}
 	startResult, _ := executeCandidateOperation(t, paths, record, signer, publicKey, start, 2)
 	if startResult.Outcome != operation.OutcomeSucceeded || !strings.Contains(string(startResult.Observation), `"status":"active"`) {
 		t.Fatalf("authorized start = %+v", startResult)
+	}
+	started, err := observeCandidateOperation(context.Background(), start, record, paths)
+	if err != nil || started.State != "satisfied" {
+		t.Fatalf("active candidate resumption observation = %+v, %v", started, err)
 	}
 	unit, err := os.ReadFile(filepath.Join(paths.systemdUnits, systemd.Unit))
 	if err != nil || !strings.Contains(string(unit), "PROVISION_HTTP_LISTEN=127.0.0.1:") || !strings.Contains(string(unit), "PROVISION_REVISION="+generation.Revision) || !strings.Contains(string(unit), "IPAddressDeny=any\nIPAddressAllow=localhost") {

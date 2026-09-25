@@ -51,6 +51,12 @@ type Request struct {
 	LeaseDuration time.Duration
 }
 
+type ResumeRequest struct {
+	PlanID        string
+	Holder        string
+	LeaseDuration time.Duration
+}
+
 func NewLocalHolder() (string, error) {
 	nonce := make([]byte, 8)
 	if _, err := rand.Read(nonce); err != nil {
@@ -60,6 +66,62 @@ func NewLocalHolder() (string, error) {
 }
 
 func (e Engine) Execute(ctx context.Context, request Request) (operation.Result, error) {
+	return e.execute(ctx, request, "")
+}
+
+func (e Engine) Resume(ctx context.Context, request ResumeRequest) (operation.Result, error) {
+	if e.Backend == nil || e.Handler == nil || e.Now == nil {
+		return operation.Result{}, errors.New("execution engine is not fully configured")
+	}
+	snapshot, err := e.Backend.LoadPlanSnapshot(ctx, request.PlanID)
+	if err != nil {
+		return operation.Result{}, err
+	}
+	events, err := e.Backend.LoadJournal(ctx, request.PlanID)
+	if err != nil {
+		return operation.Result{}, err
+	}
+	operationID, interruptedAttemptID, err := interruptedOperation(snapshot.Plan, events)
+	if err != nil {
+		return operation.Result{}, err
+	}
+	return e.execute(ctx, Request{
+		PlanID: request.PlanID, OperationID: operationID, Holder: request.Holder, LeaseDuration: request.LeaseDuration,
+	}, interruptedAttemptID)
+}
+
+func interruptedOperation(plan planner.Plan, events []state.JournalEvent) (string, string, error) {
+	latest := map[string]state.JournalEvent{}
+	for _, event := range events {
+		latest[event.OperationID] = event
+	}
+	for _, planned := range plan.Operations {
+		event, ok := latest[planned.ID]
+		if !ok {
+			continue
+		}
+		switch event.Kind {
+		case state.JournalIntent:
+			return planned.ID, event.AttemptID, nil
+		case state.JournalOutcome:
+			switch event.Outcome {
+			case state.ExecutionSucceeded:
+				continue
+			case state.ExecutionUncertain:
+				return planned.ID, event.AttemptID, nil
+			case state.ExecutionFailed:
+				return "", "", fmt.Errorf("operation %s has a known failed outcome and requires an explicit new execution decision", planned.ID)
+			default:
+				return "", "", fmt.Errorf("operation %s has an unsupported journal outcome", planned.ID)
+			}
+		default:
+			return "", "", fmt.Errorf("operation %s has an unsupported journal event", planned.ID)
+		}
+	}
+	return "", "", errors.New("deployment has no interrupted or uncertain operation to resume")
+}
+
+func (e Engine) execute(ctx context.Context, request Request, resumeOfAttemptID string) (operation.Result, error) {
 	if e.Backend == nil || e.Handler == nil || e.Now == nil {
 		return operation.Result{}, errors.New("execution engine is not fully configured")
 	}
@@ -72,11 +134,8 @@ func (e Engine) Execute(ctx context.Context, request Request) (operation.Result,
 	}
 	now := e.Now().UTC()
 	attempt, err := e.Backend.BeginOperation(ctx, state.BeginOperationRequest{
-		PlanID:        request.PlanID,
-		OperationID:   request.OperationID,
-		Holder:        request.Holder,
-		StartedAt:     now,
-		LeaseDuration: request.LeaseDuration,
+		PlanID: request.PlanID, OperationID: request.OperationID, Holder: request.Holder,
+		ResumeOfAttemptID: resumeOfAttemptID, StartedAt: now, LeaseDuration: request.LeaseDuration,
 	})
 	if err != nil {
 		return operation.Result{}, err
@@ -117,6 +176,11 @@ func (e Engine) Execute(ctx context.Context, request Request) (operation.Result,
 		journalContext, cancelJournal := failureContext(ctx)
 		defer cancelJournal()
 		return operation.Result{}, e.recordUncertain(journalContext, attempt, err, HandlerObservation{State: ObservationUnknown})
+	}
+	if resumeOfAttemptID != "" && before.State == ObservationUnknown {
+		journalContext, cancelJournal := failureContext(ctx)
+		defer cancelJournal()
+		return operation.Result{}, e.recordUncertain(journalContext, attempt, errors.New("fresh Host Target observation is ambiguous; mutation was not replayed"), before)
 	}
 	if before.State == ObservationSatisfied {
 		result := operation.Result{
@@ -245,12 +309,18 @@ func (e Engine) executeWithLeaseRenewal(ctx context.Context, request Request, at
 
 func (e Engine) recordUncertain(ctx context.Context, attempt state.OperationAttempt, cause error, observed HandlerObservation) error {
 	observation, _ := json.Marshal(struct {
-		Status   string               `json:"status"`
-		Reason   string               `json:"reason"`
-		Recovery planner.RecoveryMode `json:"recovery"`
-		Observed ObservationState     `json:"observed"`
-		Evidence json.RawMessage      `json:"evidence,omitempty"`
-	}{Status: "uncertain", Reason: cause.Error(), Recovery: e.Handler.Recovery(attempt.Operation), Observed: observed.State, Evidence: observed.Evidence})
+		Status            string               `json:"status"`
+		Reason            string               `json:"reason"`
+		Recovery          planner.RecoveryMode `json:"recovery"`
+		RecoveryAction    string               `json:"recoveryAction"`
+		ResumeOfAttemptID string               `json:"resumeOfAttemptId,omitempty"`
+		Observed          ObservationState     `json:"observed"`
+		Evidence          json.RawMessage      `json:"evidence,omitempty"`
+	}{
+		Status: "uncertain", Reason: cause.Error(), Recovery: e.Handler.Recovery(attempt.Operation),
+		RecoveryAction: recoveryAction(attempt.Operation), ResumeOfAttemptID: attempt.ResumeOfAttemptID,
+		Observed: observed.State, Evidence: observed.Evidence,
+	})
 	recordErr := e.Backend.CompleteOperation(ctx, state.CompleteOperationRequest{
 		AttemptID: attempt.AttemptID, Holder: attempt.Holder,
 		PlanID: attempt.Plan.ID, OperationID: attempt.Operation.ID,
@@ -261,4 +331,21 @@ func (e Engine) recordUncertain(ctx context.Context, attempt state.OperationAtte
 		return fmt.Errorf("%w; uncertain outcome could not be committed: %v", cause, recordErr)
 	}
 	return fmt.Errorf("%w; outcome recorded as uncertain", cause)
+}
+
+func recoveryAction(planned planner.Operation) string {
+	switch planned.Recovery {
+	case planner.DiscardStaged:
+		return "inspect the digest-addressed Artifact cache before retrying"
+	case planner.RemoveCandidate, planner.StopCandidate:
+		return "inspect the planned Generation and systemd unit before retrying or removing the candidate"
+	case planner.LeaveEndpointUnchanged:
+		return "inspect candidate health and confirm the stable Endpoint remains unchanged"
+	case planner.RestorePreviousRoute:
+		return "inspect the stable Endpoint and active/previous Generations before choosing retry or rollback"
+	case planner.RetainBothGenerations:
+		return "retain both Generations and inspect policy state before cleanup"
+	default:
+		return "inspect the recorded evidence and Host Target before choosing the next operation"
+	}
 }

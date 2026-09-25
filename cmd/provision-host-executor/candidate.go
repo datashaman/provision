@@ -21,6 +21,7 @@ import (
 
 	"provision/internal/host"
 	"provision/internal/planner"
+	"provision/internal/rollbackwindow"
 )
 
 const generationManifestName = ".provision-generation.json"
@@ -38,43 +39,64 @@ func (commandSystemdController) Run(ctx context.Context, args ...string) ([]byte
 }
 
 func validateCandidateOperation(planned planner.Operation, record bootstrapRecord, paths executionPaths) error {
-	if planned.Input.Artifact != nil || planned.Input.Retention != nil {
+	if planned.Input.Artifact != nil {
 		return errors.New("candidate operation contains an unrelated typed input")
 	}
 	switch planned.Kind {
 	case planner.InstallGeneration:
-		if len(planned.DependsOn) != 1 || planned.Input.Generation == nil || planned.Input.Systemd != nil || planned.Input.Health != nil || planned.Input.Endpoint != nil || planned.Input.Previous != nil || planned.Input.Drain != nil {
+		if len(planned.DependsOn) != 1 || planned.Input.Generation == nil || planned.Input.Systemd != nil || planned.Input.Health != nil || planned.Input.Endpoint != nil || planned.Input.Previous != nil || planned.Input.Drain != nil || planned.Input.Retention != nil {
 			return errors.New("installGeneration requires only its typed Generation input and one dependency")
 		}
 		return validateGenerationInput(*planned.Input.Generation, record, paths)
 	case planner.StartCandidate:
-		if len(planned.DependsOn) != 1 || planned.Input.Systemd == nil || planned.Input.Generation != nil || planned.Input.Health != nil || planned.Input.Endpoint != nil || planned.Input.Previous != nil || planned.Input.Drain != nil {
+		if len(planned.DependsOn) != 1 || planned.Input.Systemd == nil || planned.Input.Generation != nil || planned.Input.Health != nil || planned.Input.Endpoint != nil || planned.Input.Previous != nil || planned.Input.Drain != nil || planned.Input.Retention != nil {
 			return errors.New("startCandidate requires only its typed systemd input and one dependency")
 		}
 		return validateSystemdInput(*planned.Input.Systemd, record, paths)
 	case planner.VerifyCandidate:
-		if len(planned.DependsOn) != 1 || planned.Input.Health == nil || planned.Input.Generation != nil || planned.Input.Systemd != nil || planned.Input.Endpoint != nil || planned.Input.Previous != nil || planned.Input.Drain != nil {
+		if len(planned.DependsOn) != 1 || planned.Input.Health == nil || planned.Input.Generation != nil || planned.Input.Systemd != nil || planned.Input.Endpoint != nil || planned.Input.Previous != nil || planned.Input.Drain != nil || planned.Input.Retention != nil {
 			return errors.New("verifyCandidate requires only its typed Health Contract input and one dependency")
 		}
 		return validateHealthInput(*planned.Input.Health, record, paths)
 	case planner.SwitchEndpoint:
-		if len(planned.DependsOn) != 1 || planned.DependsOn[0] != "op-04" || planned.Input.Endpoint == nil || planned.Input.Generation != nil || planned.Input.Systemd != nil || planned.Input.Health != nil || planned.Input.Drain != nil {
+		if len(planned.DependsOn) != 1 || planned.DependsOn[0] != "op-04" || planned.Input.Endpoint == nil || planned.Input.Generation != nil || planned.Input.Systemd != nil || planned.Input.Health != nil || planned.Input.Drain != nil || planned.Input.Retention != nil {
 			return errors.New("switchEndpoint requires only its typed Endpoint input, optional planned previous Generation, and candidate-verification dependency")
 		}
 		return validateEndpointInput(*planned.Input.Endpoint, planned.Input.Previous, record, paths)
 	case planner.VerifyActive:
-		if len(planned.DependsOn) != 1 || planned.DependsOn[0] != "op-05" || planned.Input.Health == nil || planned.Input.Endpoint == nil || planned.Input.Generation != nil || planned.Input.Systemd != nil || planned.Input.Drain != nil {
+		if len(planned.DependsOn) != 1 || planned.DependsOn[0] != "op-05" || planned.Input.Health == nil || planned.Input.Endpoint == nil || planned.Input.Generation != nil || planned.Input.Systemd != nil || planned.Input.Drain != nil || planned.Input.Retention != nil {
 			return errors.New("verifyActive requires its typed stable Health Contract, Endpoint, optional previous Generation, and switch dependency")
 		}
 		return validateActiveVerificationInput(*planned.Input.Health, *planned.Input.Endpoint, planned.Input.Previous, record, paths)
 	case planner.DrainPrevious:
-		if len(planned.DependsOn) != 1 || planned.DependsOn[0] != "op-06" || planned.Input.Drain == nil || planned.Input.Generation != nil || planned.Input.Systemd != nil || planned.Input.Health != nil || planned.Input.Endpoint != nil || planned.Input.Previous != nil {
+		if len(planned.DependsOn) != 1 || planned.DependsOn[0] != "op-06" || planned.Input.Drain == nil || planned.Input.Generation != nil || planned.Input.Systemd != nil || planned.Input.Health != nil || planned.Input.Endpoint != nil || planned.Input.Previous != nil || planned.Input.Retention != nil {
 			return errors.New("drainPrevious requires only its typed HTTP drain input and stable-verification dependency")
 		}
 		return validateHTTPDrainInput(*planned.Input.Drain, record, paths)
+	case planner.RetainPrevious:
+		if len(planned.DependsOn) != 1 || planned.DependsOn[0] != "op-07" || planned.Input.Retention == nil || planned.Input.Generation != nil || planned.Input.Systemd != nil || planned.Input.Health != nil || planned.Input.Endpoint != nil || planned.Input.Previous != nil || planned.Input.Drain != nil {
+			return errors.New("retainPrevious requires only its typed rollback-window input and drain dependency")
+		}
+		return validateRetentionInput(*planned.Input.Retention, record, paths)
 	default:
 		return errors.New("host executor does not allow this operation kind")
 	}
+}
+
+func validateRetentionInput(input planner.RetentionInput, record bootstrapRecord, paths executionPaths) error {
+	if input.Policy != rollbackwindow.RuleRollbackWindow {
+		return errors.New("rollback-window rule is unsupported")
+	}
+	if _, err := input.RollbackWindow.Duration(); err != nil {
+		return errors.New("rollback retention window is invalid or unsupported")
+	}
+	if err := validateEndpointInput(input.Endpoint, &input.Previous, record, paths); err != nil {
+		return err
+	}
+	if input.Endpoint.ID == input.Previous.ID || input.Endpoint.Unit == input.Previous.SystemdUnit || input.Endpoint.ReleaseDirectory == input.Previous.ReleaseDirectory {
+		return errors.New("rollback retention cannot select the active Generation")
+	}
+	return nil
 }
 
 func validateGenerationReference(input planner.GenerationReference, record bootstrapRecord, paths executionPaths) error {
@@ -185,6 +207,21 @@ func observeCandidateOperation(ctx context.Context, planned planner.Operation, r
 		default:
 			state = "unknown"
 		}
+	case planner.RetainPrevious:
+		digest, err := planner.OperationDigest(planned)
+		if err != nil {
+			return host.OperationObservation{}, err
+		}
+		observed := observeRetention(ctx, paths, *planned.Input.Retention, digest)
+		evidence = observed
+		switch observed.Status {
+		case host.RetentionCompleted:
+			state = "satisfied"
+		case host.RetentionPending:
+			state = "pending"
+		default:
+			state = "unknown"
+		}
 	}
 	encoded, err := json.Marshal(evidence)
 	if err != nil {
@@ -231,7 +268,7 @@ func applyCandidateOperation(ctx context.Context, planned planner.Operation, rec
 			return encoded, errors.New(observed.Reason)
 		}
 		return encoded, nil
-	case planner.SwitchEndpoint, planner.VerifyActive, planner.DrainPrevious:
+	case planner.SwitchEndpoint, planner.VerifyActive, planner.DrainPrevious, planner.RetainPrevious:
 		return nil, errors.New(string(planned.Kind) + " requires its signed Plan claim")
 	default:
 		return nil, errors.New("host executor does not allow this operation kind")

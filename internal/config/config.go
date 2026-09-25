@@ -17,6 +17,7 @@ import (
 	"go.yaml.in/yaml/v3"
 
 	"provision/internal/drain"
+	"provision/internal/rollbackwindow"
 )
 
 const SchemaVersion = "provision.dev/v1alpha1"
@@ -55,6 +56,7 @@ type Environment struct {
 	Kind            string                    `yaml:"kind" json:"kind"`
 	Name            string                    `yaml:"name" json:"name"`
 	Application     string                    `yaml:"application" json:"application"`
+	RollbackWindow  rollbackwindow.Window     `yaml:"rollbackWindow" json:"rollbackWindow"`
 	Targets         map[string]Target         `yaml:"targets" json:"targets"`
 	Implementations map[string]Implementation `yaml:"implementations" json:"implementations"`
 }
@@ -309,6 +311,11 @@ func (c Compiled) validate() error {
 	}
 	if c.Environment.Application != c.Application.Name || c.Revision.Application != c.Application.Name {
 		return errors.New("environment and revision must reference the same application")
+	}
+	if _, err := rollbackwindow.ParseWindow(string(c.Environment.RollbackWindow)); err != nil && strings.Contains(err.Error(), "canonical") {
+		return errors.New("Environment requires a valid canonical rollbackWindow")
+	} else if err != nil {
+		return errors.New("Environment requires a supported rollbackWindow from 1m0s through 720h0m0s")
 	}
 	if len(c.Application.Components) != 1 || len(c.Environment.Implementations) != 1 || len(c.Revision.Artifacts) != 1 {
 		return errors.New("initial host tracer supports exactly one HTTP component")

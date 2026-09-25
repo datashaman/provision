@@ -127,6 +127,50 @@ if latest["kind"] != "outcome" or latest.get("outcome") != "succeeded":
 PY
 }
 
+assert_retention_result() {
+  local path="$1" expected_active_revision="$2" expected_previous_revision="$3"
+  python3 - "$path" "$expected_active_revision" "$expected_previous_revision" <<'PY'
+from datetime import datetime, timedelta
+import json
+import sys
+
+path, expected_active_revision, expected_previous_revision = sys.argv[1:]
+with open(path, encoding="utf-8") as handle:
+    result = json.load(handle)
+observation = result["observation"]
+expected = {
+    "outcome": "succeeded",
+    "status": "retained",
+    "policy": "rollback-window",
+    "rollbackWindow": "30m0s",
+    "stableRouteVerified": True,
+    "previousUnitActive": False,
+    "previousUnitRetained": True,
+    "previousGenerationDirectoryRetained": True,
+    "previousManifestRetained": True,
+    "previousArtifactRetained": True,
+    "restartable": True,
+    "cleanupPerformed": False,
+}
+actual = {"outcome": result["outcome"]}
+actual.update({key: observation[key] for key in expected if key != "outcome"})
+if actual != expected:
+    raise SystemExit(f"{path}: retention evidence differs: {actual!r}")
+if observation["active"]["revision"] != expected_active_revision:
+    raise SystemExit(f"{path}: retained active revision differs")
+if observation["previous"]["revision"] != expected_previous_revision:
+    raise SystemExit(f"{path}: retained previous revision differs")
+switched_at = datetime.fromisoformat(observation["switchedAt"].replace("Z", "+00:00"))
+retain_until = datetime.fromisoformat(observation["retainUntil"].replace("Z", "+00:00"))
+if retain_until != switched_at + timedelta(minutes=30):
+    raise SystemExit(f"{path}: retention deadline is not exactly switch time plus 30 minutes")
+if not observation.get("operationDigest", "").startswith("sha256:"):
+    raise SystemExit(f"{path}: retention operation digest is absent")
+if not observation.get("drainOperationDigest", "").startswith("sha256:"):
+    raise SystemExit(f"{path}: drain operation digest is absent")
+PY
+}
+
 assert_stable_revision() {
   local revision="$1" label="$2"
   local output="$work_dir/$label-stable.json"
@@ -412,9 +456,11 @@ assert_stable_revision provision-example-http-v1 switch-failure-before-resume
 json_assert "$work_dir/switch-failure/op-05-resumed.json" outcome '"succeeded"'
 execute_success switch-failure "$state" op-06
 execute_success switch-failure "$state" op-07
+execute_success switch-failure "$state" op-08
+assert_retention_result "$work_dir/switch-failure/op-08.json" provision-example-http-v2 provision-example-http-v1
 write_status switch-failure "$state" final
 journal_assert_resume "$work_dir/switch-failure/final-status.json" op-05
-journal_assert_latest "$work_dir/switch-failure/final-status.json" op-07 outcome succeeded
+journal_assert_latest "$work_dir/switch-failure/final-status.json" op-08 outcome succeeded
 assert_host_state switch-failure provision-example-http-v2 provision-example-http-v1 \
   provision-example-http-v1-bac304a88517 \
   provision-example-http-v2-f5d67ce429e0
@@ -423,7 +469,7 @@ if systemctl is-active --quiet provision-lab-web-bac304a88517.service; then
   fail "bounded drain left the exact previous v1 unit active"
 fi
 
-echo "[4/7] bounded ordinary-HTTP drain and lost response"
+echo "[4/7] bounded ordinary-HTTP drain and rollback-window retention"
 preview_and_approve drain "$state"
 for operation in op-01 op-02 op-03 op-04; do execute_success drain "$state" "$operation"; done
 curl --fail --silent --show-error --max-time 5 'http://127.0.0.1:18080/slow?seconds=1' >"$work_dir/drain/in-flight.json" &
@@ -448,8 +494,22 @@ PATH="$fault_bin:$PATH" PROVISION_FAULT_MARKER="$drain_replay_marker" "$provisio
 json_assert "$work_dir/drain/op-07-resumed.json" outcome '"succeeded"'
 json_assert "$work_dir/drain/op-07-resumed.json" observation.status '"drained"'
 json_assert "$work_dir/drain/op-07-resumed.json" observation.mode '"bounded-http"'
+retention_fault_marker="$work_dir/drain/host-retention-completed"
+set +e
+PATH="$fault_bin:$PATH" PROVISION_FAULT_MARKER="$retention_fault_marker" "$provision" deployment execute --plan "$plan_id" --operation op-08 --state "$state" --signing-key "$signing_key" --lease-duration 5s >"$work_dir/drain/op-08-lost-response.txt" 2>&1
+retention_interrupted_result=$?
+set -e
+[[ $retention_interrupted_result -ne 0 && -f "$retention_fault_marker" ]] || fail "retention response loss did not occur after host completion"
+write_status drain "$state" retention-interrupted
+journal_assert_latest "$work_dir/drain/retention-interrupted-status.json" op-08 intent -
+sleep 6
+retention_replay_marker="$work_dir/drain/unexpected-retention-replay"
+PATH="$fault_bin:$PATH" PROVISION_FAULT_MARKER="$retention_replay_marker" "$provision" deployment resume --plan "$plan_id" --state "$state" --signing-key "$signing_key" --lease-duration 5s >"$work_dir/drain/op-08-resumed.json"
+[[ ! -e "$retention_replay_marker" ]] || fail "retention resume blindly replayed the completed host mutation"
+assert_retention_result "$work_dir/drain/op-08-resumed.json" provision-example-http-v3 provision-example-http-v2
 write_status drain "$state" final
 journal_assert_resume "$work_dir/drain/final-status.json" op-07
+journal_assert_resume "$work_dir/drain/final-status.json" op-08
 assert_host_state drain provision-example-http-v3 provision-example-http-v2 \
   provision-example-http-v1-bac304a88517 \
   provision-example-http-v2-f5d67ce429e0 \
@@ -529,6 +589,8 @@ print(json.dumps({
         "post-switch rollback",
         "bounded ordinary-HTTP drain",
         "lost drain response and observation-only resume",
+        "rollback-window retention",
+        "lost retention response and observation-only resume",
         "process interruption",
         "stale executor",
     ],

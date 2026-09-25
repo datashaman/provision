@@ -10,6 +10,7 @@ import (
 	"provision/internal/host"
 	"provision/internal/operation"
 	"provision/internal/planner"
+	"provision/internal/rollbackwindow"
 )
 
 func TestVerifyEndpointResultBindsActiveAndPreviousGenerations(t *testing.T) {
@@ -203,6 +204,68 @@ func TestVerifyDrainResultBindsBoundPolicyAndExactGenerations(t *testing.T) {
 	result.Observation = mustJSON(t, observed)
 	if err := verifyHostResult(envelope, result); err != nil {
 		t.Fatalf("valid uncertain HTTP drain result rejected: %v", err)
+	}
+}
+
+func TestVerifyRetentionResultBindsDeadlinePolicyAndExactGenerations(t *testing.T) {
+	reference := planner.GenerationReference{
+		ID: "provision-example-http-v2-bbbbbbbbbbbb", Revision: "provision-example-http-v2",
+		ArtifactDigest: "sha256:" + strings.Repeat("b", 64), Account: "provision-lab",
+		ReleaseDirectory: "/var/lib/provision/environments/lab/releases/provision-example-http-v2-bbbbbbbbbbbb",
+	}
+	endpoint := planner.EndpointInput{
+		GenerationReference: reference, Unit: "provision-lab-web-bbbbbbbbbbbb.service",
+		RouteID: "provision-lab-web", ListenPort: 18080,
+		Upstream: "127.0.0.1:28082", UpstreamPort: 28082, DrainPolicy: "caddy-graceful-config-reload",
+	}
+	previous := host.GenerationStatus{
+		ID: "provision-example-http-v1-aaaaaaaaaaaa", Revision: "provision-example-http-v1",
+		ArtifactDigest: "sha256:" + strings.Repeat("a", 64), SystemdUnit: "provision-lab-web-aaaaaaaaaaaa.service",
+		ReleaseDirectory: "/var/lib/provision/environments/lab/releases/provision-example-http-v1-aaaaaaaaaaaa",
+		Port:             28081, RouteID: endpoint.RouteID, UnitMatches: true,
+	}
+	input := planner.RetentionInput{Endpoint: endpoint, Previous: previous, Policy: rollbackwindow.RuleRollbackWindow, RollbackWindow: "30m0s"}
+	planned := planner.Operation{ID: "op-08", Kind: planner.RetainPrevious, Input: planner.OperationInput{Retention: &input}}
+	digest, err := planner.OperationDigest(planned)
+	if err != nil {
+		t.Fatal(err)
+	}
+	envelope := operation.Envelope{Authorization: authority.Proof{Claim: authority.Claim{PlanID: "sha256:" + strings.Repeat("c", 64), OperationID: "op-08", AttemptID: "attempt-11111111111111111111111111111111", FencingToken: 8}}, Operation: planned}
+	switchedAt := time.Date(2026, 9, 25, 12, 0, 0, 0, time.UTC)
+	drainedAt := switchedAt.Add(3 * time.Second)
+	retainedAt := switchedAt.Add(4 * time.Second)
+	deadline := switchedAt.Add(30 * time.Minute)
+	observed := host.RetentionObservation{
+		Status: host.RetentionCompleted,
+		Active: host.GenerationStatus{
+			ID: endpoint.ID, Revision: endpoint.Revision, ArtifactDigest: endpoint.ArtifactDigest,
+			SystemdUnit: endpoint.Unit, ReleaseDirectory: endpoint.ReleaseDirectory, Port: endpoint.UpstreamPort, RouteID: endpoint.RouteID,
+			UnitActive: true, UnitMatches: true, RouteObserved: true, RouteUpstream: endpoint.Upstream, RouteMatches: true,
+		},
+		Previous: previous, Policy: input.Policy, RollbackWindow: input.RollbackWindow, OperationDigest: digest,
+		DrainOperationDigest: "sha256:" + strings.Repeat("d", 64), SwitchedAt: &switchedAt, DrainedAt: &drainedAt, RetainedAt: &retainedAt, RetainUntil: &deadline,
+		StableRouteVerified: true, PreviousUnitRetained: true, PreviousGenerationDirectoryRetained: true, PreviousManifestRetained: true, PreviousArtifactRetained: true, Restartable: true,
+	}
+	result := operation.Result{SchemaVersion: operation.ResultSchemaVersion, PlanID: envelope.Authorization.Claim.PlanID, OperationID: "op-08", AttemptID: envelope.Authorization.Claim.AttemptID, FencingToken: 8, Outcome: operation.OutcomeSucceeded, Observation: mustJSON(t, observed)}
+	if err := verifyHostResult(envelope, result); err != nil {
+		t.Fatalf("valid retention result rejected: %v", err)
+	}
+	observed.RollbackWindow = "10m0s"
+	result.Observation = mustJSON(t, observed)
+	if err := verifyHostResult(envelope, result); err == nil || !strings.Contains(err.Error(), "does not match the Plan") {
+		t.Fatalf("tampered rollback window accepted: %v", err)
+	}
+	observed.RollbackWindow = input.RollbackWindow
+	observed.RetainUntil = &retainedAt
+	result.Observation = mustJSON(t, observed)
+	if err := verifyHostResult(envelope, result); err == nil {
+		t.Fatal("non-switch-derived retention deadline accepted")
+	}
+	observed.RetainUntil = &deadline
+	observed.CleanupPerformed = true
+	result.Observation = mustJSON(t, observed)
+	if err := verifyHostResult(envelope, result); err == nil {
+		t.Fatal("retention result claiming cleanup accepted")
 	}
 }
 

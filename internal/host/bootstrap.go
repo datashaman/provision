@@ -8,12 +8,14 @@ import (
 	"regexp"
 	"strings"
 	"time"
+
+	"provision/internal/rollbackwindow"
 )
 
 const ExecutorPath = "/usr/local/libexec/provision-host-executor"
 
 func AllowedOperations() []string {
-	return []string{"inspect", "stageArtifact", "installGeneration", "startCandidate", "verifyCandidate", "switchEndpoint", "verifyActive", "drainPrevious"}
+	return []string{"inspect", "stageArtifact", "installGeneration", "startCandidate", "verifyCandidate", "switchEndpoint", "verifyActive", "drainPrevious", "retainPrevious"}
 }
 
 var environmentPattern = regexp.MustCompile(`^[a-z][a-z0-9-]{0,19}$`)
@@ -66,19 +68,27 @@ type GenerationStatus struct {
 	RouteMatches     bool   `json:"routeMatches"`
 }
 
+type RollbackWindowRecord struct {
+	OperationDigest string                `json:"operationDigest"`
+	Window          rollbackwindow.Window `json:"window"`
+	RecordedAt      time.Time             `json:"recordedAt"`
+	RetainUntil     time.Time             `json:"retainUntil"`
+}
+
 type ActiveGenerationRecord struct {
-	SchemaVersion                        string            `json:"schemaVersion"`
-	PlanID                               string            `json:"planId"`
-	CandidateVerificationOperationDigest string            `json:"candidateVerificationOperationDigest"`
-	Active                               GenerationStatus  `json:"active"`
-	Previous                             *GenerationStatus `json:"previous,omitempty"`
-	ListenPort                           int               `json:"listenPort"`
-	DrainPolicy                          string            `json:"drainPolicy"`
-	SwitchedAt                           time.Time         `json:"switchedAt"`
-	StableVerificationOperationDigest    string            `json:"stableVerificationOperationDigest,omitempty"`
-	StableVerifiedAt                     *time.Time        `json:"stableVerifiedAt,omitempty"`
-	PreviousDrainOperationDigest         string            `json:"previousDrainOperationDigest,omitempty"`
-	PreviousDrainedAt                    *time.Time        `json:"previousDrainedAt,omitempty"`
+	SchemaVersion                        string                `json:"schemaVersion"`
+	PlanID                               string                `json:"planId"`
+	CandidateVerificationOperationDigest string                `json:"candidateVerificationOperationDigest"`
+	Active                               GenerationStatus      `json:"active"`
+	Previous                             *GenerationStatus     `json:"previous,omitempty"`
+	ListenPort                           int                   `json:"listenPort"`
+	DrainPolicy                          string                `json:"drainPolicy"`
+	SwitchedAt                           time.Time             `json:"switchedAt"`
+	StableVerificationOperationDigest    string                `json:"stableVerificationOperationDigest,omitempty"`
+	StableVerifiedAt                     *time.Time            `json:"stableVerifiedAt,omitempty"`
+	PreviousDrainOperationDigest         string                `json:"previousDrainOperationDigest,omitempty"`
+	PreviousDrainedAt                    *time.Time            `json:"previousDrainedAt,omitempty"`
+	PreviousRollback                     *RollbackWindowRecord `json:"previousRollback,omitempty"`
 }
 
 // CheckBootstrap invokes only the root-owned inspector. It cannot request a

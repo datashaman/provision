@@ -30,6 +30,9 @@ func TestLoadExampleDeterministically(t *testing.T) {
 	if implementation.Endpoint.Drain.Mode != "bounded-http" || implementation.Endpoint.Drain.MaxDuration != "2s" {
 		t.Fatalf("unexpected compiled drain contract: %+v", implementation.Endpoint.Drain)
 	}
+	if first.Environment.RollbackWindow != "30m0s" {
+		t.Fatalf("unexpected compiled rollback window: %q", first.Environment.RollbackWindow)
+	}
 }
 
 func TestEquivalentJSONRootHasSameDigest(t *testing.T) {
@@ -76,6 +79,11 @@ func TestRejectsUnsafeOrInvalidDocuments(t *testing.T) {
 		{"noncanonical drain duration", "environment.yaml", "maxDuration: 2s", "maxDuration: 2000ms", "valid canonical drain maxDuration"},
 		{"too short drain duration", "environment.yaml", "maxDuration: 2s", "maxDuration: 500ms", "supported drain maxDuration"},
 		{"too long drain duration", "environment.yaml", "maxDuration: 2s", "maxDuration: 10m0s", "supported drain maxDuration"},
+		{"missing rollback window", "environment.yaml", "rollbackWindow: 30m0s", "rollbackWindow: ''", "valid canonical rollbackWindow"},
+		{"invalid rollback window", "environment.yaml", "rollbackWindow: 30m0s", "rollbackWindow: eventually", "valid canonical rollbackWindow"},
+		{"noncanonical rollback window", "environment.yaml", "rollbackWindow: 30m0s", "rollbackWindow: 1800s", "valid canonical rollbackWindow"},
+		{"too short rollback window", "environment.yaml", "rollbackWindow: 30m0s", "rollbackWindow: 30s", "supported rollbackWindow"},
+		{"too long rollback window", "environment.yaml", "rollbackWindow: 30m0s", "rollbackWindow: 1000h0m0s", "supported rollbackWindow"},
 		{"artifact credential", "revision.yaml", "https://github.com", "https://user:secret@github.com", "immutable artifact source"},
 		{"artifact query", "revision.yaml", "provision-example-http-linux-amd64.tar.gz", "provision-example-http-linux-amd64.tar.gz?token=secret", "immutable artifact source"},
 		{"bad digest", "revision.yaml", "sha256:bac304a885179a21fc889fef25cf09f12d8af19e30aa49c1c05e719d10f031b5", "sha256:bad", "sha256 digest"},

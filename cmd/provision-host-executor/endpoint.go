@@ -18,6 +18,7 @@ import (
 	"provision/internal/drain"
 	"provision/internal/host"
 	"provision/internal/planner"
+	"provision/internal/rollbackwindow"
 )
 
 const (
@@ -251,7 +252,7 @@ func observeHTTPDrain(ctx context.Context, paths executionPaths, input planner.D
 	observed.Previous.RouteUpstream = ""
 	observed.Previous.RouteMatches = false
 	if !observed.PreviousUnitRetained || !observed.PreviousReleaseRetained {
-		observed.Reason = "previous Generation rollback assets are missing or do not match the approved drain"
+		observed.Reason = "previous Generation rollback material is missing or does not match the approved drain"
 		return observed
 	}
 
@@ -331,7 +332,7 @@ func applyHTTPDrain(ctx context.Context, planned planner.Operation, claim author
 
 	afterStop := observeHTTPDrain(context.Background(), paths, input, claim.OperationDigest, time.Now().UTC())
 	if afterStop.Status != host.DrainPending || afterStop.PreviousUnitActive || !afterStop.StableRouteVerified || !afterStop.PreviousUnitRetained || !afterStop.PreviousReleaseRetained {
-		return encodeHTTPDrainUncertain(input, claim.OperationDigest, time.Now().UTC(), "exact previous unit stop could not be reconciled with retained rollback assets")
+		return encodeHTTPDrainUncertain(input, claim.OperationDigest, time.Now().UTC(), "exact previous unit stop could not be reconciled with retained rollback material")
 	}
 	current, err = readActiveGenerationRecord(activePath)
 	if err != nil || current == nil || current.PlanID != claim.PlanID || !sameGenerationIdentity(current.Active, generationStatusFromEndpoint(input.Endpoint)) || current.Previous == nil || !sameGenerationIdentity(*current.Previous, input.Previous) {
@@ -352,6 +353,169 @@ func applyHTTPDrain(ctx context.Context, planned planner.Operation, claim author
 		return encoded, fmt.Errorf("%w: completed HTTP drain failed exact observation", errUncertainRecovery)
 	}
 	return encoded, nil
+}
+
+func observeRetention(ctx context.Context, paths executionPaths, input planner.RetentionInput, operationDigest string) host.RetentionObservation {
+	observed := host.RetentionObservation{
+		Status: host.RetentionUncertain, Active: generationStatusFromEndpoint(input.Endpoint), Previous: input.Previous,
+		Policy: input.Policy, RollbackWindow: input.RollbackWindow, OperationDigest: operationDigest,
+		RecoveryAction: "inspect the stable Endpoint and exact retained Generation before resuming rollback-window retention",
+	}
+	duration, err := input.RollbackWindow.Duration()
+	if err != nil || input.Policy != rollbackwindow.RuleRollbackWindow {
+		observed.Reason = "planned rollback-window rule is invalid"
+		return observed
+	}
+	current, err := readActiveGenerationRecord(filepath.Join(paths.environmentHome, "active-generation.json"))
+	if err != nil || current == nil {
+		observed.Reason = "active Generation record is unavailable"
+		if err != nil {
+			observed.Reason = err.Error()
+		}
+		return observed
+	}
+	if !sameGenerationIdentity(current.Active, observed.Active) || current.Previous == nil || !sameGenerationIdentity(*current.Previous, input.Previous) || current.ListenPort != input.Endpoint.ListenPort || current.DrainPolicy != input.Endpoint.DrainPolicy || !digestPattern.MatchString(current.PreviousDrainOperationDigest) || current.PreviousDrainedAt == nil {
+		observed.Reason = "recorded active, previous, and drained Generations do not match the approved retention"
+		return observed
+	}
+	observed.Active = current.Active
+	observed.Previous = *current.Previous
+	observed.DrainOperationDigest = current.PreviousDrainOperationDigest
+	switchedAt := current.SwitchedAt.UTC()
+	observed.SwitchedAt = &switchedAt
+	drainedAt := current.PreviousDrainedAt.UTC()
+	observed.DrainedAt = &drainedAt
+	deadline := current.SwitchedAt.Add(duration).UTC()
+	observed.RetainUntil = &deadline
+
+	active := observeSystemdCandidate(ctx, paths, planner.SystemdInput{GenerationReference: input.Endpoint.GenerationReference, Unit: input.Endpoint.Unit, Port: input.Endpoint.UpstreamPort})
+	upstream, listen, routeOK, routeErr := observeCaddyEndpoint(ctx, paths.caddy, input.Endpoint.RouteID)
+	observed.Active.UnitActive = active.Status == host.CandidateActive
+	observed.Active.UnitMatches = active.Status == host.CandidateActive
+	observed.Active.RouteObserved = routeOK
+	observed.Active.RouteUpstream = upstream
+	observed.Active.RouteMatches = routeErr == nil && routeOK && listen == input.Endpoint.ListenPort && upstream == input.Endpoint.Upstream
+	observed.StableRouteVerified = observed.Active.UnitActive && observed.Active.UnitMatches && observed.Active.RouteMatches
+	if !observed.StableRouteVerified {
+		observed.Reason = "active Generation or stable route no longer matches the approved retention"
+		return observed
+	}
+
+	previousReference := planner.GenerationReference{ID: input.Previous.ID, Revision: input.Previous.Revision, ArtifactDigest: input.Previous.ArtifactDigest, Account: input.Endpoint.Account, ReleaseDirectory: input.Previous.ReleaseDirectory}
+	previousSystemd := observeSystemdCandidate(ctx, paths, planner.SystemdInput{GenerationReference: previousReference, Unit: input.Previous.SystemdUnit, Port: input.Previous.Port})
+	previousGeneration := observeGeneration(planner.GenerationInput{GenerationReference: previousReference})
+	artifact, artifactErr := host.ObserveArtifactCache(paths.artifactCache, input.Previous.ArtifactDigest)
+	observed.PreviousUnitActive = previousSystemd.Status == host.CandidateActive
+	observed.PreviousUnitRetained = previousSystemd.Status == host.CandidateInstalled || previousSystemd.Status == host.CandidateActive
+	observed.PreviousGenerationDirectoryRetained = previousGeneration.Status == host.CandidateInstalled
+	observed.PreviousManifestRetained = previousGeneration.Status == host.CandidateInstalled
+	observed.PreviousArtifactRetained = artifactErr == nil && artifact.Status == host.ArtifactAlreadyPresent
+	observed.Restartable = !observed.PreviousUnitActive && observed.PreviousUnitRetained && observed.PreviousGenerationDirectoryRetained && observed.PreviousManifestRetained && observed.PreviousArtifactRetained
+	observed.Previous.UnitActive = observed.PreviousUnitActive
+	observed.Previous.UnitMatches = observed.PreviousUnitRetained
+	observed.Previous.RouteObserved = false
+	observed.Previous.RouteUpstream = ""
+	observed.Previous.RouteMatches = false
+	if observed.PreviousUnitActive {
+		observed.Reason = "previous Generation is still active after recorded drain completion"
+		return observed
+	}
+	if !observed.Restartable {
+		observed.Status = host.RetentionFailed
+		observed.Reason = "previous Generation rollback material is missing or does not match the approved rollback window"
+		observed.RecoveryAction = ""
+		return observed
+	}
+
+	if current.PreviousRollback != nil {
+		if current.PreviousRollback.OperationDigest != operationDigest || current.PreviousRollback.Window != input.RollbackWindow || !current.PreviousRollback.RetainUntil.Equal(deadline) {
+			observed.Reason = "recorded rollback-window retention does not match this operation"
+			return observed
+		}
+		retainedAt := current.PreviousRollback.RecordedAt.UTC()
+		observed.RetainedAt = &retainedAt
+		observed.Status = host.RetentionCompleted
+		observed.RecoveryAction = ""
+		return observed
+	}
+
+	observed.Status = host.RetentionPending
+	observed.RecoveryAction = ""
+	return observed
+}
+
+func applyRetention(ctx context.Context, planned planner.Operation, claim authority.Claim, paths executionPaths, _ time.Time) (json.RawMessage, error) {
+	input := *planned.Input.Retention
+	drainDigest, err := requireSuccessfulDrain(paths, claim, planned)
+	if err != nil {
+		return encodeRetentionError(ctx, paths, input, claim.OperationDigest, host.RetentionFailed, err.Error(), "")
+	}
+	activePath := filepath.Join(paths.environmentHome, "active-generation.json")
+	current, err := readActiveGenerationRecord(activePath)
+	if err != nil || current == nil || current.PlanID != claim.PlanID || current.PreviousDrainOperationDigest != drainDigest || current.PreviousDrainedAt == nil {
+		return encodeRetentionError(ctx, paths, input, claim.OperationDigest, host.RetentionUncertain, "durable active Generation state does not match the signed rollback-window Plan", "inspect the stable Endpoint, drain marker, and retained rollback material before resuming")
+	}
+	observed := observeRetention(ctx, paths, input, claim.OperationDigest)
+	if observed.Status == host.RetentionCompleted {
+		return json.Marshal(observed)
+	}
+	if observed.Status == host.RetentionFailed {
+		encoded, encodeErr := json.Marshal(observed)
+		if encodeErr != nil {
+			return nil, encodeErr
+		}
+		return encoded, errors.New(observed.Reason)
+	}
+	if observed.Status != host.RetentionPending {
+		return encodeRetentionError(ctx, paths, input, claim.OperationDigest, host.RetentionUncertain, observed.Reason, observed.RecoveryAction)
+	}
+	if ctx.Err() != nil {
+		return encodeRetentionError(context.Background(), paths, input, claim.OperationDigest, host.RetentionUncertain, "rollback-window recording was interrupted before durable recording", "resume after inspecting the stable Endpoint and retained rollback material")
+	}
+
+	current, err = readActiveGenerationRecord(activePath)
+	if err != nil || current == nil || current.PlanID != claim.PlanID || current.PreviousDrainOperationDigest != drainDigest || current.PreviousDrainedAt == nil || !sameGenerationIdentity(current.Active, generationStatusFromEndpoint(input.Endpoint)) || current.Previous == nil || !sameGenerationIdentity(*current.Previous, input.Previous) {
+		return encodeRetentionError(ctx, paths, input, claim.OperationDigest, host.RetentionUncertain, "durable active Generation state changed while recording the rollback window", "inspect the stable Endpoint, drain marker, and retained rollback material before resuming")
+	}
+	duration, _ := input.RollbackWindow.Duration()
+	retainedAt := time.Now().UTC()
+	if retainedAt.Before(*current.PreviousDrainedAt) {
+		retainedAt = current.PreviousDrainedAt.UTC()
+	}
+	retainUntil := current.SwitchedAt.Add(duration).UTC()
+	current.PreviousRollback = &host.RollbackWindowRecord{
+		OperationDigest: claim.OperationDigest,
+		Window:          input.RollbackWindow,
+		RecordedAt:      retainedAt,
+		RetainUntil:     retainUntil,
+	}
+	if err := writeJSONAtomic(activePath, *current, 0644); err != nil {
+		return encodeRetentionError(ctx, paths, input, claim.OperationDigest, host.RetentionUncertain, "rollback material is intact but the rollback window could not be recorded", "inspect the active Generation record before resuming")
+	}
+	completed := observeRetention(context.Background(), paths, input, claim.OperationDigest)
+	encoded, err := json.Marshal(completed)
+	if err != nil {
+		return nil, err
+	}
+	if completed.Status != host.RetentionCompleted {
+		return encoded, fmt.Errorf("%w: completed rollback-window retention failed exact observation", errUncertainRecovery)
+	}
+	return encoded, nil
+}
+
+func encodeRetentionError(ctx context.Context, paths executionPaths, input planner.RetentionInput, operationDigest string, status host.RetentionStatus, reason, recoveryAction string) (json.RawMessage, error) {
+	observed := observeRetention(ctx, paths, input, operationDigest)
+	observed.Status = status
+	observed.Reason = reason
+	observed.RecoveryAction = recoveryAction
+	encoded, err := json.Marshal(observed)
+	if err != nil {
+		return nil, err
+	}
+	if status == host.RetentionUncertain {
+		return encoded, fmt.Errorf("%w: %s", errUncertainRecovery, reason)
+	}
+	return encoded, errors.New(reason)
 }
 
 func applySwitchEndpoint(ctx context.Context, planned planner.Operation, claim authority.Claim, record bootstrapRecord, paths executionPaths, now time.Time) (json.RawMessage, error) {
@@ -589,6 +753,7 @@ func applyVerifyActive(ctx context.Context, planned planner.Operation, claim aut
 	current.StableVerifiedAt = nil
 	current.PreviousDrainOperationDigest = ""
 	current.PreviousDrainedAt = nil
+	current.PreviousRollback = nil
 	if writeErr := writeJSONAtomic(activePath, *current, 0644); writeErr != nil {
 		observed.Restored = &restored
 		return encodeUncertainActiveVerification(observed, activeFailure+"; previous route is healthy but durable active Generation state could not be recorded")
@@ -707,6 +872,24 @@ func requireSuccessfulActiveVerification(paths executionPaths, claim authority.C
 		}
 	}
 	return "", errors.New("host has no successful exact stable Endpoint verification for this Plan")
+}
+
+func requireSuccessfulDrain(paths executionPaths, claim authority.Claim, planned planner.Operation) (string, error) {
+	consumedOperations, err := successfulDependencyAuthorizations(paths, claim, planned.DependsOn[0], planner.DrainPrevious)
+	if err != nil {
+		return "", err
+	}
+	for _, consumed := range consumedOperations {
+		if consumed.Operation.Input.Drain == nil || !endpointInputMatches(&consumed.Operation.Input.Drain.Endpoint, &planned.Input.Retention.Endpoint) || !sameGenerationIdentity(consumed.Operation.Input.Drain.Previous, planned.Input.Retention.Previous) {
+			continue
+		}
+		var observed host.DrainObservation
+		if decodeExactJSON(consumed.Observation, &observed) != nil || observed.Status != host.DrainCompleted || observed.OperationDigest != consumed.Claim.OperationDigest || !observed.BoundElapsed || !observed.StableRouteVerified || observed.PreviousUnitActive || !observed.PreviousUnitRetained || !observed.PreviousReleaseRetained || !sameGenerationIdentity(observed.Active, generationStatusFromEndpoint(planned.Input.Retention.Endpoint)) || !sameGenerationIdentity(observed.Previous, planned.Input.Retention.Previous) {
+			continue
+		}
+		return consumed.Claim.OperationDigest, nil
+	}
+	return "", errors.New("host has no successful exact drain completion for this Plan")
 }
 
 func successfulDependencyAuthorizations(paths executionPaths, claim authority.Claim, dependencyID string, kind planner.OperationKind) ([]consumedAuthorization, error) {
@@ -884,7 +1067,12 @@ func readActiveGenerationRecord(path string) (*host.ActiveGenerationRecord, erro
 	releaseRoot := filepath.Join(filepath.Dir(path), "releases")
 	stableMarkerValid := record.StableVerificationOperationDigest == "" && record.StableVerifiedAt == nil || digestPattern.MatchString(record.StableVerificationOperationDigest) && record.StableVerifiedAt != nil && !record.StableVerifiedAt.IsZero() && !record.StableVerifiedAt.Before(record.SwitchedAt)
 	drainMarkerValid := record.PreviousDrainOperationDigest == "" && record.PreviousDrainedAt == nil || digestPattern.MatchString(record.PreviousDrainOperationDigest) && record.PreviousDrainedAt != nil && !record.PreviousDrainedAt.IsZero() && record.StableVerifiedAt != nil && !record.PreviousDrainedAt.Before(*record.StableVerifiedAt) && record.Previous != nil
-	if decodeErr != nil || trailingErr != io.EOF || record.SchemaVersion != activeGenerationSchema || !digestPattern.MatchString(record.PlanID) || !digestPattern.MatchString(record.CandidateVerificationOperationDigest) || record.ListenPort < 1024 || record.ListenPort > 65535 || record.DrainPolicy != httpDrainPolicy || record.SwitchedAt.IsZero() || !stableMarkerValid || !drainMarkerValid || validateRecordedGeneration(record.Active, releaseRoot) != nil || record.Previous != nil && validateRecordedGeneration(*record.Previous, releaseRoot) != nil {
+	rollbackWindowValid := true
+	if record.PreviousRollback != nil {
+		duration, durationErr := record.PreviousRollback.Window.Duration()
+		rollbackWindowValid = durationErr == nil && digestPattern.MatchString(record.PreviousRollback.OperationDigest) && !record.PreviousRollback.RecordedAt.IsZero() && !record.PreviousRollback.RetainUntil.IsZero() && record.PreviousDrainedAt != nil && !record.PreviousRollback.RecordedAt.Before(*record.PreviousDrainedAt) && record.PreviousRollback.RetainUntil.Equal(record.SwitchedAt.Add(duration)) && record.Previous != nil
+	}
+	if decodeErr != nil || trailingErr != io.EOF || record.SchemaVersion != activeGenerationSchema || !digestPattern.MatchString(record.PlanID) || !digestPattern.MatchString(record.CandidateVerificationOperationDigest) || record.ListenPort < 1024 || record.ListenPort > 65535 || record.DrainPolicy != httpDrainPolicy || record.SwitchedAt.IsZero() || !stableMarkerValid || !drainMarkerValid || !rollbackWindowValid || validateRecordedGeneration(record.Active, releaseRoot) != nil || record.Previous != nil && validateRecordedGeneration(*record.Previous, releaseRoot) != nil {
 		return nil, errors.New("active Generation record is invalid")
 	}
 	return &record, nil

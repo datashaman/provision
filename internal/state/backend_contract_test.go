@@ -106,6 +106,9 @@ func TestSQLiteBackendRequiresSuccessfulOperationDependencies(t *testing.T) {
 	plan.Operations = append(plan.Operations, planner.Operation{
 		ID: "op-07", Kind: planner.DrainPrevious, DependsOn: []string{"op-06"},
 	})
+	plan.Operations = append(plan.Operations, planner.Operation{
+		ID: "op-08", Kind: planner.RetainPrevious, DependsOn: []string{"op-07"},
+	})
 	plan.ID = ""
 	encoded, err := json.Marshal(plan)
 	if err != nil {
@@ -154,8 +157,18 @@ func TestSQLiteBackendRequiresSuccessfulOperationDependencies(t *testing.T) {
 	if err := backend.CompleteOperation(context.Background(), CompleteOperationRequest{AttemptID: verifyAttempt.AttemptID, Holder: verifyAttempt.Holder, PlanID: plan.ID, OperationID: "op-06", FencingToken: verifyAttempt.FencingToken, Outcome: ExecutionSucceeded, Observation: json.RawMessage(`{"status":"healthy"}`), CompletedAt: now.Add(5*time.Minute + time.Second)}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := backend.BeginOperation(context.Background(), BeginOperationRequest{PlanID: plan.ID, OperationID: "op-07", Holder: "holder", StartedAt: now.Add(6 * time.Minute), LeaseDuration: time.Minute}); err != nil {
+	drainAttempt, err := backend.BeginOperation(context.Background(), BeginOperationRequest{PlanID: plan.ID, OperationID: "op-07", Holder: "holder", StartedAt: now.Add(6 * time.Minute), LeaseDuration: time.Minute})
+	if err != nil {
 		t.Fatalf("HTTP drain did not begin after successful stable verification: %v", err)
+	}
+	if _, err := backend.BeginOperation(context.Background(), BeginOperationRequest{PlanID: plan.ID, OperationID: "op-08", Holder: "holder", StartedAt: now.Add(7 * time.Minute), LeaseDuration: time.Minute}); err == nil || !strings.Contains(err.Error(), "op-07 has no recorded outcome") {
+		t.Fatalf("rollback retention began while drain was active: %v", err)
+	}
+	if err := backend.CompleteOperation(context.Background(), CompleteOperationRequest{AttemptID: drainAttempt.AttemptID, Holder: drainAttempt.Holder, PlanID: plan.ID, OperationID: "op-07", FencingToken: drainAttempt.FencingToken, Outcome: ExecutionSucceeded, Observation: json.RawMessage(`{"status":"drained"}`), CompletedAt: now.Add(6*time.Minute + time.Second)}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := backend.BeginOperation(context.Background(), BeginOperationRequest{PlanID: plan.ID, OperationID: "op-08", Holder: "holder", StartedAt: now.Add(7 * time.Minute), LeaseDuration: time.Minute}); err != nil {
+		t.Fatalf("rollback retention did not begin after successful drain: %v", err)
 	}
 }
 

@@ -23,6 +23,7 @@ import (
 	"provision/internal/host"
 	"provision/internal/operation"
 	"provision/internal/planner"
+	"provision/internal/rollbackwindow"
 )
 
 func TestAuthorizedEndpointSwitchRequiresVerificationAndRetainsPreviousGeneration(t *testing.T) {
@@ -133,6 +134,263 @@ func TestAuthorizedHTTPDrainStopsOnlyExactPreviousUnitAndRetainsRollbackAssets(t
 	resumed, err := observeCandidateOperation(context.Background(), drain, record, paths)
 	if err != nil || resumed.State != "satisfied" {
 		t.Fatalf("completed drain resumption = %+v, %v", resumed, err)
+	}
+}
+
+func TestAuthorizedRollbackWindowRetentionRecordsDeadlineAndKeepsRestartableAssets(t *testing.T) {
+	paths, record, signer, publicKey, endpoint, previous := prepareSwitchedTwoGenerationEndpoint(t, true)
+	drain := httpDrainOperation(endpoint, previous, "2s")
+	drained, _ := executeCandidateOperation(t, paths, record, signer, publicKey, drain, 10)
+	if drained.Outcome != operation.OutcomeSucceeded {
+		t.Fatalf("HTTP drain = %+v", drained)
+	}
+
+	retained := rollbackRetentionOperation(endpoint, previous, "30m0s")
+	result, _ := executeCandidateOperation(t, paths, record, signer, publicKey, retained, 11)
+	var observed host.RetentionObservation
+	if err := json.Unmarshal(result.Observation, &observed); err != nil || result.Outcome != operation.OutcomeSucceeded || observed.Status != host.RetentionCompleted || observed.Policy != rollbackwindow.RuleRollbackWindow || observed.RollbackWindow != "30m0s" || !observed.StableRouteVerified || observed.PreviousUnitActive || !observed.PreviousUnitRetained || !observed.PreviousGenerationDirectoryRetained || !observed.PreviousManifestRetained || !observed.PreviousArtifactRetained || !observed.Restartable || observed.CleanupPerformed || observed.RetainedAt == nil || observed.RetainUntil == nil {
+		t.Fatalf("rollback-window retention = %+v, observation=%+v, error=%v", result, observed, err)
+	}
+	activePath := filepath.Join(paths.environmentHome, "active-generation.json")
+	current, err := readActiveGenerationRecord(activePath)
+	if err != nil || current == nil || current.PreviousRollback == nil || current.PreviousRollback.OperationDigest == "" || current.PreviousRollback.Window != "30m0s" {
+		t.Fatalf("durable retention marker = %+v, %v", current, err)
+	}
+	wantDeadline := current.SwitchedAt.Add(30 * time.Minute)
+	if !observed.RetainUntil.Equal(wantDeadline) || !current.PreviousRollback.RetainUntil.Equal(wantDeadline) {
+		t.Fatalf("retention deadline = %v / %v, want switch-derived %v", observed.RetainUntil, current.PreviousRollback.RetainUntil, wantDeadline)
+	}
+	if current.PreviousRollback.RecordedAt.Before(*current.PreviousDrainedAt) {
+		t.Fatalf("retention recorded before drain: %+v", current)
+	}
+	if paths.systemd.(*fakeSystemdController).active[previous.SystemdUnit] {
+		t.Fatal("retention restarted the drained previous unit")
+	}
+	resumed, err := observeCandidateOperation(context.Background(), retained, record, paths)
+	if err != nil || resumed.State != "satisfied" {
+		t.Fatalf("completed retention resumption = %+v, %v", resumed, err)
+	}
+}
+
+func TestAuthorizedRollbackWindowRetentionRequiresExactDrainCompletion(t *testing.T) {
+	paths, record, signer, publicKey, endpoint, previous := prepareSwitchedTwoGenerationEndpoint(t, true)
+	retained := rollbackRetentionOperation(endpoint, previous, "30m0s")
+	result, _ := executeCandidateOperation(t, paths, record, signer, publicKey, retained, 10)
+	var observed host.RetentionObservation
+	if err := json.Unmarshal(result.Observation, &observed); err != nil || result.Outcome != operation.OutcomeFailed || observed.Status != host.RetentionFailed || !strings.Contains(observed.Reason, "no successful exact drain completion") {
+		t.Fatalf("retention without drain = %+v, observation=%+v, error=%v", result, observed, err)
+	}
+	current, err := readActiveGenerationRecord(filepath.Join(paths.environmentHome, "active-generation.json"))
+	if err != nil || current == nil || current.PreviousRollback != nil {
+		t.Fatalf("unverified retention changed durable state: %+v, %v", current, err)
+	}
+	if !paths.systemd.(*fakeSystemdController).active[previous.SystemdUnit] {
+		t.Fatal("unverified retention changed the previous Generation")
+	}
+}
+
+func TestAuthorizedRollbackWindowRetentionFailsWhenArtifactIsMissing(t *testing.T) {
+	paths, record, signer, publicKey, endpoint, previous := prepareSwitchedTwoGenerationEndpoint(t, true)
+	drained, _ := executeCandidateOperation(t, paths, record, signer, publicKey, httpDrainOperation(endpoint, previous, "2s"), 10)
+	if drained.Outcome != operation.OutcomeSucceeded {
+		t.Fatalf("HTTP drain = %+v", drained)
+	}
+	artifactPath, err := host.ArtifactCachePath(paths.artifactCache, previous.ArtifactDigest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(artifactPath); err != nil {
+		t.Fatal(err)
+	}
+
+	result, _ := executeCandidateOperation(t, paths, record, signer, publicKey, rollbackRetentionOperation(endpoint, previous, "30m0s"), 11)
+	var observed host.RetentionObservation
+	if err := json.Unmarshal(result.Observation, &observed); err != nil || result.Outcome != operation.OutcomeFailed || observed.Status != host.RetentionFailed || observed.PreviousArtifactRetained || observed.Restartable || observed.CleanupPerformed || observed.Reason == "" {
+		t.Fatalf("retention with missing Artifact = %+v, observation=%+v, error=%v", result, observed, err)
+	}
+	current, err := readActiveGenerationRecord(filepath.Join(paths.environmentHome, "active-generation.json"))
+	if err != nil || current == nil || current.PreviousRollback != nil {
+		t.Fatalf("failed retention changed durable state: %+v, %v", current, err)
+	}
+	if _, err := os.Stat(previous.ReleaseDirectory); err != nil {
+		t.Fatalf("failed rollback-window recording removed the previous Generation directory: %v", err)
+	}
+}
+
+func TestInterruptedRollbackWindowRetentionResumesWithoutShorteningDeadline(t *testing.T) {
+	paths, record, signer, publicKey, endpoint, previous := prepareSwitchedTwoGenerationEndpoint(t, true)
+	drained, _ := executeCandidateOperation(t, paths, record, signer, publicKey, httpDrainOperation(endpoint, previous, "2s"), 10)
+	if drained.Outcome != operation.OutcomeSucceeded {
+		t.Fatalf("HTTP drain = %+v", drained)
+	}
+	retained := rollbackRetentionOperation(endpoint, previous, "30m0s")
+	digest, err := planner.OperationDigest(retained)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 9, 24, 12, 11, 0, 0, time.UTC)
+	envelope := signedTestEnvelope(t, signer, retained, digest, record, "attempt-0000000000000000000000000000000b", 11, now, now.Add(time.Minute))
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	result, err := executeAuthorized(ctx, envelope, record, publicKey, paths, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var interrupted host.RetentionObservation
+	if err := json.Unmarshal(result.Observation, &interrupted); err != nil || result.Outcome != operation.OutcomeUncertain || interrupted.Status != host.RetentionUncertain || !strings.Contains(interrupted.Reason, "interrupted") || interrupted.RecoveryAction == "" {
+		t.Fatalf("interrupted retention = %+v, observation=%+v, error=%v", result, interrupted, err)
+	}
+	current, err := readActiveGenerationRecord(filepath.Join(paths.environmentHome, "active-generation.json"))
+	if err != nil || current == nil || current.PreviousRollback != nil {
+		t.Fatalf("interrupted retention changed durable state: %+v, %v", current, err)
+	}
+	wantDeadline := current.SwitchedAt.Add(30 * time.Minute)
+
+	resumed, _ := executeCandidateOperation(t, paths, record, signer, publicKey, retained, 12)
+	var observed host.RetentionObservation
+	if err := json.Unmarshal(resumed.Observation, &observed); err != nil || resumed.Outcome != operation.OutcomeSucceeded || observed.Status != host.RetentionCompleted || observed.RetainUntil == nil || !observed.RetainUntil.Equal(wantDeadline) {
+		t.Fatalf("resumed retention = %+v, observation=%+v, error=%v", resumed, observed, err)
+	}
+}
+
+func TestRollbackWindowRetentionCannotBeShortenedByAnotherSignedOperation(t *testing.T) {
+	paths, record, signer, publicKey, endpoint, previous := prepareSwitchedTwoGenerationEndpoint(t, true)
+	drained, _ := executeCandidateOperation(t, paths, record, signer, publicKey, httpDrainOperation(endpoint, previous, "2s"), 10)
+	if drained.Outcome != operation.OutcomeSucceeded {
+		t.Fatalf("HTTP drain = %+v", drained)
+	}
+	initial := rollbackRetentionOperation(endpoint, previous, "30m0s")
+	first, _ := executeCandidateOperation(t, paths, record, signer, publicKey, initial, 11)
+	if first.Outcome != operation.OutcomeSucceeded {
+		t.Fatalf("initial retention = %+v", first)
+	}
+	activePath := filepath.Join(paths.environmentHome, "active-generation.json")
+	before, err := readActiveGenerationRecord(activePath)
+	if err != nil || before == nil || before.PreviousRollback == nil {
+		t.Fatalf("initial retention marker = %+v, %v", before, err)
+	}
+	wantDeadline := before.PreviousRollback.RetainUntil
+	wantDigest := before.PreviousRollback.OperationDigest
+
+	shorter := rollbackRetentionOperation(endpoint, previous, "10m0s")
+	result, _ := executeCandidateOperation(t, paths, record, signer, publicKey, shorter, 12)
+	var observed host.RetentionObservation
+	if err := json.Unmarshal(result.Observation, &observed); err != nil || result.Outcome != operation.OutcomeUncertain || observed.Status != host.RetentionUncertain || observed.RecoveryAction == "" {
+		t.Fatalf("shortened retention = %+v, observation=%+v, error=%v", result, observed, err)
+	}
+	after, err := readActiveGenerationRecord(activePath)
+	if err != nil || after == nil || after.PreviousRollback == nil || after.PreviousRollback.OperationDigest != wantDigest || after.PreviousRollback.Window != "30m0s" || !after.PreviousRollback.RetainUntil.Equal(wantDeadline) {
+		t.Fatalf("shortened retention changed durable window: before=%+v after=%+v error=%v", before, after, err)
+	}
+}
+
+func TestRollbackWindowRetentionFailsClosedOnStableRouteDrift(t *testing.T) {
+	paths, record, signer, publicKey, endpoint, previous := prepareSwitchedTwoGenerationEndpoint(t, true)
+	drained, _ := executeCandidateOperation(t, paths, record, signer, publicKey, httpDrainOperation(endpoint, previous, "2s"), 10)
+	if drained.Outcome != operation.OutcomeSucceeded {
+		t.Fatalf("HTTP drain = %+v", drained)
+	}
+	drifted := endpoint
+	drifted.Upstream = "127.0.0.1:29999"
+	server, err := caddyServerConfiguration(drifted)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := paths.caddy.Replace(context.Background(), "/config/apps/http/servers/"+endpoint.RouteID, server); err != nil {
+		t.Fatal(err)
+	}
+	result, _ := executeCandidateOperation(t, paths, record, signer, publicKey, rollbackRetentionOperation(endpoint, previous, "30m0s"), 11)
+	var observed host.RetentionObservation
+	if err := json.Unmarshal(result.Observation, &observed); err != nil || result.Outcome != operation.OutcomeUncertain || observed.Status != host.RetentionUncertain || observed.RecoveryAction == "" || observed.CleanupPerformed {
+		t.Fatalf("route-drift retention = %+v, observation=%+v, error=%v", result, observed, err)
+	}
+	current, err := readActiveGenerationRecord(filepath.Join(paths.environmentHome, "active-generation.json"))
+	if err != nil || current == nil || current.PreviousRollback != nil {
+		t.Fatalf("route drift changed durable retention state: %+v, %v", current, err)
+	}
+}
+
+func TestRollbackWindowRetentionRejectsSelectingActiveGeneration(t *testing.T) {
+	paths, record, signer, publicKey, endpoint, _ := prepareSwitchedTwoGenerationEndpoint(t, true)
+	active := generationStatusFromEndpoint(endpoint)
+	active.UnitActive, active.UnitMatches, active.RouteObserved, active.RouteMatches = true, true, true, true
+	active.RouteUpstream = endpoint.Upstream
+	retained := rollbackRetentionOperation(endpoint, active, "30m0s")
+	digest, err := planner.OperationDigest(retained)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 9, 24, 12, 10, 0, 0, time.UTC)
+	envelope := signedTestEnvelope(t, signer, retained, digest, record, "attempt-0000000000000000000000000000000a", 10, now, now.Add(time.Minute))
+	if _, err := executeAuthorized(context.Background(), envelope, record, publicKey, paths, now); err == nil || !strings.Contains(err.Error(), "cannot select the active Generation") {
+		t.Fatalf("active Generation retention error = %v", err)
+	}
+}
+
+func TestRollbackWindowRetentionAllowsDistinctGenerationsToShareArtifact(t *testing.T) {
+	paths, record, _, _, endpoint, previous := prepareSwitchedTwoGenerationEndpoint(t, true)
+	previous.ArtifactDigest = endpoint.ArtifactDigest
+	input := *rollbackRetentionOperation(endpoint, previous, "30m0s").Input.Retention
+	if err := validateRetentionInput(input, record, paths); err != nil {
+		t.Fatalf("distinct Generations sharing one content-addressed Artifact were rejected: %v", err)
+	}
+}
+
+func TestRollbackWindowRetentionRejectsMalformedSignedPolicy(t *testing.T) {
+	paths, record, signer, publicKey, endpoint, previous := prepareSwitchedTwoGenerationEndpoint(t, true)
+	tests := []struct {
+		name   string
+		mutate func(*planner.RetentionInput)
+	}{
+		{name: "unknown policy", mutate: func(input *planner.RetentionInput) { input.Policy = "forever" }},
+		{name: "noncanonical window", mutate: func(input *planner.RetentionInput) { input.RollbackWindow = "30m" }},
+		{name: "unsupported window", mutate: func(input *planner.RetentionInput) { input.RollbackWindow = "30s" }},
+	}
+	for index, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			planned := rollbackRetentionOperation(endpoint, previous, "30m0s")
+			test.mutate(planned.Input.Retention)
+			digest, err := planner.OperationDigest(planned)
+			if err != nil {
+				t.Fatal(err)
+			}
+			now := time.Date(2026, 9, 24, 12, 10, 0, 0, time.UTC)
+			envelope := signedTestEnvelope(t, signer, planned, digest, record, fmt.Sprintf("attempt-%032x", index+20), int64(index+20), now, now.Add(time.Minute))
+			if _, err := executeAuthorized(context.Background(), envelope, record, publicKey, paths, now); err == nil {
+				t.Fatal("malformed signed retention operation unexpectedly passed validation")
+			}
+		})
+	}
+}
+
+func TestStaleRollbackWindowRetentionCannotChangeRecordedWindow(t *testing.T) {
+	paths, record, signer, publicKey, endpoint, previous := prepareSwitchedTwoGenerationEndpoint(t, true)
+	drained, _ := executeCandidateOperation(t, paths, record, signer, publicKey, httpDrainOperation(endpoint, previous, "2s"), 10)
+	if drained.Outcome != operation.OutcomeSucceeded {
+		t.Fatalf("HTTP drain = %+v", drained)
+	}
+	retained := rollbackRetentionOperation(endpoint, previous, "30m0s")
+	result, _ := executeCandidateOperation(t, paths, record, signer, publicKey, retained, 11)
+	if result.Outcome != operation.OutcomeSucceeded {
+		t.Fatalf("retention = %+v", result)
+	}
+	activePath := filepath.Join(paths.environmentHome, "active-generation.json")
+	before, err := os.ReadFile(activePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	digest, err := planner.OperationDigest(retained)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 9, 24, 12, 12, 0, 0, time.UTC)
+	stale := signedTestEnvelope(t, signer, retained, digest, record, "attempt-0000000000000000000000000000000c", 10, now, now.Add(time.Minute))
+	if _, err := executeAuthorized(context.Background(), stale, record, publicKey, paths, now); err == nil || !strings.Contains(err.Error(), "stale") {
+		t.Fatalf("stale retention error = %v", err)
+	}
+	after, err := os.ReadFile(activePath)
+	if err != nil || string(after) != string(before) {
+		t.Fatalf("stale retention changed durable record: %v", err)
 	}
 }
 
@@ -564,6 +822,11 @@ func activeVerificationOperation(endpoint planner.EndpointInput, previous *host.
 func httpDrainOperation(endpoint planner.EndpointInput, previous host.GenerationStatus, maxDuration string) planner.Operation {
 	plannedDrain := planner.DrainInput{Endpoint: endpoint, Previous: previous, Mode: drain.ModeBoundedHTTP, MaxDuration: drain.Bound(maxDuration)}
 	return planner.Operation{ID: "op-07", Kind: planner.DrainPrevious, DependsOn: []string{"op-06"}, Input: planner.OperationInput{Drain: &plannedDrain}, Recovery: planner.RestorePreviousRoute}
+}
+
+func rollbackRetentionOperation(endpoint planner.EndpointInput, previous host.GenerationStatus, window string) planner.Operation {
+	plannedRetention := planner.RetentionInput{Endpoint: endpoint, Previous: previous, Policy: rollbackwindow.RuleRollbackWindow, RollbackWindow: rollbackwindow.Window(window)}
+	return planner.Operation{ID: "op-08", Kind: planner.RetainPrevious, DependsOn: []string{"op-07"}, Input: planner.OperationInput{Retention: &plannedRetention}, Recovery: planner.RetainBothGenerations}
 }
 
 func prepareSwitchedTwoGenerationEndpoint(t *testing.T, verifyActive bool) (executionPaths, bootstrapRecord, authority.Signer, ed25519.PublicKey, planner.EndpointInput, host.GenerationStatus) {

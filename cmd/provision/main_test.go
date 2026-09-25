@@ -457,6 +457,19 @@ func TestPlanPreviewIsDeterministicAndReadOnly(t *testing.T) {
 	if drain.Input.Drain.Previous.ID != "provision-example-http-v0-aaaaaaaaaaaa" || drain.Input.Drain.Previous.SystemdUnit != "provision-lab-web-aaaaaaaaaaaa.service" {
 		t.Fatalf("drain operation omits exact previous Generation: %+v", drain.Input.Drain.Previous)
 	}
+	retained := plan.Operations[7]
+	if retained.ID != "op-08" || len(retained.DependsOn) != 1 || retained.DependsOn[0] != "op-07" || retained.Input.Retention == nil {
+		t.Fatalf("retention operation is not bound after drain completion: %+v", retained)
+	}
+	if retained.Input.Retention.Policy != "rollback-window" || retained.Input.Retention.RollbackWindow != "30m0s" {
+		t.Fatalf("retention operation omits declared rollback-window policy: %+v", retained.Input.Retention)
+	}
+	if retained.Input.Retention.Previous.ID != "provision-example-http-v0-aaaaaaaaaaaa" || retained.Input.Retention.Previous.SystemdUnit != "provision-lab-web-aaaaaaaaaaaa.service" || retained.Input.Retention.Previous.ReleaseDirectory != "/var/lib/provision/environments/lab/releases/provision-example-http-v0-aaaaaaaaaaaa" || retained.Input.Retention.Previous.RouteID != "provision-lab-web" {
+		t.Fatalf("retention operation omits exact previous Generation: %+v", retained.Input.Retention.Previous)
+	}
+	if retained.Input.Retention.Endpoint.ID != "provision-example-http-v1-bac304a88517" || retained.Input.Retention.Endpoint.RouteID != "provision-lab-web" {
+		t.Fatalf("retention operation omits exact active Endpoint: %+v", retained.Input.Retention.Endpoint)
+	}
 	for _, concreteInput := range []string{
 		`"source": "https://github.com/datashaman/provision-example-http/releases/download/v0.1.0/provision-example-http-linux-amd64.tar.gz"`,
 		`"unit": "provision-lab-web-bac304a88517.service"`,
@@ -751,7 +764,7 @@ func writeReadyBootstrapInspection(t *testing.T, operator, authorityKeyID string
 			Port: 28181, RouteID: "provision-lab-web", UnitActive: true, UnitMatches: true,
 			RouteObserved: true, RouteUpstream: "127.0.0.1:28181", RouteMatches: true,
 		}},
-		AllowedOperations: []string{"inspect", "stageArtifact", "installGeneration", "startCandidate", "verifyCandidate", "switchEndpoint", "verifyActive", "drainPrevious"}, Ready: true, Findings: []string{},
+		AllowedOperations: []string{"inspect", "stageArtifact", "installGeneration", "startCandidate", "verifyCandidate", "switchEndpoint", "verifyActive", "drainPrevious", "retainPrevious"}, Ready: true, Findings: []string{},
 	}
 	if err := json.NewEncoder(os.Stdout).Encode(status); err != nil {
 		t.Fatal(err)
@@ -784,6 +797,7 @@ func writeHostConfiguration(t *testing.T, dir, targetFields string) string {
 kind: Environment
 name: lab
 application: provision-example-http
+rollbackWindow: 30m0s
 targets:
   current:
     kind: host
@@ -878,7 +892,7 @@ case "$*" in
     ports='18080,28181'
     if [ "${FAKE_CANDIDATE_BUSY:-0}" = 1 ]; then ports='18080,27811,28181'; fi
     executor_digest="${FAKE_EXECUTOR_DIGEST:-sha256:e066cdc1a1b8a625dfc32db5ec74c1e4ba7bc459a3a3fc09ccc6488c44d606c5}"
-    printf '{"schemaVersion":"provision.dev/host-inspection/v1alpha1","environment":"lab","operator":"marlinf","account":"provision-lab","os":"ubuntu","osVersion":"26.04","architecture":"x86_64","systemdVersion":"systemd 259 (259.5-0ubuntu3.4)","sshServerVersion":"OpenSSH_10.2p1","caddyVersion":"%s","caddyActive":true,"journaldActive":true,"cgroupV2":true,"executorDigest":"%s","authorityKeyId":"sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc","sshHostKeyFingerprint":"SHA256:ddddddddddddddddddddddddddddddddddddddddddd","generationStorageReady":true,"caddyConfigValid":true,"caddyAdminReachable":true,"caddyConfigDurable":true,"listeningTcpPorts":[%s],"deployment":{"active":{"id":"provision-example-http-v0-aaaaaaaaaaaa","revision":"provision-example-http-v0","artifactDigest":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","systemdUnit":"provision-lab-web-aaaaaaaaaaaa.service","releaseDirectory":"/var/lib/provision/environments/lab/releases/provision-example-http-v0-aaaaaaaaaaaa","port":28181,"routeId":"provision-lab-web","unitActive":true,"unitMatches":true,"routeObserved":true,"routeUpstream":"127.0.0.1:28181","routeMatches":true}},"allowedOperations":["inspect","stageArtifact","installGeneration","startCandidate","verifyCandidate","switchEndpoint","verifyActive","drainPrevious"],"ready":true,"findings":[]}\n' "${FAKE_CADDY_VERSION:-2.6.2}" "$executor_digest" "$ports"
+    printf '{"schemaVersion":"provision.dev/host-inspection/v1alpha1","environment":"lab","operator":"marlinf","account":"provision-lab","os":"ubuntu","osVersion":"26.04","architecture":"x86_64","systemdVersion":"systemd 259 (259.5-0ubuntu3.4)","sshServerVersion":"OpenSSH_10.2p1","caddyVersion":"%s","caddyActive":true,"journaldActive":true,"cgroupV2":true,"executorDigest":"%s","authorityKeyId":"sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc","sshHostKeyFingerprint":"SHA256:ddddddddddddddddddddddddddddddddddddddddddd","generationStorageReady":true,"caddyConfigValid":true,"caddyAdminReachable":true,"caddyConfigDurable":true,"listeningTcpPorts":[%s],"deployment":{"active":{"id":"provision-example-http-v0-aaaaaaaaaaaa","revision":"provision-example-http-v0","artifactDigest":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","systemdUnit":"provision-lab-web-aaaaaaaaaaaa.service","releaseDirectory":"/var/lib/provision/environments/lab/releases/provision-example-http-v0-aaaaaaaaaaaa","port":28181,"routeId":"provision-lab-web","unitActive":true,"unitMatches":true,"routeObserved":true,"routeUpstream":"127.0.0.1:28181","routeMatches":true}},"allowedOperations":["inspect","stageArtifact","installGeneration","startCandidate","verifyCandidate","switchEndpoint","verifyActive","drainPrevious","retainPrevious"],"ready":true,"findings":[]}\n' "${FAKE_CADDY_VERSION:-2.6.2}" "$executor_digest" "$ports"
     ;;
   *) exit 23 ;;
 esac

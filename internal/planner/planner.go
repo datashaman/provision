@@ -13,6 +13,7 @@ import (
 	"provision/internal/config"
 	"provision/internal/drain"
 	"provision/internal/host"
+	"provision/internal/rollbackwindow"
 )
 
 const (
@@ -167,11 +168,10 @@ type DrainInput struct {
 }
 
 type RetentionInput struct {
-	GenerationID     string `json:"generationId"`
-	SystemdUnit      string `json:"systemdUnit"`
-	ReleaseDirectory string `json:"releaseDirectory"`
-	RouteID          string `json:"routeId"`
-	Until            string `json:"until"`
+	Endpoint       EndpointInput         `json:"endpoint"`
+	Previous       host.GenerationStatus `json:"previous"`
+	Policy         rollbackwindow.Rule   `json:"policy"`
+	RollbackWindow rollbackwindow.Window `json:"rollbackWindow"`
 }
 
 // Build converts validated configuration and a restricted Host Target
@@ -307,7 +307,7 @@ func capabilityIssues(observation host.BootstrapStatus, selection config.HostSel
 	if !selection.Target.Local && observation.SSHHostKeyFingerprint == "" {
 		issues = append(issues, "SSH host key identity is not observed")
 	}
-	for _, operation := range []string{"stageArtifact", "installGeneration", "startCandidate", "verifyCandidate", "switchEndpoint", "verifyActive", "drainPrevious"} {
+	for _, operation := range []string{"stageArtifact", "installGeneration", "startCandidate", "verifyCandidate", "switchEndpoint", "verifyActive", "drainPrevious", "retainPrevious"} {
 		if !slices.Contains(observation.AllowedOperations, operation) {
 			issues = append(issues, fmt.Sprintf("host executor does not allow typed %s operations", operation))
 		}
@@ -349,7 +349,7 @@ func httpOperations(compiled config.Compiled, selection config.HostSelection, ob
 	if previous := observation.Deployment.Active; previous != nil {
 		operations = append(operations,
 			Operation{ID: "op-07", Kind: DrainPrevious, DependsOn: []string{"op-06"}, Input: OperationInput{Drain: &DrainInput{Endpoint: endpoint, Previous: *previous, Mode: selection.Implementation.Endpoint.Drain.Mode, MaxDuration: selection.Implementation.Endpoint.Drain.MaxDuration}}, Preconditions: conditions("post-switch-verification", generationID, "passed"), ExpectedObservations: conditions("systemd-unit", previous.SystemdUnit, "drained"), Recovery: RestorePreviousRoute},
-			Operation{ID: "op-08", Kind: RetainPrevious, DependsOn: []string{"op-07"}, Input: OperationInput{Retention: &RetentionInput{GenerationID: previous.ID, SystemdUnit: previous.SystemdUnit, ReleaseDirectory: previous.ReleaseDirectory, RouteID: previous.RouteID, Until: "environment-policy-rollback-window"}}, Preconditions: conditions("systemd-unit", previous.SystemdUnit, "drained"), ExpectedObservations: conditions("rollback-generation", previous.ID+"@"+observationDigest, "retained"), Recovery: RetainBothGenerations},
+			Operation{ID: "op-08", Kind: RetainPrevious, DependsOn: []string{"op-07"}, Input: OperationInput{Retention: &RetentionInput{Endpoint: endpoint, Previous: *previous, Policy: rollbackwindow.RuleRollbackWindow, RollbackWindow: compiled.Environment.RollbackWindow}}, Preconditions: conditions("systemd-unit", previous.SystemdUnit, "drained"), ExpectedObservations: conditions("rollback-generation", previous.ID+"@"+observationDigest, "retained"), Recovery: RetainBothGenerations},
 		)
 	}
 	return operations

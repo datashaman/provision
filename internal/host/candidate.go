@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"provision/internal/drain"
+	"provision/internal/rollbackwindow"
 )
 
 type CandidateStatus string
@@ -145,6 +146,39 @@ type DrainObservation struct {
 	PreviousReleaseRetained bool             `json:"previousReleaseRetained"`
 	Reason                  string           `json:"reason,omitempty"`
 	RecoveryAction          string           `json:"recoveryAction,omitempty"`
+}
+
+type RetentionStatus string
+
+const (
+	RetentionPending   RetentionStatus = "pending"
+	RetentionCompleted RetentionStatus = "retained"
+	RetentionFailed    RetentionStatus = "failed"
+	RetentionUncertain RetentionStatus = "uncertain"
+)
+
+type RetentionObservation struct {
+	Status                              RetentionStatus       `json:"status"`
+	Active                              GenerationStatus      `json:"active"`
+	Previous                            GenerationStatus      `json:"previous"`
+	Policy                              rollbackwindow.Rule   `json:"policy"`
+	RollbackWindow                      rollbackwindow.Window `json:"rollbackWindow"`
+	OperationDigest                     string                `json:"operationDigest"`
+	DrainOperationDigest                string                `json:"drainOperationDigest,omitempty"`
+	SwitchedAt                          *time.Time            `json:"switchedAt,omitempty"`
+	DrainedAt                           *time.Time            `json:"drainedAt,omitempty"`
+	RetainedAt                          *time.Time            `json:"retainedAt,omitempty"`
+	RetainUntil                         *time.Time            `json:"retainUntil,omitempty"`
+	StableRouteVerified                 bool                  `json:"stableRouteVerified"`
+	PreviousUnitActive                  bool                  `json:"previousUnitActive"`
+	PreviousUnitRetained                bool                  `json:"previousUnitRetained"`
+	PreviousGenerationDirectoryRetained bool                  `json:"previousGenerationDirectoryRetained"`
+	PreviousManifestRetained            bool                  `json:"previousManifestRetained"`
+	PreviousArtifactRetained            bool                  `json:"previousArtifactRetained"`
+	Restartable                         bool                  `json:"restartable"`
+	CleanupPerformed                    bool                  `json:"cleanupPerformed"`
+	Reason                              string                `json:"reason,omitempty"`
+	RecoveryAction                      string                `json:"recoveryAction,omitempty"`
 }
 
 type OperationObservation struct {

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+	"time"
 
 	"provision/internal/authority"
 	"provision/internal/host"
@@ -142,6 +143,66 @@ func TestVerifyActiveResultDistinguishesHealthyRollbackAndUncertain(t *testing.T
 	result.Observation = mustJSON(t, uncertain)
 	if err := verifyHostResult(envelope, result); err == nil {
 		t.Fatal("uncertain result without recovery action accepted")
+	}
+}
+
+func TestVerifyDrainResultBindsBoundPolicyAndExactGenerations(t *testing.T) {
+	reference := planner.GenerationReference{
+		ID: "provision-example-http-v2-bbbbbbbbbbbb", Revision: "provision-example-http-v2",
+		ArtifactDigest: "sha256:" + strings.Repeat("b", 64), Account: "provision-lab",
+		ReleaseDirectory: "/var/lib/provision/environments/lab/releases/provision-example-http-v2-bbbbbbbbbbbb",
+	}
+	endpoint := planner.EndpointInput{
+		GenerationReference: reference, Unit: "provision-lab-web-bbbbbbbbbbbb.service",
+		RouteID: "provision-lab-web", ListenPort: 18080,
+		Upstream: "127.0.0.1:28082", UpstreamPort: 28082, DrainPolicy: "caddy-graceful-config-reload",
+	}
+	previous := host.GenerationStatus{
+		ID: "provision-example-http-v1-aaaaaaaaaaaa", Revision: "provision-example-http-v1",
+		ArtifactDigest: "sha256:" + strings.Repeat("a", 64), SystemdUnit: "provision-lab-web-aaaaaaaaaaaa.service",
+		ReleaseDirectory: "/var/lib/provision/environments/lab/releases/provision-example-http-v1-aaaaaaaaaaaa",
+		Port:             28081, RouteID: endpoint.RouteID, UnitActive: true, UnitMatches: true,
+	}
+	drain := planner.DrainInput{Endpoint: endpoint, Previous: previous, Mode: "bounded-http", MaxDuration: "2s"}
+	planned := planner.Operation{ID: "op-07", Kind: planner.DrainPrevious, Input: planner.OperationInput{Drain: &drain}}
+	drainDigest, err := planner.OperationDigest(planned)
+	if err != nil {
+		t.Fatal(err)
+	}
+	envelope := operation.Envelope{Authorization: authority.Proof{Claim: authority.Claim{PlanID: "sha256:" + strings.Repeat("c", 64), OperationID: "op-07", AttemptID: "attempt-11111111111111111111111111111111", FencingToken: 7}}, Operation: planned}
+	switchedAt := time.Date(2026, 9, 25, 12, 0, 0, 0, time.UTC)
+	deadline := time.Date(2026, 9, 25, 12, 0, 2, 0, time.UTC)
+	observed := host.DrainObservation{
+		Status: host.DrainCompleted, Active: host.GenerationStatus{
+			ID: endpoint.ID, Revision: endpoint.Revision, ArtifactDigest: endpoint.ArtifactDigest,
+			SystemdUnit: endpoint.Unit, ReleaseDirectory: endpoint.ReleaseDirectory, Port: endpoint.UpstreamPort, RouteID: endpoint.RouteID,
+			UnitActive: true, UnitMatches: true, RouteObserved: true, RouteUpstream: endpoint.Upstream, RouteMatches: true,
+		},
+		Previous: previous, Mode: drain.Mode, HandoffPolicy: endpoint.DrainPolicy, MaxDuration: drain.MaxDuration, OperationDigest: drainDigest,
+		SwitchedAt: &switchedAt, StableVerifiedAt: &switchedAt, Deadline: &deadline,
+		BoundElapsed: true, StableRouteVerified: true, PreviousUnitRetained: true, PreviousReleaseRetained: true,
+	}
+	result := operation.Result{
+		SchemaVersion: operation.ResultSchemaVersion, PlanID: envelope.Authorization.Claim.PlanID,
+		OperationID: "op-07", AttemptID: envelope.Authorization.Claim.AttemptID, FencingToken: 7,
+		Outcome: operation.OutcomeSucceeded, Observation: mustJSON(t, observed),
+	}
+	if err := verifyHostResult(envelope, result); err != nil {
+		t.Fatalf("valid HTTP drain result rejected: %v", err)
+	}
+	observed.MaxDuration = "3s"
+	result.Observation = mustJSON(t, observed)
+	if err := verifyHostResult(envelope, result); err == nil || !strings.Contains(err.Error(), "does not match the Plan") {
+		t.Fatalf("tampered HTTP drain bound accepted: %v", err)
+	}
+	observed.MaxDuration = drain.MaxDuration
+	observed.Status = host.DrainUncertain
+	observed.Reason = "stable route cannot be proved"
+	observed.RecoveryAction = "inspect the stable Endpoint"
+	result.Outcome = operation.OutcomeUncertain
+	result.Observation = mustJSON(t, observed)
+	if err := verifyHostResult(envelope, result); err != nil {
+		t.Fatalf("valid uncertain HTTP drain result rejected: %v", err)
 	}
 }
 

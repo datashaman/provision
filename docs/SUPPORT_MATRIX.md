@@ -38,7 +38,7 @@ The matching remote executor digest was `sha256:e9c910de10f89045c98d426454c60a3e
 - Caddy configuration reload preserves the prior route on a rejected load. An external Caddy outage can still make the Endpoint unavailable until Caddy is restored.
 - Remote mode adds a management-transport dependency, not a workload-availability dependency. If the controller cannot authenticate the host or cannot obtain enough fresh evidence after a lost connection, the operation remains interrupted or uncertain until an operator restores access and resumes it; stable traffic continues according to the last host state.
 - SSH host-key rotation is deliberately not automatic. A reset or legitimate key change fails closed until the operator verifies and pins the replacement out of band.
-- Candidate verification, Endpoint switching, stable verification, and bounded rollback are implemented. Role-specific drain completion and rollback-window cleanup are not.
-- Previous and failed Generations remain installed and their systemd services may remain running because retention cleanup is not yet enabled.
+- Candidate verification, Endpoint switching, stable verification, bounded rollback, and bounded ordinary-HTTP drain completion are implemented. The historical evidence rows above predate the drain operation; a new row is required before that behavior is support-qualified. Rollback-window cleanup is not implemented.
+- A successfully drained previous Generation is stopped while its unit definition and immutable release remain installed. Other failed or older Generations may remain running because rollback-window retention and cleanup are not yet enabled.
 - Host reset and bootstrap are separate operator-controlled procedures. The matrix does not claim unattended OS provisioning, upgrades, or in-place migration from Gimme.
 - Versions not listed above require their own capability observation and acceptance run; they are not implied by this row.

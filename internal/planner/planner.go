@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"provision/internal/config"
+	"provision/internal/drain"
 	"provision/internal/host"
 )
 
@@ -112,6 +113,7 @@ type OperationInput struct {
 	Health     *HealthInput           `json:"health,omitempty"`
 	Endpoint   *EndpointInput         `json:"endpoint,omitempty"`
 	Previous   *host.GenerationStatus `json:"previous,omitempty"`
+	Drain      *DrainInput            `json:"drain,omitempty"`
 	Retention  *RetentionInput        `json:"retention,omitempty"`
 }
 
@@ -155,6 +157,13 @@ type EndpointInput struct {
 	Upstream     string `json:"upstream"`
 	UpstreamPort int    `json:"upstreamPort"`
 	DrainPolicy  string `json:"drainPolicy"`
+}
+
+type DrainInput struct {
+	Endpoint    EndpointInput         `json:"endpoint"`
+	Previous    host.GenerationStatus `json:"previous"`
+	Mode        drain.Mode            `json:"mode"`
+	MaxDuration drain.Bound           `json:"maxDuration"`
 }
 
 type RetentionInput struct {
@@ -298,7 +307,7 @@ func capabilityIssues(observation host.BootstrapStatus, selection config.HostSel
 	if !selection.Target.Local && observation.SSHHostKeyFingerprint == "" {
 		issues = append(issues, "SSH host key identity is not observed")
 	}
-	for _, operation := range []string{"stageArtifact", "installGeneration", "startCandidate", "verifyCandidate", "switchEndpoint", "verifyActive"} {
+	for _, operation := range []string{"stageArtifact", "installGeneration", "startCandidate", "verifyCandidate", "switchEndpoint", "verifyActive", "drainPrevious"} {
 		if !slices.Contains(observation.AllowedOperations, operation) {
 			issues = append(issues, fmt.Sprintf("host executor does not allow typed %s operations", operation))
 		}
@@ -327,18 +336,19 @@ func httpOperations(compiled config.Compiled, selection config.HostSelection, ob
 	candidatePort := generationPort(selection.Artifact.Digest)
 	component := compiled.Application.Components[selection.Component]
 	generation := GenerationReference{ID: generationID, Revision: compiled.Revision.Name, ArtifactDigest: selection.Artifact.Digest, Account: account, ReleaseDirectory: releaseDirectory}
+	endpoint := EndpointInput{GenerationReference: generation, Unit: unit, RouteID: routeID, ListenPort: listenPort, Upstream: fmt.Sprintf("127.0.0.1:%d", candidatePort), UpstreamPort: candidatePort, DrainPolicy: "caddy-graceful-config-reload"}
 
 	operations := []Operation{
 		{ID: "op-01", Kind: StageArtifact, DependsOn: []string{}, Input: OperationInput{Artifact: &ArtifactInput{Source: selection.Artifact.Source, Digest: selection.Artifact.Digest}}, Preconditions: conditions("artifact-digest", selection.Artifact.Source, selection.Artifact.Digest), ExpectedObservations: conditions("artifact-cache", selection.Artifact.Digest, "verified"), Recovery: DiscardStaged},
 		{ID: "op-02", Kind: InstallGeneration, DependsOn: []string{"op-01"}, Input: OperationInput{Generation: &GenerationInput{GenerationReference: generation}}, Preconditions: conditions("artifact-cache", selection.Artifact.Digest, "verified"), ExpectedObservations: conditions("generation-directory", releaseDirectory, generationID), Recovery: RemoveCandidate},
 		{ID: "op-03", Kind: StartCandidate, DependsOn: []string{"op-02"}, Input: OperationInput{Systemd: &SystemdInput{GenerationReference: generation, Unit: unit, Port: candidatePort}}, Preconditions: conditions("tcp-port", fmt.Sprintf("127.0.0.1:%d", candidatePort), "available"), ExpectedObservations: conditions("systemd-unit", unit, "active"), Recovery: StopCandidate},
 		{ID: "op-04", Kind: VerifyCandidate, DependsOn: []string{"op-03"}, Input: OperationInput{Health: &HealthInput{GenerationReference: generation, Unit: unit, LivenessPath: component.Health.Liveness.Path, ReadinessPath: component.Health.Readiness.Path, CandidateVerifyPath: component.Health.CandidateVerification.Path, Port: candidatePort}}, Preconditions: conditions("health-check", component.Health.Readiness.Path, "healthy"), ExpectedObservations: conditions("health-check", component.Health.CandidateVerification.Path, "healthy"), Recovery: LeaveEndpointUnchanged},
-		{ID: "op-05", Kind: SwitchEndpoint, DependsOn: []string{"op-04"}, Input: OperationInput{Endpoint: &EndpointInput{GenerationReference: generation, Unit: unit, RouteID: routeID, ListenPort: listenPort, Upstream: fmt.Sprintf("127.0.0.1:%d", candidatePort), UpstreamPort: candidatePort, DrainPolicy: "caddy-graceful-config-reload"}, Previous: observation.Deployment.Active}, Preconditions: conditions("candidate-verification", generationID, "passed"), ExpectedObservations: conditions("caddy-route", routeID, fmt.Sprintf("127.0.0.1:%d", candidatePort)), Recovery: RestorePreviousRoute},
-		{ID: "op-06", Kind: VerifyActive, DependsOn: []string{"op-05"}, Input: OperationInput{Health: &HealthInput{GenerationReference: generation, Unit: unit, LivenessPath: component.Health.Liveness.Path, ReadinessPath: component.Health.Readiness.Path, CandidateVerifyPath: component.Health.CandidateVerification.Path, Port: listenPort}, Endpoint: &EndpointInput{GenerationReference: generation, Unit: unit, RouteID: routeID, ListenPort: listenPort, Upstream: fmt.Sprintf("127.0.0.1:%d", candidatePort), UpstreamPort: candidatePort, DrainPolicy: "caddy-graceful-config-reload"}, Previous: observation.Deployment.Active}, Preconditions: conditions("caddy-route", routeID, fmt.Sprintf("127.0.0.1:%d", candidatePort)), ExpectedObservations: conditions("stable-endpoint-health", component.Health.Readiness.Path, "healthy"), Recovery: RestorePreviousRoute},
+		{ID: "op-05", Kind: SwitchEndpoint, DependsOn: []string{"op-04"}, Input: OperationInput{Endpoint: &endpoint, Previous: observation.Deployment.Active}, Preconditions: conditions("candidate-verification", generationID, "passed"), ExpectedObservations: conditions("caddy-route", routeID, fmt.Sprintf("127.0.0.1:%d", candidatePort)), Recovery: RestorePreviousRoute},
+		{ID: "op-06", Kind: VerifyActive, DependsOn: []string{"op-05"}, Input: OperationInput{Health: &HealthInput{GenerationReference: generation, Unit: unit, LivenessPath: component.Health.Liveness.Path, ReadinessPath: component.Health.Readiness.Path, CandidateVerifyPath: component.Health.CandidateVerification.Path, Port: listenPort}, Endpoint: &endpoint, Previous: observation.Deployment.Active}, Preconditions: conditions("caddy-route", routeID, fmt.Sprintf("127.0.0.1:%d", candidatePort)), ExpectedObservations: conditions("stable-endpoint-health", component.Health.Readiness.Path, "healthy"), Recovery: RestorePreviousRoute},
 	}
 	if previous := observation.Deployment.Active; previous != nil {
 		operations = append(operations,
-			Operation{ID: "op-07", Kind: DrainPrevious, DependsOn: []string{"op-06"}, Input: OperationInput{Previous: previous}, Preconditions: conditions("post-switch-verification", generationID, "passed"), ExpectedObservations: conditions("systemd-unit", previous.SystemdUnit, "drained"), Recovery: RestorePreviousRoute},
+			Operation{ID: "op-07", Kind: DrainPrevious, DependsOn: []string{"op-06"}, Input: OperationInput{Drain: &DrainInput{Endpoint: endpoint, Previous: *previous, Mode: selection.Implementation.Endpoint.Drain.Mode, MaxDuration: selection.Implementation.Endpoint.Drain.MaxDuration}}, Preconditions: conditions("post-switch-verification", generationID, "passed"), ExpectedObservations: conditions("systemd-unit", previous.SystemdUnit, "drained"), Recovery: RestorePreviousRoute},
 			Operation{ID: "op-08", Kind: RetainPrevious, DependsOn: []string{"op-07"}, Input: OperationInput{Retention: &RetentionInput{GenerationID: previous.ID, SystemdUnit: previous.SystemdUnit, ReleaseDirectory: previous.ReleaseDirectory, RouteID: previous.RouteID, Until: "environment-policy-rollback-window"}}, Preconditions: conditions("systemd-unit", previous.SystemdUnit, "drained"), ExpectedObservations: conditions("rollback-generation", previous.ID+"@"+observationDigest, "retained"), Recovery: RetainBothGenerations},
 		)
 	}

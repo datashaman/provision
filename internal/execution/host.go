@@ -95,7 +95,7 @@ func verifyHostResult(envelope operation.Envelope, result operation.Result) erro
 	if err := result.ValidateAgainst(envelope); err != nil {
 		return err
 	}
-	if result.Outcome == operation.OutcomeUncertain && envelope.Operation.Kind != planner.SwitchEndpoint && envelope.Operation.Kind != planner.VerifyActive {
+	if result.Outcome == operation.OutcomeUncertain && envelope.Operation.Kind != planner.SwitchEndpoint && envelope.Operation.Kind != planner.VerifyActive && envelope.Operation.Kind != planner.DrainPrevious {
 		return errors.New("host operation kind cannot return an uncertain structured outcome")
 	}
 	switch envelope.Operation.Kind {
@@ -111,6 +111,8 @@ func verifyHostResult(envelope operation.Envelope, result operation.Result) erro
 		return verifyEndpointResult(envelope, result)
 	case planner.VerifyActive:
 		return verifyActiveResult(envelope, result)
+	case planner.DrainPrevious:
+		return verifyDrainResult(envelope, result)
 	default:
 		return errors.New("host operation result kind is unsupported")
 	}
@@ -281,6 +283,41 @@ func verifyActiveResult(envelope operation.Envelope, result operation.Result) er
 		}
 	default:
 		return errors.New("host active verification outcome is unsupported")
+	}
+	return nil
+}
+
+func verifyDrainResult(envelope operation.Envelope, result operation.Result) error {
+	input := envelope.Operation.Input.Drain
+	if input == nil {
+		return errors.New("host HTTP drain observation has no planned drain")
+	}
+	var observed host.DrainObservation
+	if err := decodeObservation(result.Observation, &observed); err != nil {
+		return errors.New("host HTTP drain observation is invalid")
+	}
+	digest, err := planner.OperationDigest(envelope.Operation)
+	if err != nil {
+		return err
+	}
+	if !endpointGenerationMatches(observed.Active, input.Endpoint) || !generationStatusIdentityMatches(observed.Previous, input.Previous) || observed.Mode != input.Mode || observed.HandoffPolicy != input.Endpoint.DrainPolicy || observed.MaxDuration != input.MaxDuration || observed.OperationDigest != digest {
+		return errors.New("host HTTP drain observation does not match the Plan")
+	}
+	switch result.Outcome {
+	case operation.OutcomeSucceeded:
+		if observed.Status != host.DrainCompleted || !observed.BoundElapsed || !observed.StableRouteVerified || observed.PreviousUnitActive || !observed.PreviousUnitRetained || !observed.PreviousReleaseRetained || observed.SwitchedAt == nil || observed.SwitchedAt.IsZero() || observed.StableVerifiedAt == nil || observed.StableVerifiedAt.IsZero() || observed.Deadline == nil || observed.Deadline.IsZero() || observed.Reason != "" || observed.RecoveryAction != "" {
+			return errors.New("host HTTP drain success observation is invalid")
+		}
+	case operation.OutcomeFailed:
+		if observed.Status != host.DrainFailed || observed.Reason == "" || observed.RecoveryAction != "" {
+			return errors.New("host HTTP drain failure observation is invalid")
+		}
+	case operation.OutcomeUncertain:
+		if observed.Status != host.DrainUncertain || observed.Reason == "" || observed.RecoveryAction == "" {
+			return errors.New("host HTTP drain uncertain observation is invalid")
+		}
+	default:
+		return errors.New("host HTTP drain outcome is unsupported")
 	}
 	return nil
 }

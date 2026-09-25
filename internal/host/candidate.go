@@ -1,6 +1,11 @@
 package host
 
-import "encoding/json"
+import (
+	"encoding/json"
+	"time"
+
+	"provision/internal/drain"
+)
 
 type CandidateStatus string
 
@@ -111,6 +116,35 @@ type ActiveVerificationObservation struct {
 	Restored          *GenerationStatus        `json:"restored,omitempty"`
 	Reason            string                   `json:"reason,omitempty"`
 	RecoveryAction    string                   `json:"recoveryAction,omitempty"`
+}
+
+type DrainStatus string
+
+const (
+	DrainPending   DrainStatus = "pending"
+	DrainCompleted DrainStatus = "drained"
+	DrainFailed    DrainStatus = "failed"
+	DrainUncertain DrainStatus = "uncertain"
+)
+
+type DrainObservation struct {
+	Status                  DrainStatus      `json:"status"`
+	Active                  GenerationStatus `json:"active"`
+	Previous                GenerationStatus `json:"previous"`
+	Mode                    drain.Mode       `json:"mode"`
+	HandoffPolicy           string           `json:"handoffPolicy"`
+	MaxDuration             drain.Bound      `json:"maxDuration"`
+	OperationDigest         string           `json:"operationDigest"`
+	SwitchedAt              *time.Time       `json:"switchedAt,omitempty"`
+	StableVerifiedAt        *time.Time       `json:"stableVerifiedAt,omitempty"`
+	Deadline                *time.Time       `json:"deadline,omitempty"`
+	BoundElapsed            bool             `json:"boundElapsed"`
+	StableRouteVerified     bool             `json:"stableRouteVerified"`
+	PreviousUnitActive      bool             `json:"previousUnitActive"`
+	PreviousUnitRetained    bool             `json:"previousUnitRetained"`
+	PreviousReleaseRetained bool             `json:"previousReleaseRetained"`
+	Reason                  string           `json:"reason,omitempty"`
+	RecoveryAction          string           `json:"recoveryAction,omitempty"`
 }
 
 type OperationObservation struct {

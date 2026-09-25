@@ -29,6 +29,8 @@ import (
 type fakeSystemdController struct {
 	active   map[string]bool
 	startErr error
+	stopErr  error
+	stopped  []string
 }
 
 type fakeCaddyController struct {
@@ -79,6 +81,10 @@ func (controller *fakeSystemdController) Run(_ context.Context, args ...string) 
 		controller.active[args[1]] = true
 		return nil, nil
 	case "stop":
+		if controller.stopErr != nil {
+			return []byte("stop failed"), controller.stopErr
+		}
+		controller.stopped = append(controller.stopped, args[1])
 		controller.active[args[1]] = false
 		return nil, nil
 	case "is-active":

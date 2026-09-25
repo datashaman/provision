@@ -164,8 +164,15 @@ assert_artifact_set() {
         bac304a885179a21fc889fef25cf09f12d8af19e30aa49c1c05e719d10f031b5 \
         f5d67ce429e0eedfd6d2a73be9b775b9a05025853d13c63a004164ce89bc9995 | sort >"$expected"
       ;;
+    drain)
+      printf '%s\n' \
+        4e775436b605b9e7ea71c1bdc0941e3f5e345eab05ae264f6cf9fbe56afd6485 \
+        bac304a885179a21fc889fef25cf09f12d8af19e30aa49c1c05e719d10f031b5 \
+        f5d67ce429e0eedfd6d2a73be9b775b9a05025853d13c63a004164ce89bc9995 | sort >"$expected"
+      ;;
     post-switch)
       printf '%s\n' \
+        4e775436b605b9e7ea71c1bdc0941e3f5e345eab05ae264f6cf9fbe56afd6485 \
         b6f188a9b2f582a28618c361aa1b9550a5eb7935bcd39933bae2412487e14ef7 \
         bac304a885179a21fc889fef25cf09f12d8af19e30aa49c1c05e719d10f031b5 \
         f5d67ce429e0eedfd6d2a73be9b775b9a05025853d13c63a004164ce89bc9995 | sort >"$expected"
@@ -336,13 +343,14 @@ write_status() {
   "$provision" deployment status --plan "$plan_id" --state "$backend" >"$work_dir/$name/$label-status.json"
 }
 
-for scenario in baseline pre-switch switch-failure post-switch interruption stale; do
+for scenario in baseline pre-switch switch-failure drain post-switch interruption stale; do
   case "$scenario" in
     baseline) materialize "$scenario" application.yaml revision-v1.yaml ;;
     pre-switch) materialize "$scenario" application-pre-switch-failure.yaml revision-v2.yaml ;;
     switch-failure) materialize "$scenario" application.yaml revision-v2.yaml ;;
+    drain) materialize "$scenario" application.yaml revision-v3.yaml ;;
     post-switch) materialize "$scenario" application.yaml revision-fail-stable.yaml ;;
-    interruption) materialize "$scenario" application.yaml revision-v3.yaml ;;
+    interruption) materialize "$scenario" application.yaml revision-v1.yaml ;;
     stale) materialize "$scenario" application.yaml revision-v1.yaml ;;
   esac
 done
@@ -363,7 +371,7 @@ if find /var/lib/provision/environments/lab/releases -mindepth 1 -maxdepth 1 -pr
   fail "Provision release storage is not empty; reset the disposable host before running the matrix"
 fi
 
-echo "[1/6] healthy rollout"
+echo "[1/7] healthy rollout"
 preview_and_approve baseline "$state"
 baseline_plan_id="$plan_id"
 stale_state="$work_dir/stale/state.db"
@@ -376,7 +384,7 @@ journal_assert_latest "$work_dir/baseline/final-status.json" op-06 outcome succe
 assert_host_state baseline provision-example-http-v1 - \
   provision-example-http-v1-bac304a88517
 
-echo "[2/6] pre-switch verification failure"
+echo "[2/7] pre-switch verification failure"
 preview_and_approve pre-switch "$state"
 for operation in op-01 op-02 op-03; do execute_success pre-switch "$state" "$operation"; done
 execute_failure pre-switch "$state" op-04 op-04-failed 'host preparation operation failed'
@@ -388,7 +396,7 @@ journal_assert_latest "$work_dir/pre-switch/final-status.json" op-04 outcome fai
 assert_host_state pre-switch provision-example-http-v1 - \
   provision-example-http-v1-bac304a88517
 
-echo "[3/6] Endpoint switch failure and explicit recovery"
+echo "[3/7] Endpoint switch failure and explicit recovery"
 preview_and_approve switch-failure "$state"
 for operation in op-01 op-02 op-03 op-04; do execute_success switch-failure "$state" "$operation"; done
 sudo systemctl stop caddy
@@ -403,13 +411,55 @@ assert_stable_revision provision-example-http-v1 switch-failure-before-resume
 "$provision" deployment resume --plan "$plan_id" --state "$state" --signing-key "$signing_key" >"$work_dir/switch-failure/op-05-resumed.json"
 json_assert "$work_dir/switch-failure/op-05-resumed.json" outcome '"succeeded"'
 execute_success switch-failure "$state" op-06
+execute_success switch-failure "$state" op-07
 write_status switch-failure "$state" final
 journal_assert_resume "$work_dir/switch-failure/final-status.json" op-05
+journal_assert_latest "$work_dir/switch-failure/final-status.json" op-07 outcome succeeded
 assert_host_state switch-failure provision-example-http-v2 provision-example-http-v1 \
   provision-example-http-v1-bac304a88517 \
   provision-example-http-v2-f5d67ce429e0
+json_assert "$work_dir/switch-failure-host.json" deployment.previous.unitActive false
+if systemctl is-active --quiet provision-lab-web-bac304a88517.service; then
+  fail "bounded drain left the exact previous v1 unit active"
+fi
 
-echo "[4/6] post-switch failure and bounded rollback"
+echo "[4/7] bounded ordinary-HTTP drain and lost response"
+preview_and_approve drain "$state"
+for operation in op-01 op-02 op-03 op-04; do execute_success drain "$state" "$operation"; done
+curl --fail --silent --show-error --max-time 5 'http://127.0.0.1:18080/slow?seconds=1' >"$work_dir/drain/in-flight.json" &
+in_flight_pid=$!
+sleep 0.2
+execute_success drain "$state" op-05
+execute_success drain "$state" op-06
+drain_fault_marker="$work_dir/drain/host-drain-completed"
+set +e
+PATH="$fault_bin:$PATH" PROVISION_FAULT_MARKER="$drain_fault_marker" "$provision" deployment execute --plan "$plan_id" --operation op-07 --state "$state" --signing-key "$signing_key" --lease-duration 5s >"$work_dir/drain/op-07-lost-response.txt" 2>&1
+drain_interrupted_result=$?
+set -e
+[[ $drain_interrupted_result -ne 0 && -f "$drain_fault_marker" ]] || fail "drain response loss did not occur after host completion"
+wait "$in_flight_pid" || fail "ordinary in-flight HTTP request did not complete during the bounded handoff"
+json_assert "$work_dir/drain/in-flight.json" revision '"provision-example-http-v2"'
+write_status drain "$state" interrupted
+journal_assert_latest "$work_dir/drain/interrupted-status.json" op-07 intent -
+sleep 6
+drain_replay_marker="$work_dir/drain/unexpected-replay"
+PATH="$fault_bin:$PATH" PROVISION_FAULT_MARKER="$drain_replay_marker" "$provision" deployment resume --plan "$plan_id" --state "$state" --signing-key "$signing_key" --lease-duration 5s >"$work_dir/drain/op-07-resumed.json"
+[[ ! -e "$drain_replay_marker" ]] || fail "drain resume blindly replayed the completed host mutation"
+json_assert "$work_dir/drain/op-07-resumed.json" outcome '"succeeded"'
+json_assert "$work_dir/drain/op-07-resumed.json" observation.status '"drained"'
+json_assert "$work_dir/drain/op-07-resumed.json" observation.mode '"bounded-http"'
+write_status drain "$state" final
+journal_assert_resume "$work_dir/drain/final-status.json" op-07
+assert_host_state drain provision-example-http-v3 provision-example-http-v2 \
+  provision-example-http-v1-bac304a88517 \
+  provision-example-http-v2-f5d67ce429e0 \
+  provision-example-http-v3-4e775436b605
+json_assert "$work_dir/drain-host.json" deployment.previous.unitActive false
+if systemctl is-active --quiet provision-lab-web-f5d67ce429e0.service; then
+  fail "bounded drain left the exact previous v2 unit active"
+fi
+
+echo "[5/7] post-switch failure and bounded rollback"
 preview_and_approve post-switch "$state"
 for operation in op-01 op-02 op-03 op-04 op-05; do execute_success post-switch "$state" "$operation"; done
 execute_failure post-switch "$state" op-06 op-06-rolled-back 'previous Generation was restored'
@@ -417,12 +467,13 @@ assert_contains "$work_dir/post-switch/op-06-rolled-back.txt" '"status": "rolled
 assert_contains "$work_dir/post-switch/op-06-rolled-back.txt" '"rollbackSucceeded": true'
 write_status post-switch "$state" final
 journal_assert_latest "$work_dir/post-switch/final-status.json" op-06 outcome failed
-assert_host_state post-switch provision-example-http-v2 provision-example-http-v0-3-0-fail-stable \
+assert_host_state post-switch provision-example-http-v3 provision-example-http-v0-3-0-fail-stable \
   provision-example-http-v0-3-0-fail-stable-b6f188a9b2f5 \
   provision-example-http-v1-bac304a88517 \
-  provision-example-http-v2-f5d67ce429e0
+  provision-example-http-v2-f5d67ce429e0 \
+  provision-example-http-v3-4e775436b605
 
-echo "[5/6] process interruption after traffic switch"
+echo "[6/7] process interruption after traffic switch"
 preview_and_approve interruption "$state"
 for operation in op-01 op-02 op-03 op-04; do execute_success interruption "$state" "$operation"; done
 fault_marker="$work_dir/interruption/host-switch-completed"
@@ -441,20 +492,20 @@ json_assert "$work_dir/interruption/op-05-resumed.json" outcome '"succeeded"'
 execute_success interruption "$state" op-06
 write_status interruption "$state" final
 journal_assert_resume "$work_dir/interruption/final-status.json" op-05
-assert_host_state interruption provision-example-http-v3 provision-example-http-v2 \
+assert_host_state interruption provision-example-http-v1 provision-example-http-v3 \
   provision-example-http-v0-3-0-fail-stable-b6f188a9b2f5 \
   provision-example-http-v1-bac304a88517 \
   provision-example-http-v2-f5d67ce429e0 \
   provision-example-http-v3-4e775436b605
 
-echo "[6/6] stale executor attempt"
+echo "[7/7] stale executor attempt"
 plan_id="$stale_plan_id"
 for operation in op-01 op-02 op-03; do execute_success stale "$stale_state" "$operation"; done
 execute_failure stale "$stale_state" op-04 op-04-stale 'fencing token is stale'
 assert_contains "$work_dir/stale/op-04-stale.txt" 'outcome recorded as uncertain'
 write_status stale "$stale_state" final
 journal_assert_latest "$work_dir/stale/final-status.json" op-04 outcome uncertain
-assert_host_state stale provision-example-http-v3 provision-example-http-v2 \
+assert_host_state stale provision-example-http-v1 provision-example-http-v3 \
   provision-example-http-v0-3-0-fail-stable-b6f188a9b2f5 \
   provision-example-http-v1-bac304a88517 \
   provision-example-http-v2-f5d67ce429e0 \
@@ -476,6 +527,8 @@ print(json.dumps({
         "pre-switch failure",
         "switch failure",
         "post-switch rollback",
+        "bounded ordinary-HTTP drain",
+        "lost drain response and observation-only resume",
         "process interruption",
         "stale executor",
     ],

@@ -226,6 +226,9 @@ func (e Engine) execute(ctx context.Context, request Request, resumeOfAttemptID 
 		if attempt.Operation.Kind == planner.VerifyActive {
 			return result, errors.New("post-switch verification failed; the previous Generation was restored")
 		}
+		if attempt.Operation.Kind == planner.DrainPrevious {
+			return result, errors.New("bounded HTTP drain failed; the previous Generation was not declared drained")
+		}
 		return result, errors.New("host preparation operation failed")
 	}
 	if result.Outcome == operation.OutcomeUncertain {

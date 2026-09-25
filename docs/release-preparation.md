@@ -1,6 +1,6 @@
 # Authorized release preparation
 
-Provision can execute the first six operations of an approved Host Plan on either the current machine or a bootstrapped remote machine over SSH. `stageArtifact` downloads the Artifact URL already recorded in the Plan, verifies its SHA-256 digest, and stores it at `/var/lib/provision/artifacts/sha256/<digest>`. Dependency-gated operations then install that exact native bundle as an immutable candidate Generation, start a separate hardened systemd unit on a loopback-only port, evaluate the declared liveness, readiness, and revision-bound candidate-verification checks, atomically route the stable Endpoint to the verified candidate through Caddy, and evaluate the same Health Contract through that stable Endpoint. A previously active Generation remains runnable and is the bounded rollback target.
+Provision can execute the first seven operations of an approved Host Plan on either the current machine or a bootstrapped remote machine over SSH. `stageArtifact` downloads the Artifact URL already recorded in the Plan, verifies its SHA-256 digest, and stores it at `/var/lib/provision/artifacts/sha256/<digest>`. Dependency-gated operations then install that exact native bundle as an immutable candidate Generation, start a separate hardened systemd unit on a loopback-only port, evaluate the declared liveness, readiness, and revision-bound candidate-verification checks, atomically route the stable Endpoint to the verified candidate through Caddy, evaluate the same Health Contract through that stable Endpoint, and complete its bounded ordinary-HTTP drain. The stopped previous unit definition and immutable release remain the rollback target.
 
 Local and remote execution use the same Plan-bound authorization, fencing, journal, operation envelope, root-owned executor, and structured result. SSH is only the transport boundary; it does not create a second execution model or grant shell-shaped deployment authority.
 
@@ -134,7 +134,37 @@ If stable-route health fails, the executor does not immediately move traffic. It
 
 If there is no signed previous Generation, the previous Generation is unhealthy, Caddy cannot establish the rollback route, stable-route recovery cannot be verified, or durable active state cannot be recorded, the executor returns a structured `uncertain` result with an explicit recovery action. Provision commits that result to the State Backend and requires operator inspection; it never converts ambiguity into success. Both Generations remain retained by this slice.
 
-## 8. Resume an interrupted or uncertain operation
+## 8. Complete the bounded ordinary-HTTP drain
+
+The Environment makes the supported contract explicit:
+
+```yaml
+endpoint:
+  port: 18080
+  drain:
+    mode: bounded-http
+    maxDuration: 2s
+```
+
+`mode` must be `bounded-http`. `maxDuration` must be a canonical Go duration from one second through five minutes. Missing, malformed, noncanonical, shorter, longer, or differently scoped requirements fail configuration validation before a Plan exists.
+
+Execute `op-07` only after `op-06` succeeds:
+
+```sh
+go run ./cmd/provision deployment execute \
+  --plan sha256:PLAN_DIGEST \
+  --operation op-07 \
+  --state .provision/state.db \
+  --signing-key .provision/host-authority.key
+```
+
+The Plan binds the exact active Endpoint, exact previous Generation and unit, `caddy-graceful-config-reload` handoff policy, and declared maximum duration. The host independently proves the successful signed `op-06`, durable active/previous identities, active unit, stable Caddy route, previous unit definition, and immutable release. Successful `op-06` durably records its signed verification digest and completion time. The full drain bound starts there; `op-07` waits only the portion of that post-verification interval that remains after interruption or restart, re-observes the identities, then stops exactly the previous systemd unit. It does not delete or disable that unit and does not remove the release.
+
+The result and `deployment status` evidence use `mode: bounded-http` and `status: drained`. They include the operation digest, switch time, deadline, bound completion, stable-route proof, previous-unit state, and retained rollback assets. A stopped unit without durable completion is reconciled and recorded under a new signed attempt rather than blindly stopped again. A lost response after durable completion is resolved from fresh observation without redispatch. Drift or ambiguity yields `uncertain` with a recovery action; a proved stop refusal yields `failed`.
+
+This bound is for ordinary finite HTTP requests. It gives requests admitted before Caddy's graceful configuration handoff their declared completion interval before the previous process is stopped. It does not inspect individual requests, migrate connections, or promise WebSocket and other long-lived-stream drain behavior.
+
+## 9. Resume an interrupted or uncertain operation
 
 After the original execution lease has expired or been released, resume the latest interrupted or uncertain operation recorded for the Plan:
 
@@ -153,7 +183,7 @@ Traffic switching has an additional host-side recovery boundary. If Caddy alread
 
 Every resume handles one journaled operation. Run `deployment status` after it, and invoke resume again only if the latest outcome remains uncertain and the reported recovery action has been completed.
 
-## 9. Read the durable journal
+## 10. Read the durable journal
 
 ```sh
 go run ./cmd/provision deployment status \
@@ -165,4 +195,4 @@ The output contains append-only authoritative intent and outcome events, includi
 
 ## Current boundary
 
-This is switched-route verification with bounded automatic rollback, not yet the complete HTTP blue-green lifecycle. Later Plan operations remain unavailable: Provision cannot yet declare role-specific drain completion or apply the rollback-window retention decision. Those omissions are explicit capability failures rather than silent fallback behavior.
+This slice now completes the bounded ordinary-HTTP drain while retaining the stopped previous unit definition and immutable release. It is still not the complete HTTP blue-green lifecycle: `retainPrevious` cannot yet apply the rollback-window retention and cleanup decision. WebSocket and other long-lived-stream drain guarantees also remain unsupported rather than silently inferred from ordinary HTTP behavior.

@@ -62,6 +62,7 @@ The product should let a user describe:
 - [Plan approval and status](docs/plan-approval.md)
 - [Authorized release preparation](docs/release-preparation.md)
 - [Direct-local failure matrix](docs/direct-local-failure-matrix.md)
+- [Remote SSH failure matrix](docs/remote-ssh-failure-matrix.md)
 - [Test-backed support matrix](docs/SUPPORT_MATRIX.md)
 - [Decision records](docs/adr/)
 - [Exploratory material](docs/explorations/README.md)

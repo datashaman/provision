@@ -1376,7 +1376,7 @@ printf '%s\n' '{"environment":"lab","operator":"operator","account":"provision-l
 	cmd := exec.Command("go", "run", ".", "host", "bootstrap", "check", "--address", "lab.example", "--user", "operator", "--environment", "lab", "--operator", "operator")
 	cmd.Env = append(os.Environ(), "PATH="+dir+string(os.PathListSeparator)+os.Getenv("PATH"), "FAKE_SSH_LOG="+log)
 	output, err := cmd.CombinedOutput()
-	if err == nil || !strings.Contains(string(output), "unexpected host executor operation") {
+	if err == nil || !strings.Contains(string(output), "host executor operation capabilities differ: missing=[stageArtifact") || !strings.Contains(string(output), "unexpected=[shell]") {
 		t.Fatalf("unexpected executor capability accepted: %v\n%s", err, output)
 	}
 	args, err := os.ReadFile(log)

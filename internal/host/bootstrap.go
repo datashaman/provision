@@ -353,16 +353,48 @@ func CheckBootstrap(ctx context.Context, target Target, environment, operator st
 		return BootstrapStatus{}, errors.New("host bootstrap check returned mismatched identity")
 	}
 	wantedOperations := AllowedOperations()
-	if len(status.AllowedOperations) != len(wantedOperations) {
-		return BootstrapStatus{}, errors.New("unexpected host executor operation is enabled")
-	}
-	for index := range wantedOperations {
-		if status.AllowedOperations[index] != wantedOperations[index] {
-			return BootstrapStatus{}, errors.New("unexpected host executor operation is enabled")
-		}
+	if mismatch := operationCapabilityMismatch(wantedOperations, status.AllowedOperations); mismatch != "" {
+		return BootstrapStatus{}, fmt.Errorf("host executor operation capabilities differ: %s", mismatch)
 	}
 	if status.Ready && (status.OS != "ubuntu" || status.Architecture == "" || !strings.HasPrefix(status.SystemdVersion, "systemd ") || status.SSHServerVersion == "" || status.CaddyVersion == "" || !status.CaddyActive || !status.CaddyConfigValid || !status.CaddyAdminReachable || !status.CaddyConfigDurable || !status.GenerationStorageReady || !status.JournaldActive || !strings.HasPrefix(status.ExecutorDigest, "sha256:") || !strings.HasPrefix(status.AuthorityKeyID, "sha256:") || !target.Local && !status.SSHHostKeyFingerprint.Valid() || len(status.Findings) != 0) {
 		return BootstrapStatus{}, errors.New("host bootstrap check returned incomplete readiness evidence")
 	}
 	return status, nil
+}
+
+func operationCapabilityMismatch(wanted, observed []string) string {
+	wantedSet := make(map[string]struct{}, len(wanted))
+	observedSet := make(map[string]struct{}, len(observed))
+	for _, operation := range wanted {
+		wantedSet[operation] = struct{}{}
+	}
+	for _, operation := range observed {
+		observedSet[operation] = struct{}{}
+	}
+
+	missing := make([]string, 0)
+	for _, operation := range wanted {
+		if _, ok := observedSet[operation]; !ok {
+			missing = append(missing, operation)
+		}
+	}
+	unexpected := make([]string, 0)
+	for _, operation := range observed {
+		if _, ok := wantedSet[operation]; !ok {
+			unexpected = append(unexpected, operation)
+		}
+	}
+
+	if len(missing) > 0 || len(unexpected) > 0 {
+		return fmt.Sprintf("missing=%v unexpected=%v", missing, unexpected)
+	}
+	if len(wanted) != len(observed) {
+		return fmt.Sprintf("expected=%v observed=%v", wanted, observed)
+	}
+	for index := range wanted {
+		if wanted[index] != observed[index] {
+			return fmt.Sprintf("operation order differs: expected=%v observed=%v", wanted, observed)
+		}
+	}
+	return ""
 }

@@ -71,6 +71,18 @@ PY
 
 echo "[2/7] preview and approve the Worker-only replacement Plan"
 "$provision" config validate --file "$config" > "$work_dir/configuration.json"
+configured_target="$(python3 - "$work_dir/configuration.json" <<'PY'
+import json, sys
+configuration = json.load(open(sys.argv[1], encoding="utf-8"))
+targets = configuration.get("environment", {}).get("targets", {})
+addresses = sorted({value.get("address") for value in targets.values() if value.get("kind") == "host" and value.get("address")})
+print("\n".join(addresses))
+PY
+)"
+if [[ "$configured_target" != "$target" ]]; then
+  printf 'configuration Host Target does not match acceptance target: configured=%q expected=%q\n' "$configured_target" "$target" >&2
+  exit 1
+fi
 "$provision" plan preview --file "$config" --state "$state" > "$work_dir/plan.json"
 plan="$(plan_id "$work_dir/plan.json")"
 "$provision" plan approve --file "$config" --plan "$plan" --actor "$(id -un)" --state "$state" > "$work_dir/approval.json"

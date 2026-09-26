@@ -63,9 +63,11 @@ proves encrypted delivery and plaintext non-disclosure, not resistance to full
 host or disk compromise.
 
 Before and after the Queue operation, the harness compared complete installed
-package and system-unit inventories plus every unrelated Quadlet definition.
-All three comparisons were byte-identical. Exact RabbitMQ topology inspection
-also rejected unrelated broker resources.
+package, system-unit, and active service-state inventories; content hashes,
+ownership, modes, sizes, and paths for every unrelated Quadlet; and unrelated
+rootless Podman containers, images, volumes, and networks. Every comparison was
+byte-identical. Exact RabbitMQ topology inspection also rejected unrelated
+broker resources.
 
 ## Evidence identities
 

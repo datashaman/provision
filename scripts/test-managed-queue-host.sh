@@ -75,8 +75,14 @@ remote() {
 capture_unrelated_inventory() {
   local prefix="$1"
   remote "systemctl list-unit-files --no-legend --no-pager | sort" > "$work_dir/$prefix-system-units.txt"
+  remote "systemctl list-units --all --type=service --no-legend --no-pager --plain | awk '{print \$1 \"\\t\" \$3 \"\\t\" \$4}' | sort" > "$work_dir/$prefix-system-service-state.txt"
   remote "dpkg-query -W -f='\${binary:Package}\t\${Version}\n' | sort" > "$work_dir/$prefix-packages.txt"
-  remote "find /etc/containers/systemd/users -type f ! -name 'provision-lab-rabbitmq.container' -printf '%p\n' 2>/dev/null | sort" > "$work_dir/$prefix-unrelated-quadlets.txt"
+  remote "find /etc/containers/systemd/users -type f ! -name 'provision-lab-rabbitmq.container' -printf '%m\t%u\t%g\t%s\t%p\n' 2>/dev/null | sort; find /etc/containers/systemd/users -type f ! -name 'provision-lab-rabbitmq.container' -exec sha256sum {} + 2>/dev/null | sort -k2" > "$work_dir/$prefix-unrelated-quadlets.txt"
+  local as_environment="cd /tmp && sudo -n -u provision-lab env HOME=/var/lib/provision/runtime/lab XDG_RUNTIME_DIR=/run/user/102"
+  remote "$as_environment podman ps -a --format '{{.Names}}\t{{.Image}}\t{{.State}}' | awk -F '\t' '\$1 != \"provision-lab-rabbitmq\"' | sort" > "$work_dir/$prefix-unrelated-containers.txt"
+  remote "$as_environment podman images --no-trunc --format '{{.ID}}\t{{.Repository}}\t{{.Tag}}\t{{.Digest}}' | grep -v 'sha256:34fc91a9de04d612a340507b8e7e19c0ee1ec9839e09dc5fc98f54991633ce91' | sort" > "$work_dir/$prefix-unrelated-images.txt"
+  remote "$as_environment podman volume ls --format '{{.Name}}\t{{.Driver}}' | sort" > "$work_dir/$prefix-volumes.txt"
+  remote "$as_environment podman network ls --format '{{.Name}}\t{{.Driver}}' | sort" > "$work_dir/$prefix-networks.txt"
 }
 
 assert_resume_provenance() {
@@ -165,7 +171,7 @@ grep -Fq '"outcome": "succeeded"' "$work_dir/reexecution-status.json"
 
 echo "[7/7] verify unrelated Host inventory is unchanged"
 capture_unrelated_inventory after
-for inventory in system-units packages unrelated-quadlets; do
+for inventory in system-units system-service-state packages unrelated-quadlets unrelated-containers unrelated-images volumes networks; do
   cmp -s "$work_dir/before-$inventory.txt" "$work_dir/after-$inventory.txt" || {
     echo "unrelated Host inventory changed: $inventory" >&2
     diff -u "$work_dir/before-$inventory.txt" "$work_dir/after-$inventory.txt" >&2 || true

@@ -62,15 +62,17 @@ The checked-in black-box harness is
 Its qualified live run is recorded in the
 [first scheduled-message evidence](evidence/2026-09-26-first-scheduled-message.md).
 
-For a Worker-only replacement, the Planner keeps the existing Queue, Task, and
-Schedule identities and emits a separate immutable candidate followed by an
-explicit verification gate. Intake fencing, old-Worker drain, candidate intake,
-active verification, and retention all depend on that candidate verification.
-The restricted executor can install and start the candidate with intake closed
-and report its process identity, Queue connection, Revision identity, gate, and
-safe systemd diagnostics. If verification fails, the candidate remains closed
-and separately actionable while the existing Worker continues handling normal
-messages. The checked-in
+For a Worker-only candidate, the Planner keeps the existing Queue, Task, and
+Schedule identities and emits only Queue verification, Artifact staging,
+immutable candidate installation, gated start, and candidate verification. It
+does not authorize the still-unimplemented intake fence, old-Worker drain,
+candidate activation, active verification, or retention operations. The
+restricted executor requires the root-owned gate file and Worker runtime state
+to agree before it reports intake closed, and it reports process identity,
+Queue connection, Revision identity, complete per-message Worker event history,
+and safe systemd diagnostics. If verification fails, the candidate remains
+closed and separately actionable while the existing Worker continues handling
+normal messages. The checked-in
 [`scripts/test-rejected-worker-candidate-host.sh`](../scripts/test-rejected-worker-candidate-host.sh)
 harness and its [live evidence](evidence/2026-09-26-rejected-worker-candidate.md)
 qualify that rejection path.

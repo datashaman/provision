@@ -90,6 +90,11 @@ func Plan(compiled config.Compiled, observation host.BootstrapStatus) PlanningOu
 		Rollout:  workerImplementation.Rollout,
 		Previous: async.Deployment.ActiveWorker,
 	}
+	workerHandoffInput := &planmodel.AsyncWorkerHandoffInput{
+		Worker:            *workerInput,
+		QueueGenerationID: queueInput.GenerationID,
+		RollbackWindow:    compiled.Environment.RollbackWindow,
+	}
 	taskInput := &planmodel.AsyncTaskInput{
 		Component: taskName, Queue: workerComponent.Worker.Queue, QueueLogicalID: queueInput.LogicalID, GenerationID: taskGenerationID, Revision: compiled.Revision.Name,
 		ConfigurationDigest: compiled.Digest,
@@ -150,10 +155,17 @@ func Plan(compiled config.Compiled, observation host.BootstrapStatus) PlanningOu
 			planmodel.Operation{ID: "op-11", Kind: planmodel.VerifyWorkerActive, DependsOn: []string{"op-10"}, Input: planmodel.OperationInput{Async: &planmodel.AsyncOperationInput{Worker: workerInput}}, Preconditions: conditions("worker-admission", workerGenerationID, "open"), ExpectedObservations: conditions("worker-intake", workerGenerationID, "open-queue-connected"), Recovery: planmodel.KeepCandidateGated},
 		)
 	} else {
-		// A replacement Plan stops at candidate verification until the Worker
-		// handoff operations are implemented and capability-qualified. An
-		// approved candidate-only Plan cannot authorize intake mutation.
-		workerReadyID = "op-07"
+		fence := planmodel.Operation{ID: "op-08", Kind: planmodel.FenceWorkerIntake, DependsOn: []string{"op-07"}, Input: planmodel.OperationInput{Async: &planmodel.AsyncOperationInput{WorkerHandoff: workerHandoffInput}}, Preconditions: conditions("worker-candidate", workerGenerationID, "verified-gated"), ExpectedObservations: conditions("worker-admission", workerInput.Previous.ID, "closed-durable"), Recovery: planmodel.RestorePreviousWorkerIntake}
+		drain := planmodel.Operation{ID: "op-09", Kind: planmodel.DrainWorkerPrevious, DependsOn: []string{"op-08"}, Input: planmodel.OperationInput{Async: &planmodel.AsyncOperationInput{WorkerHandoff: workerHandoffInput}}, Preconditions: conditions("worker-admission", workerInput.Previous.ID, "closed-durable"), ExpectedObservations: conditions("worker-in-flight", workerInput.Previous.ID, "settled-or-safely-released"), Recovery: planmodel.ReleaseInflight}
+		drainDigest, _ := planmodel.OperationDigest(drain)
+		postDrainInput := *workerHandoffInput
+		postDrainInput.DrainOperationDigest = drainDigest
+		workerOperations = append(workerOperations, fence, drain,
+			planmodel.Operation{ID: "op-10", Kind: planmodel.ActivateWorkerIntake, DependsOn: []string{"op-09"}, Input: planmodel.OperationInput{Async: &planmodel.AsyncOperationInput{WorkerHandoff: &postDrainInput}}, Preconditions: conditions("worker-previous", workerInput.Previous.ID, "drained-or-released"), ExpectedObservations: conditions("worker-admission", workerGenerationID, "open"), Recovery: planmodel.RestorePreviousWorkerIntake},
+			planmodel.Operation{ID: "op-11", Kind: planmodel.VerifyWorkerActive, DependsOn: []string{"op-10"}, Input: planmodel.OperationInput{Async: &planmodel.AsyncOperationInput{WorkerHandoff: &postDrainInput}}, Preconditions: conditions("worker-admission", workerGenerationID, "open"), ExpectedObservations: conditions("worker-intake", workerGenerationID, "sole-open-queue-consumer"), Recovery: planmodel.RestorePreviousWorkerIntake},
+			planmodel.Operation{ID: "op-15", Kind: planmodel.RetainWorkerPrevious, DependsOn: []string{"op-11"}, Input: planmodel.OperationInput{Async: &planmodel.AsyncOperationInput{WorkerHandoff: &postDrainInput}}, Preconditions: conditions("worker-active", workerGenerationID, "verified"), ExpectedObservations: conditions("worker-rollback-generation", workerInput.Previous.ID, "restartable-through-"+string(compiled.Environment.RollbackWindow)), Recovery: planmodel.RetainBothWorkerGenerations},
+		)
+		workerReadyID = "op-15"
 	}
 	transitions.Worker = TransitionChain{Operations: workerOperations, EntryID: "op-05", ReadyID: workerReadyID}
 	return PlanningOutput{

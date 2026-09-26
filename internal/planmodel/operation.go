@@ -1,6 +1,12 @@
 package planmodel
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"fmt"
+	"time"
+
 	"provision/internal/config"
 	"provision/internal/drain"
 	"provision/internal/host"
@@ -64,6 +70,23 @@ type Operation struct {
 	Recovery             RecoveryMode     `json:"recovery"`
 }
 
+func OperationDigest(operation Operation) (string, error) {
+	canonical, err := json.Marshal(operation)
+	if err != nil {
+		return "", fmt.Errorf("canonicalize operation: %w", err)
+	}
+	sum := sha256.Sum256(canonical)
+	return "sha256:" + hex.EncodeToString(sum[:]), nil
+}
+
+func WorkerDrainReleaseBudget(maximum time.Duration) time.Duration {
+	budget := 10 * time.Second
+	if half := maximum / 2; half < budget {
+		budget = half
+	}
+	return budget
+}
+
 type TypedCondition struct {
 	Kind     string `json:"kind"`
 	Subject  string `json:"subject"`
@@ -83,12 +106,13 @@ type OperationInput struct {
 }
 
 type AsyncOperationInput struct {
-	Queue    *AsyncQueueInput    `json:"queue,omitempty"`
-	Artifact *AsyncArtifactInput `json:"artifact,omitempty"`
-	Worker   *AsyncWorkerInput   `json:"worker,omitempty"`
-	Task     *AsyncTaskInput     `json:"task,omitempty"`
-	Schedule *AsyncScheduleInput `json:"schedule,omitempty"`
-	Runtime  *AsyncRuntimeInput  `json:"runtime,omitempty"`
+	Queue         *AsyncQueueInput         `json:"queue,omitempty"`
+	Artifact      *AsyncArtifactInput      `json:"artifact,omitempty"`
+	Worker        *AsyncWorkerInput        `json:"worker,omitempty"`
+	WorkerHandoff *AsyncWorkerHandoffInput `json:"workerHandoff,omitempty"`
+	Task          *AsyncTaskInput          `json:"task,omitempty"`
+	Schedule      *AsyncScheduleInput      `json:"schedule,omitempty"`
+	Runtime       *AsyncRuntimeInput       `json:"runtime,omitempty"`
 }
 
 type AsyncQueueInput struct {
@@ -134,6 +158,13 @@ type AsyncWorkerInput struct {
 	Drain          config.WorkerDrain           `json:"drain"`
 	Rollout        string                       `json:"rollout"`
 	Previous       *host.WorkerGenerationStatus `json:"previous,omitempty"`
+}
+
+type AsyncWorkerHandoffInput struct {
+	Worker               AsyncWorkerInput      `json:"worker"`
+	QueueGenerationID    string                `json:"queueGenerationId"`
+	RollbackWindow       rollbackwindow.Window `json:"rollbackWindow"`
+	DrainOperationDigest string                `json:"drainOperationDigest,omitempty"`
 }
 
 type AsyncTaskInput struct {

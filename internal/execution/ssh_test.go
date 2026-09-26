@@ -34,7 +34,7 @@ func TestSSHHostHandlerUsesTrustedIdentityAndTypedExecutor(t *testing.T) {
 		ID: "op-01", Kind: planner.StageArtifact, DependsOn: []string{}, Recovery: planner.DiscardStaged,
 		Input: planner.OperationInput{Artifact: &planner.ArtifactInput{Source: "https://artifacts.example/release.tar.gz", Digest: "sha256:" + strings.Repeat("3", 64)}},
 	}
-	observed, err := handler.Observe(t.Context(), planned)
+	observed, err := handler.Observe(t.Context(), "sha256:"+strings.Repeat("a", 64), planned)
 	if err != nil || observed.State != ObservationPending {
 		t.Fatalf("remote observation = %+v, %v", observed, err)
 	}
@@ -78,7 +78,7 @@ func TestSSHHostHandlerFailsClosedOnHostIdentityError(t *testing.T) {
 		t.Fatal(err)
 	}
 	planned := planner.Operation{ID: "op-01", Kind: planner.StageArtifact, Input: planner.OperationInput{Artifact: &planner.ArtifactInput{Digest: "sha256:" + strings.Repeat("3", 64)}}}
-	if _, err := handlerValue.Observe(t.Context(), planned); err == nil || !strings.Contains(err.Error(), "REMOTE HOST IDENTIFICATION HAS CHANGED") {
+	if _, err := handlerValue.Observe(t.Context(), "sha256:"+strings.Repeat("a", 64), planned); err == nil || !strings.Contains(err.Error(), "REMOTE HOST IDENTIFICATION HAS CHANGED") {
 		t.Fatalf("changed host identity did not fail closed: %v", err)
 	}
 }

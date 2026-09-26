@@ -61,6 +61,16 @@ This row qualifies only rejection before Worker intake handoff. It does not
 qualify a successful handoff, old-Worker drain, retained-generation rollback,
 or interruption recovery during a Worker replacement.
 
+## Successful Worker intake handoff
+
+| Provision build | Host OS and runtime | Worker generations | Result |
+| --- | --- | --- | --- |
+| macOS `arm64` binary `sha256:9d2998d2fb03ce64e5cac9920d7ddfbdbc7a6a3d246310672137d5e77d3db269`; Linux `x86_64` executor `sha256:7406a91908d260e226a6e380497c76e50ba1e7a7779fade0b4cecbd710899e34`; harness `85fb2a6` | Ubuntu Server 26.04 VM, kernel `7.0.0-34-generic`, `x86_64`; systemd `259 (259.5-0ubuntu3.4)`; Podman `5.7.0+ds2-3build1`; RabbitMQ `4.3.6` at the qualified manifest | previous v0.1.1 Worker `sha256:2fcb2cec1d3d899e53737b9c25579ec1b2a271b93945a604bb43d337d207df40`; candidate v0.2.0 Worker `sha256:14caeac0dbdaff68a2644798b0a1b2549f82342bedbf79d9b8da4625e2080d95` | Two independent clean-snapshot runs passed. The first observed the durable in-progress drain record, then let its exact held old-Worker delivery finish inside the bound. The second entered the reserved release phase, durably requeued the exact stable message ID before the final deadline, and had the candidate acknowledge that same ID. Both Plans bound activation and retention to the exact durable drain operation, Plan, completion deadline, and final deadline. In both runs the old Worker claimed no post-fence work, the Queue stayed unchanged, the candidate exclusively handled during/after messages, and the stopped old generation remained restartable through the 30-minute rollback window. See the [live evidence](evidence/2026-09-26-worker-intake-handoff.md). |
+
+This row qualifies a completed replacement on one systemd Host with one managed
+RabbitMQ consumer. It does not qualify interruption recovery inside the handoff,
+rollback execution, expiry cleanup, multi-host consumers, or Queue replacement.
+
 ## Guarantees exercised
 
 - An unverified candidate cannot receive stable traffic.
@@ -78,13 +88,15 @@ or interruption recovery during a Worker replacement.
 - Over SSH, a changed or unknown host key fails before the executor is invoked.
 - An in-flight SSH disconnect and killed Artifact-stage executor produce an uncertain journal outcome. Resume removes only temporary files proven to belong to an earlier signed attempt from the same Environment before safely restaging.
 - The initial Worker cannot consume until its immutable generation, process identity, Queue connection, Revision identity, and closed admission state are verified; status requires a durable exact active-generation record after intake opens.
-- A replacement Worker starts under a separate immutable unit only when its root-owned gate and runtime state both prove intake closed. The candidate-only Plan authorizes no intake-handoff mutation; failed verification leaves the active Worker and Queue ownership unchanged and reports the failed checks plus a recovery action without disclosing the Queue credential.
+- A replacement Worker starts under a separate immutable unit only when its root-owned gate and runtime state both prove intake closed. Failed verification leaves every downstream handoff operation blocked by its exact dependency, keeps active Worker and Queue ownership unchanged, and reports the failed checks plus a recovery action without disclosing the Queue credential.
+- A verified replacement Worker remains gated while the exact old Worker closes intake. The old Worker receives no new messages after the fence, may finish its held delivery within the completion allowance, or enters a reserved stop-and-release phase that durably requeues it under the same stable identity before the final declared deadline. Candidate intake opens only after the old unit is stopped with zero in-flight deliveries; the Queue generation remains unchanged and the stopped old generation stays restartable through the recorded rollback deadline.
+- The Worker drain records one Plan-bound operation identity, completion deadline, final deadline, release start, and completion before reporting success. Resume reuses that bound, activation and retention require its exact Plan and operation digest, and a stale Plan, stale active Worker, changed Queue generation, or settlement completed after the deadline fails closed.
 - A stable timer invokes the digest-pinned nonresident Schedule runtime, which records the occurrence and stable Task Invocation before starting the exact generation-specific Task instance.
 - The Task's publisher-confirmed message and the Worker's processing and manual acknowledgement evidence join on the same stable message identity.
 
 ## Limits
 
-- The HTTP rows cover a single native `x86_64` HTTP component on one systemd-managed host, exercised both directly on the host and remotely from an `arm64` macOS controller over SSH. The RabbitMQ rows qualify only the exact rootless Podman/Quadlet packaging and Queue semantics stated above. The scheduled-message row qualifies only its exact initial systemd Worker, Task, and Schedule path. The Worker-candidate row qualifies only pre-handoff rejection, not a completed asynchronous replacement. No row qualifies EC2, ECS, Lambda, databases, key-value stores, realtime services, successful asynchronous generation replacement, or multi-host asynchronous availability.
+- The HTTP rows cover a single native `x86_64` HTTP component on one systemd-managed host, exercised both directly on the host and remotely from an `arm64` macOS controller over SSH. The RabbitMQ rows qualify only the exact rootless Podman/Quadlet packaging and Queue semantics stated above. The scheduled-message row qualifies only its exact initial systemd Worker, Task, and Schedule path. The Worker rows qualify pre-handoff rejection and completed replacement only for the stated single-host examples. No row qualifies EC2, ECS, Lambda, databases, key-value stores, realtime services, Schedule replacement, Queue replacement, or multi-host asynchronous availability.
 - The Endpoint guarantee covers ordinary HTTP requests. It does not promise WebSocket or other long-lived stream draining.
 - Caddy configuration reload preserves the prior route on a rejected load. An external Caddy outage can still make the Endpoint unavailable until Caddy is restored.
 - Remote mode adds a management-transport dependency, not a workload-availability dependency. If the controller cannot authenticate the host or cannot obtain enough fresh evidence after a lost connection, the operation remains interrupted or uncertain until an operator restores access and resumes it; stable traffic continues according to the last host state.

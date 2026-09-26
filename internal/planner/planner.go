@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"time"
 
 	"provision/internal/config"
 	"provision/internal/host"
@@ -123,6 +124,7 @@ type AsyncOperationInput = planmodel.AsyncOperationInput
 type AsyncQueueInput = planmodel.AsyncQueueInput
 type AsyncArtifactInput = planmodel.AsyncArtifactInput
 type AsyncWorkerInput = planmodel.AsyncWorkerInput
+type AsyncWorkerHandoffInput = planmodel.AsyncWorkerHandoffInput
 type AsyncTaskInput = planmodel.AsyncTaskInput
 type AsyncScheduleInput = planmodel.AsyncScheduleInput
 type AsyncRuntimeInput = planmodel.AsyncRuntimeInput
@@ -495,7 +497,11 @@ func digest(value any) (string, error) {
 }
 
 func OperationDigest(operation Operation) (string, error) {
-	return digest(operation)
+	return planmodel.OperationDigest(operation)
+}
+
+func WorkerDrainReleaseBudget(maximum time.Duration) time.Duration {
+	return planmodel.WorkerDrainReleaseBudget(maximum)
 }
 
 // ApprovalFingerprint binds configuration, typed operations, capabilities,

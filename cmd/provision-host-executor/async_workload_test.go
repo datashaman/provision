@@ -1,13 +1,16 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"os"
 	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
+	"provision/internal/authority"
 	"provision/internal/config"
 	"provision/internal/host"
 	"provision/internal/planner"
@@ -252,6 +255,9 @@ func TestWorkerCandidateRequiresAndPreservesExactDistinctActiveGeneration(t *tes
 	if err := writeJSONAtomic(filepath.Join(workersRoot, "active.json"), active, 0444); err != nil {
 		t.Fatal(err)
 	}
+	if err := writeJSONAtomic(workerGenerationRecordPath(paths, activeInput.GenerationID), active, 0444); err != nil {
+		t.Fatal(err)
+	}
 	gatePath := workerGatePath(paths, activeInput.GenerationID)
 	if err := os.MkdirAll(filepath.Dir(gatePath), 0755); err != nil {
 		t.Fatal(err)
@@ -279,6 +285,126 @@ func TestWorkerCandidateRequiresAndPreservesExactDistinctActiveGeneration(t *tes
 	tampered.Previous = &host.WorkerGenerationStatus{ID: activeInput.GenerationID, Revision: activeInput.Revision, ArtifactDigest: candidate.ArtifactDigest, SystemdUnit: activeInput.SystemdUnit}
 	if err := validateAsyncWorkerInput(tampered, record, paths); err == nil || !strings.Contains(err.Error(), "separate immutable Generation") {
 		t.Fatalf("candidate matching the planned active Artifact was accepted: %v", err)
+	}
+	other := active
+	other.Input.GenerationID = "provision-example-async-other-dddddddddddd"
+	other.Input.Revision = "provision-example-async-other"
+	other.Input.ArtifactDigest = "sha256:" + strings.Repeat("d", 64)
+	other.Input.SystemdUnit = "provision-lab-consumer-dddddddddddd.service"
+	if err := writeJSONAtomic(filepath.Join(workersRoot, "active.json"), other, 0444); err != nil {
+		t.Fatal(err)
+	}
+	if err := validateWorkerTransitionState(planner.InstallWorkerGeneration, candidate, paths); err == nil || !strings.Contains(err.Error(), "planned previous") {
+		t.Fatalf("historical previous Worker record satisfied a stale replacement Plan: %v", err)
+	}
+}
+
+func TestWorkerDrainRecordKeepsOneDeadlineAndExactOperationIdentity(t *testing.T) {
+	_, _, _, worker, _ := asyncOperationFixture(t)
+	worker.Previous = &host.WorkerGenerationStatus{ID: "provision-example-async-v0-ffffffffffff"}
+	input := planner.AsyncWorkerHandoffInput{Worker: worker, QueueGenerationID: "provision-lab-messages-rabbitmq", RollbackWindow: "30m0s"}
+	startedAt := time.Date(2026, 9, 26, 8, 0, 0, 0, time.UTC)
+	drain := drainedWorkerGeneration{
+		SchemaVersion: "provision.dev/worker-drain/v1alpha2", PlanID: "sha256:" + strings.Repeat("c", 64), OperationDigest: "sha256:" + strings.Repeat("d", 64),
+		CandidateID: worker.GenerationID, PreviousID: worker.Previous.ID, QueueGenerationID: input.QueueGenerationID,
+		StartedAt: startedAt, CompletionDeadline: startedAt.Add(20 * time.Second), Deadline: startedAt.Add(30 * time.Second), InFlightMessageID: "msg-stable",
+	}
+	if err := validateDrainRecord(drain, input, drain.PlanID, drain.OperationDigest, 30*time.Second); err != nil {
+		t.Fatalf("exact in-progress drain record rejected: %v", err)
+	}
+	drain.Deadline = drain.Deadline.Add(time.Second)
+	if err := validateDrainRecord(drain, input, drain.PlanID, drain.OperationDigest, 30*time.Second); err == nil {
+		t.Fatal("retry-extended drain deadline accepted")
+	}
+	drain.Deadline = startedAt.Add(30 * time.Second)
+	if err := validateDrainRecord(drain, input, drain.PlanID, "sha256:"+strings.Repeat("e", 64), 30*time.Second); err == nil {
+		t.Fatal("drain record from another approved operation accepted")
+	}
+	if err := validateDrainRecord(drain, input, "sha256:"+strings.Repeat("e", 64), drain.OperationDigest, 30*time.Second); err == nil {
+		t.Fatal("drain record from another Plan accepted")
+	}
+	releaseStartedAt := drain.CompletionDeadline
+	completedAt := drain.Deadline.Add(time.Nanosecond)
+	drain.ReleaseStartedAt = &releaseStartedAt
+	drain.CompletedAt = &completedAt
+	drain.BoundElapsed = true
+	drain.ReleasedMessageID = drain.InFlightMessageID
+	if err := validateDrainRecord(drain, input, drain.PlanID, drain.OperationDigest, 30*time.Second); err == nil {
+		t.Fatal("drain settlement after its durable deadline accepted")
+	}
+}
+
+func TestWorkerRetentionRecordBindsCurrentPlan(t *testing.T) {
+	_, _, _, worker, _ := asyncOperationFixture(t)
+	worker.Previous = &host.WorkerGenerationStatus{ID: "provision-example-async-v0-ffffffffffff"}
+	input := planner.AsyncWorkerHandoffInput{
+		Worker: worker, QueueGenerationID: "provision-lab-messages-rabbitmq", RollbackWindow: "30m0s",
+		DrainOperationDigest: "sha256:" + strings.Repeat("a", 64),
+	}
+	retainedAt := time.Date(2026, 9, 26, 8, 0, 0, 0, time.UTC)
+	record := retainedWorkerGeneration{
+		SchemaVersion: "provision.dev/worker-retention/v1alpha1", PlanID: "sha256:" + strings.Repeat("b", 64),
+		OperationDigest: "sha256:" + strings.Repeat("c", 64), DrainOperationDigest: input.DrainOperationDigest,
+		CandidateID: worker.GenerationID, PreviousID: worker.Previous.ID, RollbackWindow: input.RollbackWindow,
+		RetainedAt: retainedAt, RetainUntil: retainedAt.Add(30 * time.Minute),
+	}
+	if err := validateRetentionRecord(record, input, record.PlanID, record.OperationDigest); err != nil {
+		t.Fatalf("exact retention record rejected: %v", err)
+	}
+	if err := validateRetentionRecord(record, input, "sha256:"+strings.Repeat("d", 64), record.OperationDigest); err == nil {
+		t.Fatal("retention record from another Plan accepted")
+	}
+}
+
+func TestWorkerDrainResumeUsesRecordedDeadlineAfterPreviousWorkerStopped(t *testing.T) {
+	record, paths, _, worker, _ := asyncOperationFixture(t)
+	paths.healthTimeout = time.Second
+	worker.Previous = &host.WorkerGenerationStatus{
+		ID: "provision-example-async-v0-ffffffffffff", Revision: "provision-example-async-v0",
+		ArtifactDigest: "sha256:" + strings.Repeat("f", 64), SystemdUnit: "provision-lab-consumer-ffffffffffff.service",
+	}
+	input := planner.AsyncWorkerHandoffInput{Worker: worker, QueueGenerationID: "provision-lab-messages-rabbitmq", RollbackWindow: "30m0s"}
+	planned := planner.Operation{ID: "op-09", Kind: planner.DrainWorkerPrevious, Input: planner.OperationInput{Async: &planner.AsyncOperationInput{WorkerHandoff: &input}}}
+	digest, err := planner.OperationDigest(planned)
+	if err != nil {
+		t.Fatal(err)
+	}
+	planID := "sha256:" + strings.Repeat("c", 64)
+	startedAt := time.Now().UTC().Add(-time.Second)
+	deadline := startedAt.Add(30 * time.Second)
+	drain := drainedWorkerGeneration{
+		SchemaVersion: "provision.dev/worker-drain/v1alpha2", PlanID: planID, OperationDigest: digest,
+		CandidateID: worker.GenerationID, PreviousID: worker.Previous.ID, QueueGenerationID: input.QueueGenerationID,
+		StartedAt: startedAt, CompletionDeadline: deadline.Add(-10 * time.Second), Deadline: deadline, InFlightMessageID: "msg-stable",
+	}
+	if err := os.MkdirAll(filepath.Dir(workerDrainRecordPath(paths, worker.Previous.ID)), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeJSONAtomic(workerDrainRecordPath(paths, worker.Previous.ID), drain, 0444); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(workerStatePath(paths, worker.Previous.ID)), 0755); err != nil {
+		t.Fatal(err)
+	}
+	state := exampleWorkerState{Gated: true, Consuming: false}
+	if err := writeJSONAtomic(workerStatePath(paths, worker.Previous.ID), state, 0644); err != nil {
+		t.Fatal(err)
+	}
+	evidence := `{"event":"acknowledged","messageId":"msg-stable","workerApplicationRevision":"provision-example-async-v0","workerArtifactDigest":"sha256:` + strings.Repeat("f", 64) + `"}` + "\n"
+	if err := os.WriteFile(workerEvidencePath(paths), []byte(evidence), 0644); err != nil {
+		t.Fatal(err)
+	}
+	controller := &fakeSystemdController{active: map[string]bool{worker.Previous.SystemdUnit: false}}
+	paths.systemd = controller
+	if _, err := drainPreviousWorker(context.Background(), planned, authority.Claim{PlanID: planID}, record, paths); err != nil {
+		t.Fatalf("resumed drain failed: %v", err)
+	}
+	var completed drainedWorkerGeneration
+	if err := readExactJSON(workerDrainRecordPath(paths, worker.Previous.ID), &completed); err != nil {
+		t.Fatal(err)
+	}
+	if completed.CompletedAt == nil || !completed.StartedAt.Equal(startedAt) || !completed.Deadline.Equal(deadline) || completed.BoundElapsed || completed.ReleasedMessageID != "" {
+		t.Fatalf("resumed drain changed its bound or settlement: %+v", completed)
 	}
 }
 

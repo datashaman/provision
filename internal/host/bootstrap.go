@@ -16,7 +16,7 @@ import (
 const ExecutorPath = "/usr/local/libexec/provision-host-executor"
 
 func AllowedOperations() []string {
-	return []string{"inspect", "stageArtifact", "installGeneration", "startCandidate", "verifyCandidate", "switchEndpoint", "verifyActive", "drainPrevious", "retainPrevious", "prepareQueue", "installTaskGeneration", "verifyTaskGeneration", "installWorkerGeneration", "startWorkerCandidate", "verifyWorkerCandidate", "activateWorkerIntake", "verifyWorkerActive", "installScheduleRuntime", "handoffSchedule", "verifySchedule"}
+	return []string{"inspect", "stageArtifact", "installGeneration", "startCandidate", "verifyCandidate", "switchEndpoint", "verifyActive", "drainPrevious", "retainPrevious", "prepareQueue", "installTaskGeneration", "verifyTaskGeneration", "installWorkerGeneration", "startWorkerCandidate", "verifyWorkerCandidate", "fenceWorkerIntake", "drainWorkerPrevious", "activateWorkerIntake", "verifyWorkerActive", "installScheduleRuntime", "handoffSchedule", "verifySchedule", "retainWorkerPrevious"}
 }
 
 var environmentPattern = regexp.MustCompile(`^[a-z][a-z0-9-]{0,19}$`)
@@ -155,21 +155,23 @@ type QueueBindingStatus struct {
 }
 
 type WorkerGenerationStatus struct {
-	ID             string `json:"id"`
-	Revision       string `json:"revision"`
-	ArtifactDigest string `json:"artifactDigest"`
-	SystemdUnit    string `json:"systemdUnit"`
-	Active         bool   `json:"active"`
-	Gate           string `json:"gate"`
-	UnitActive     bool   `json:"unitActive"`
-	QueueConnected bool   `json:"queueConnected"`
-	InFlight       int    `json:"inFlight"`
-	StatePath      string `json:"statePath,omitempty"`
-	GatePath       string `json:"gatePath,omitempty"`
-	EvidencePath   string `json:"evidencePath,omitempty"`
-	Health         string `json:"health,omitempty"`
-	Reason         string `json:"reason,omitempty"`
-	RecoveryAction string `json:"recoveryAction,omitempty"`
+	ID             string     `json:"id"`
+	Revision       string     `json:"revision"`
+	ArtifactDigest string     `json:"artifactDigest"`
+	SystemdUnit    string     `json:"systemdUnit"`
+	Active         bool       `json:"active"`
+	Gate           string     `json:"gate"`
+	UnitActive     bool       `json:"unitActive"`
+	QueueConnected bool       `json:"queueConnected"`
+	InFlight       int        `json:"inFlight"`
+	StatePath      string     `json:"statePath,omitempty"`
+	GatePath       string     `json:"gatePath,omitempty"`
+	EvidencePath   string     `json:"evidencePath,omitempty"`
+	Health         string     `json:"health,omitempty"`
+	Reason         string     `json:"reason,omitempty"`
+	RecoveryAction string     `json:"recoveryAction,omitempty"`
+	Restartable    bool       `json:"restartable,omitempty"`
+	RetainUntil    *time.Time `json:"retainUntil,omitempty"`
 }
 
 type TaskGenerationStatus struct {
@@ -249,12 +251,36 @@ type AsyncTaskOperationObservation struct {
 }
 
 type AsyncWorkerOperationObservation struct {
-	Status         string                   `json:"status"`
-	Worker         WorkerGenerationStatus   `json:"worker"`
-	Verified       bool                     `json:"verified"`
-	Checks         WorkerVerificationChecks `json:"checks"`
-	UnitDiagnostic *SystemdUnitDiagnostic   `json:"unitDiagnostic,omitempty"`
-	Reason         string                   `json:"reason,omitempty"`
+	Status            string                   `json:"status"`
+	Worker            WorkerGenerationStatus   `json:"worker"`
+	QueueGenerationID string                   `json:"queueGenerationId,omitempty"`
+	Verified          bool                     `json:"verified"`
+	Checks            WorkerVerificationChecks `json:"checks"`
+	UnitDiagnostic    *SystemdUnitDiagnostic   `json:"unitDiagnostic,omitempty"`
+	Reason            string                   `json:"reason,omitempty"`
+}
+
+type AsyncWorkerHandoffObservation struct {
+	Status               string                 `json:"status"`
+	PlanID               string                 `json:"planId,omitempty"`
+	OperationDigest      string                 `json:"operationDigest"`
+	DrainOperationDigest string                 `json:"drainOperationDigest,omitempty"`
+	Candidate            WorkerGenerationStatus `json:"candidate"`
+	Previous             WorkerGenerationStatus `json:"previous"`
+	QueueGenerationID    string                 `json:"queueGenerationId"`
+	InFlightMessageID    string                 `json:"inFlightMessageId,omitempty"`
+	ReleasedMessageID    string                 `json:"releasedMessageId,omitempty"`
+	BoundElapsed         bool                   `json:"boundElapsed"`
+	DrainStartedAt       *time.Time             `json:"drainStartedAt,omitempty"`
+	CompletionDeadline   *time.Time             `json:"completionDeadline,omitempty"`
+	DrainDeadline        *time.Time             `json:"drainDeadline,omitempty"`
+	ReleaseStartedAt     *time.Time             `json:"releaseStartedAt,omitempty"`
+	DrainCompletedAt     *time.Time             `json:"drainCompletedAt,omitempty"`
+	RollbackWindow       rollbackwindow.Window  `json:"rollbackWindow,omitempty"`
+	RetainedAt           *time.Time             `json:"retainedAt,omitempty"`
+	RetainUntil          *time.Time             `json:"retainUntil,omitempty"`
+	Reason               string                 `json:"reason,omitempty"`
+	RecoveryAction       string                 `json:"recoveryAction,omitempty"`
 }
 
 type SystemdUnitDiagnostic struct {

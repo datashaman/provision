@@ -111,11 +111,16 @@ func Evaluate(observation host.BootstrapStatus, target config.TargetSelection) E
 		capability.RabbitMQQuadletPath == "" {
 		issues = append(issues, "RabbitMQ service identity or owned paths do not match the Environment")
 	}
-	if capability.WorkerAdmissionGate && strings.HasPrefix(capability.ScheduleAppletDigest, "sha256:") && len(capability.ScheduleAppletDigest) == 71 && capability.ScheduleLedgerSchema == "provision.dev/schedule-ledger/v1alpha1" {
+	workerHandoffOperations := []string{
+		"installWorkerGeneration", "startWorkerCandidate", "verifyWorkerCandidate",
+		"fenceWorkerIntake", "drainWorkerPrevious", "activateWorkerIntake",
+		"verifyWorkerActive", "retainWorkerPrevious",
+	}
+	if capability.WorkerAdmissionGate && allowsAll(observation.AllowedOperations, workerHandoffOperations...) && strings.HasPrefix(capability.ScheduleAppletDigest, "sha256:") && len(capability.ScheduleAppletDigest) == 71 && capability.ScheduleLedgerSchema == "provision.dev/schedule-ledger/v1alpha1" {
 		evaluation.Guarantees = append(evaluation.Guarantees,
-			"gated-worker-candidate", "generation-specific-task", "stable-schedule-timer")
+			"gated-worker-candidate", "bounded-in-flight-worker-drain", "previous-worker-generation-retention", "generation-specific-task", "stable-schedule-timer")
 		evaluation.SupportEvidence = append(evaluation.SupportEvidence,
-			"worker-admission-control-proven", "pinned-schedule-applet", "versioned-occurrence-ledger")
+			"worker-admission-control-proven", "stable-message-identity", "manual-settlement-evidence", "pinned-schedule-applet", "versioned-occurrence-ledger")
 	}
 	if queue := deployment.Queue; queue != nil && queue.Exists {
 		if !queue.Ready ||
@@ -172,6 +177,19 @@ func Evaluate(observation host.BootstrapStatus, target config.TargetSelection) E
 
 	evaluation.Reasons = unique(issues)
 	return evaluation
+}
+
+func allowsAll(observed []string, required ...string) bool {
+	allowed := make(map[string]struct{}, len(observed))
+	for _, operation := range observed {
+		allowed[operation] = struct{}{}
+	}
+	for _, operation := range required {
+		if _, ok := allowed[operation]; !ok {
+			return false
+		}
+	}
+	return true
 }
 
 func InitialSchedulePolicyReason(schedule config.ScheduleContract) string {

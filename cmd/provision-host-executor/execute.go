@@ -127,11 +127,12 @@ func runObserveOperation(args []string) error {
 	flags := flag.NewFlagSet("observe-operation", flag.ContinueOnError)
 	environment := flags.String("environment", "", "Environment identity")
 	operator := flags.String("operator", "", "bootstrap operator")
+	planID := flags.String("plan", "", "approved Plan identity")
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
-	if flags.NArg() != 0 || !identifier.MatchString(*environment) || !username.MatchString(*operator) {
-		return errors.New("observe-operation requires valid --environment and --operator")
+	if flags.NArg() != 0 || !identifier.MatchString(*environment) || !username.MatchString(*operator) || !digestPattern.MatchString(*planID) {
+		return errors.New("observe-operation requires valid --environment, --operator, and --plan")
 	}
 	data, err := io.ReadAll(io.LimitReader(os.Stdin, 1<<20+1))
 	if err != nil || len(data) > 1<<20 {
@@ -156,7 +157,7 @@ func runObserveOperation(args []string) error {
 	if planned.Kind == planner.PrepareQueue {
 		observed, err = observeQueueOperation(context.Background(), planned, record, paths)
 	} else if isAsyncWorkloadKind(planned.Kind) {
-		observed, err = observeAsyncWorkloadOperation(context.Background(), planned, record, paths)
+		observed, err = observeAsyncWorkloadOperation(context.Background(), *planID, planned, record, paths)
 	} else {
 		observed, err = observeCandidateOperation(context.Background(), planned, record, paths)
 	}

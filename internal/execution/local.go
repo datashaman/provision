@@ -15,12 +15,12 @@ type LocalHostHandler struct {
 	environment string
 }
 
-func (h LocalHostHandler) Observe(ctx context.Context, planned planner.Operation) (HandlerObservation, error) {
+func (h LocalHostHandler) Observe(ctx context.Context, planID string, planned planner.Operation) (HandlerObservation, error) {
 	if planned.Kind != planner.StageArtifact {
 		if h.environment == "" || h.target.User == "" {
 			return HandlerObservation{}, errors.New("local Host Handler lacks Plan target identity")
 		}
-		command := exec.CommandContext(ctx, "sudo", "-n", host.ExecutorPath, "observe-operation", "--environment", h.environment, "--operator", h.target.User)
+		command := exec.CommandContext(ctx, "sudo", "-n", host.ExecutorPath, "observe-operation", "--environment", h.environment, "--operator", h.target.User, "--plan", planID)
 		return executeHostObservation(command, planned, "restricted host observation")
 	}
 	artifact, err := plannedArtifactInput(planned)

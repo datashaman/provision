@@ -419,9 +419,9 @@ func (b *sqliteBackend) BeginOperation(ctx context.Context, request BeginOperati
 		return OperationAttempt{}, errors.New("operation is not present in the approved Plan")
 	}
 	switch operation.Kind {
-	case planner.StageArtifact:
+	case planner.StageArtifact, planner.PrepareQueue:
 		if len(operation.DependsOn) != 0 {
-			return OperationAttempt{}, errors.New("Artifact preparation cannot have operation dependencies")
+			return OperationAttempt{}, errors.New("initial preparation operation cannot have operation dependencies")
 		}
 	case planner.InstallGeneration, planner.StartCandidate, planner.VerifyCandidate, planner.SwitchEndpoint, planner.VerifyActive, planner.DrainPrevious, planner.RetainPrevious:
 		if len(operation.DependsOn) == 0 {

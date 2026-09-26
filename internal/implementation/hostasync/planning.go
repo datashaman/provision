@@ -12,6 +12,7 @@ import (
 type PlanningOutput struct {
 	Transitions              TransitionSet
 	SensitiveValueReferences []string
+	QueueOnly                bool
 }
 
 type TransitionSet struct {
@@ -45,10 +46,31 @@ func Plan(compiled config.Compiled, observation host.BootstrapStatus) PlanningOu
 	async := observation.Async
 	queueName, workerName, taskName, scheduleName := roles["queue"], roles["worker"], roles["task"], roles["schedule"]
 	queueComponent := compiled.Application.Components[queueName]
+	queueImplementation := compiled.Environment.Implementations[queueName]
+	queueInput := &planmodel.AsyncQueueInput{
+		Component: queueName, LogicalID: "provision-" + compiled.Environment.Name + "-" + queueName,
+		GenerationID:   "provision-" + compiled.Environment.Name + "-" + queueName + "-rabbitmq-4-3-6-" + strings.TrimPrefix(ImageManifest, "sha256:")[:12],
+		Implementation: queueImplementation.Kind, Lifecycle: queueImplementation.Lifecycle, Rollout: queueImplementation.Rollout,
+		CredentialReference: queueImplementation.Credential, RabbitMQVersion: async.Capabilities.RabbitMQVersion,
+		ImageIndex: async.Capabilities.RabbitMQImageIndex, ImageManifest: async.Capabilities.RabbitMQImageManifest,
+		ImageReference: "docker.io/library/rabbitmq@" + async.Capabilities.RabbitMQImageManifest,
+		QueueType:      "quorum", Members: 1, AMQPPort: 25672,
+		ServiceUnit: async.Capabilities.RabbitMQServiceUnit, Container: async.Capabilities.RabbitMQContainer,
+		Account: async.Capabilities.RabbitMQAccount, DataPath: async.Capabilities.RabbitMQDataPath, QuadletPath: async.Capabilities.RabbitMQQuadletPath,
+		Contract: queueComponent.Queue, Observed: async.Deployment.Queue,
+	}
+	queueOperation := planmodel.Operation{ID: "op-01", Kind: planmodel.PrepareQueue, DependsOn: []string{}, Input: planmodel.OperationInput{Async: &planmodel.AsyncOperationInput{Queue: queueInput}}, Preconditions: conditions("rabbitmq-qualification", QualificationDigest, "matched"), ExpectedObservations: conditions("queue-generation", queueInput.LogicalID, "ready-single-member-quorum"), Recovery: planmodel.RetainQueue}
+	if compiled.IsQueueOnly() {
+		return PlanningOutput{
+			Transitions:              TransitionSet{QueuePreparation: queueOperation},
+			SensitiveValueReferences: []string{queueImplementation.Credential},
+			QueueOnly:                true,
+		}
+	}
+
 	workerComponent := compiled.Application.Components[workerName]
 	taskComponent := compiled.Application.Components[taskName]
 	scheduleComponent := compiled.Application.Components[scheduleName]
-	queueImplementation := compiled.Environment.Implementations[queueName]
 	workerImplementation := compiled.Environment.Implementations[workerName]
 	taskImplementation := compiled.Environment.Implementations[taskName]
 	scheduleImplementation := compiled.Environment.Implementations[scheduleName]
@@ -61,16 +83,6 @@ func Plan(compiled config.Compiled, observation host.BootstrapStatus) PlanningOu
 	workerUnit := fmt.Sprintf("provision-%s-%s-%s.service", compiled.Environment.Name, workerName, workerDigestID)
 	taskUnit := fmt.Sprintf("provision-%s-%s-%s.service", compiled.Environment.Name, taskName, taskDigestID)
 	timerUnit := fmt.Sprintf("provision-%s-%s.timer", compiled.Environment.Name, scheduleName)
-
-	queueInput := &planmodel.AsyncQueueInput{
-		Component: queueName, LogicalID: "provision-" + compiled.Environment.Name + "-" + queueName,
-		Implementation: queueImplementation.Kind, Lifecycle: queueImplementation.Lifecycle, Rollout: queueImplementation.Rollout,
-		CredentialReference: queueImplementation.Credential, RabbitMQVersion: async.Capabilities.RabbitMQVersion,
-		ImageIndex: async.Capabilities.RabbitMQImageIndex, ImageManifest: async.Capabilities.RabbitMQImageManifest, QueueType: "quorum", Members: 1,
-		ServiceUnit: async.Capabilities.RabbitMQServiceUnit, Container: async.Capabilities.RabbitMQContainer,
-		Account: async.Capabilities.RabbitMQAccount, DataPath: async.Capabilities.RabbitMQDataPath, QuadletPath: async.Capabilities.RabbitMQQuadletPath,
-		Contract: queueComponent.Queue, Observed: async.Deployment.Queue,
-	}
 	workerInput := &planmodel.AsyncWorkerInput{
 		Component: workerName, Queue: workerComponent.Worker.Queue, GenerationID: workerGenerationID,
 		Revision: compiled.Revision.Name, ArtifactDigest: workerArtifact.Digest, SystemdUnit: workerUnit,
@@ -106,7 +118,7 @@ func Plan(compiled config.Compiled, observation host.BootstrapStatus) PlanningOu
 	}
 
 	transitions := TransitionSet{
-		QueuePreparation: planmodel.Operation{ID: "op-01", Kind: planmodel.PrepareQueue, DependsOn: []string{}, Input: planmodel.OperationInput{Async: &planmodel.AsyncOperationInput{Queue: queueInput}}, Preconditions: conditions("rabbitmq-qualification", QualificationDigest, "matched"), ExpectedObservations: conditions("queue-generation", queueInput.LogicalID, "ready-single-member-quorum"), Recovery: planmodel.RetainQueue},
+		QueuePreparation: queueOperation,
 		WorkerArtifact:   planmodel.Operation{ID: "op-02", Kind: planmodel.StageArtifact, DependsOn: []string{}, Input: planmodel.OperationInput{Async: &planmodel.AsyncOperationInput{Artifact: workerArtifactInput}}, Preconditions: conditions("artifact-digest", workerArtifact.Source, workerArtifact.Digest), ExpectedObservations: conditions("artifact-cache", workerArtifact.Digest, "verified"), Recovery: planmodel.DiscardAsyncArtifact},
 		TaskArtifact:     planmodel.Operation{ID: "op-03", Kind: planmodel.StageArtifact, DependsOn: []string{}, Input: planmodel.OperationInput{Async: &planmodel.AsyncOperationInput{Artifact: taskArtifactInput}}, Preconditions: conditions("artifact-digest", taskArtifact.Source, taskArtifact.Digest), ExpectedObservations: conditions("artifact-cache", taskArtifact.Digest, "verified"), Recovery: planmodel.DiscardAsyncArtifact},
 		Task: TransitionChain{
@@ -152,6 +164,7 @@ func Plan(compiled config.Compiled, observation host.BootstrapStatus) PlanningOu
 	return PlanningOutput{
 		Transitions:              transitions,
 		SensitiveValueReferences: []string{queueImplementation.Credential},
+		QueueOnly:                false,
 	}
 }
 

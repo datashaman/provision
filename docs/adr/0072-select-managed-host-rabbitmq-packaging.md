@@ -41,9 +41,16 @@ Scope this first topology to one RabbitMQ node and one quorum member. It proves
 durable restart behavior, publisher confirms, manual consumer acknowledgements,
 stable-ID redelivery after an unacknowledged channel close, and therefore the
 narrow at-least-once delivery claim exercised by that scenario. It has zero
-node- or host-failure tolerance. Retry policy, dead-lettering, retention,
-ordering, and deduplication remain unqualified. Planning must reject any
-availability or Queue semantic intent that exceeds those observations.
+node- or host-failure tolerance. Issue #39 additionally qualified exact
+configuration and observation of one logical Queue backed by work, retry, and
+dead-letter quorum queues, a delivery limit of three, 24-hour work-message
+retention, a ten-second retry delay, and seven-day dead-letter retention. These
+are reported as configured semantics, not as runtime guarantees: rejection,
+redelivery exhaustion, dead-letter routing, and TTL expiry remain unqualified
+until the later asynchronous failure matrix exercises them. Ordering and
+deduplication also remain unqualified. Planning must reject availability or
+Queue semantic intent outside those exact configured values and proven runtime
+guarantees.
 
 An OCI digest makes the broker executable identity immutable; it does not make
 Queue data backward-compatible. Every RabbitMQ upgrade remains a separately

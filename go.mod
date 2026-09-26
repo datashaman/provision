@@ -3,6 +3,7 @@ module provision
 go 1.26
 
 require (
+	github.com/rabbitmq/amqp091-go v1.15.0
 	go.yaml.in/yaml/v3 v3.0.5
 	modernc.org/sqlite v1.59.0
 )

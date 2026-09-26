@@ -594,15 +594,15 @@ func TestAsyncPlanPreviewIsDeterministicCompleteAndReadOnly(t *testing.T) {
 		t.Fatalf("observed occurrence-ledger change did not stale Plan %s", plan.ID)
 	}
 	unsupported, unsupportedErr := preview("FAKE_WORKER_GATE_CAPABILITY=false")
-	if unsupportedErr == nil || !strings.Contains(string(unsupported), "required Worker blue-green is unsupported without proven admission control") || strings.Contains(string(unsupported), `"operations"`) {
-		t.Fatalf("missing admission control did not fail closed: %v\n%s", unsupportedErr, unsupported)
+	if unsupportedErr == nil || !strings.Contains(string(unsupported), "required Worker admission-gate capability is not observed") || strings.Contains(string(unsupported), `"operations"`) {
+		t.Fatalf("complete asynchronous Application silently narrowed around missing Worker capability: %v\n%s", unsupportedErr, unsupported)
 	}
 	incomplete, incompleteErr := preview("FAKE_ASYNC_OBSERVATION_COMPLETE=false")
 	if incompleteErr == nil || !strings.Contains(string(incomplete), "asynchronous deployment observation is incomplete") || strings.Contains(string(incomplete), `"operations"`) {
 		t.Fatalf("explicitly incomplete observation did not fail closed: %v\n%s", incompleteErr, incomplete)
 	}
 	missingPackaging, missingPackagingErr := preview("FAKE_ASYNC_PACKAGING_COMPLETE=false")
-	if missingPackagingErr == nil || !strings.Contains(string(missingPackaging), "rootless Queue account, subordinate IDs, lingering manager, owned paths, or encrypted credential evidence is incomplete") || strings.Contains(string(missingPackaging), `"operations"`) {
+	if missingPackagingErr == nil || !strings.Contains(string(missingPackaging), "rootless Queue account, subordinate IDs, or lingering manager evidence is incomplete") || strings.Contains(string(missingPackaging), `"operations"`) {
 		t.Fatalf("missing packaging evidence did not fail closed: %v\n%s", missingPackagingErr, missingPackaging)
 	}
 
@@ -660,6 +660,30 @@ func TestAsyncPlanPreviewIsDeterministicCompleteAndReadOnly(t *testing.T) {
 		if strings.Contains(string(commands), forbidden) {
 			t.Fatalf("async preview attempted host mutation %q:\n%s", forbidden, commands)
 		}
+	}
+}
+
+func TestQueueOnlyPlanContainsOnlyDeclaredQueue(t *testing.T) {
+	dir := t.TempDir()
+	writeAsyncBootstrapInspectionSSH(t, dir)
+	configPath := filepath.Join("..", "..", "examples", "host-queue", "root.yaml")
+	command := exec.Command("go", "run", ".", "plan", "preview", "--file", configPath)
+	command.Env = append(os.Environ(), "PATH="+dir+string(os.PathListSeparator)+os.Getenv("PATH"), "FAKE_SSH_LOG="+filepath.Join(dir, "ssh.log"), "FAKE_WORKER_GATE_CAPABILITY=false", "FAKE_APPLET_DIGEST=")
+	output, err := command.CombinedOutput()
+	if err != nil {
+		t.Fatalf("Queue-only Plan failed because unrelated capabilities are absent: %v\n%s", err, output)
+	}
+	var plan struct {
+		ArtifactDigests map[string]string `json:"artifactDigests"`
+		Operations      []struct {
+			Kind string `json:"kind"`
+		} `json:"operations"`
+	}
+	if err := json.Unmarshal(output, &plan); err != nil {
+		t.Fatal(err)
+	}
+	if len(plan.ArtifactDigests) != 0 || len(plan.Operations) != 1 || plan.Operations[0].Kind != "prepareQueue" {
+		t.Fatalf("Queue-only Plan contains undeclared components: %s", output)
 	}
 }
 
@@ -933,7 +957,7 @@ func writeReadyBootstrapInspection(t *testing.T, operator, authorityKeyID string
 			Port: 28181, RouteID: "provision-lab-web", UnitActive: true, UnitMatches: true,
 			RouteObserved: true, RouteUpstream: "127.0.0.1:28181", RouteMatches: true,
 		}},
-		AllowedOperations: []string{"inspect", "stageArtifact", "installGeneration", "startCandidate", "verifyCandidate", "switchEndpoint", "verifyActive", "drainPrevious", "retainPrevious"}, Ready: true, Findings: []string{},
+		AllowedOperations: []string{"inspect", "stageArtifact", "installGeneration", "startCandidate", "verifyCandidate", "switchEndpoint", "verifyActive", "drainPrevious", "retainPrevious", "prepareQueue"}, Ready: true, Findings: []string{},
 	}
 	if err := json.NewEncoder(os.Stdout).Encode(status); err != nil {
 		t.Fatal(err)
@@ -1061,7 +1085,7 @@ case "$*" in
     ports='18080,28181'
     if [ "${FAKE_CANDIDATE_BUSY:-0}" = 1 ]; then ports='18080,27811,28181'; fi
     executor_digest="${FAKE_EXECUTOR_DIGEST:-sha256:e066cdc1a1b8a625dfc32db5ec74c1e4ba7bc459a3a3fc09ccc6488c44d606c5}"
-    printf '{"schemaVersion":"provision.dev/host-inspection/v1alpha1","environment":"lab","operator":"marlinf","account":"provision-lab","os":"ubuntu","osVersion":"26.04","architecture":"x86_64","systemdVersion":"systemd 259 (259.5-0ubuntu3.4)","sshServerVersion":"OpenSSH_10.2p1","caddyVersion":"%s","caddyActive":true,"journaldActive":true,"cgroupV2":true,"executorDigest":"%s","authorityKeyId":"sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc","sshHostKeyFingerprint":"SHA256:ddddddddddddddddddddddddddddddddddddddddddd","generationStorageReady":true,"caddyConfigValid":true,"caddyAdminReachable":true,"caddyConfigDurable":true,"listeningTcpPorts":[%s],"deployment":{"active":{"id":"provision-example-http-v0-aaaaaaaaaaaa","revision":"provision-example-http-v0","artifactDigest":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","systemdUnit":"provision-lab-web-aaaaaaaaaaaa.service","releaseDirectory":"/var/lib/provision/environments/lab/releases/provision-example-http-v0-aaaaaaaaaaaa","port":28181,"routeId":"provision-lab-web","unitActive":true,"unitMatches":true,"routeObserved":true,"routeUpstream":"127.0.0.1:28181","routeMatches":true}},"allowedOperations":["inspect","stageArtifact","installGeneration","startCandidate","verifyCandidate","switchEndpoint","verifyActive","drainPrevious","retainPrevious"],"ready":true,"findings":[]}\n' "${FAKE_CADDY_VERSION:-2.6.2}" "$executor_digest" "$ports"
+    printf '{"schemaVersion":"provision.dev/host-inspection/v1alpha1","environment":"lab","operator":"marlinf","account":"provision-lab","os":"ubuntu","osVersion":"26.04","architecture":"x86_64","systemdVersion":"systemd 259 (259.5-0ubuntu3.4)","sshServerVersion":"OpenSSH_10.2p1","caddyVersion":"%s","caddyActive":true,"journaldActive":true,"cgroupV2":true,"executorDigest":"%s","authorityKeyId":"sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc","sshHostKeyFingerprint":"SHA256:ddddddddddddddddddddddddddddddddddddddddddd","generationStorageReady":true,"caddyConfigValid":true,"caddyAdminReachable":true,"caddyConfigDurable":true,"listeningTcpPorts":[%s],"deployment":{"active":{"id":"provision-example-http-v0-aaaaaaaaaaaa","revision":"provision-example-http-v0","artifactDigest":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","systemdUnit":"provision-lab-web-aaaaaaaaaaaa.service","releaseDirectory":"/var/lib/provision/environments/lab/releases/provision-example-http-v0-aaaaaaaaaaaa","port":28181,"routeId":"provision-lab-web","unitActive":true,"unitMatches":true,"routeObserved":true,"routeUpstream":"127.0.0.1:28181","routeMatches":true}},"allowedOperations":["inspect","stageArtifact","installGeneration","startCandidate","verifyCandidate","switchEndpoint","verifyActive","drainPrevious","retainPrevious","prepareQueue"],"ready":true,"findings":[]}\n' "${FAKE_CADDY_VERSION:-2.6.2}" "$executor_digest" "$ports"
     ;;
   *) exit 23 ;;
 esac
@@ -1079,7 +1103,7 @@ printf '%s\n' "$*" >> "$FAKE_SSH_LOG"
 printf() {
   value="$(command printf "$@")"
   if [ "${FAKE_NO_ACTIVE_WORKER:-0}" = 1 ]; then value="$(command printf '%s' "$value" | sed -E 's/,"activeWorker":\{[^}]*\}//')"; fi
-  command printf '%s\n' "$value" | sed 's#"rabbitmqImageManifest":"sha256:34fc91a9de04d612a340507b8e7e19c0ee1ec9839e09dc5fc98f54991633ce91"#"rabbitmqImageManifest":"sha256:34fc91a9de04d612a340507b8e7e19c0ee1ec9839e09dc5fc98f54991633ce91","rabbitmqServiceUnit":"provision-lab-rabbitmq.service","rabbitmqContainer":"provision-lab-rabbitmq","rabbitmqAccount":"provision-lab","rabbitmqDataPath":"/var/lib/provision/environments/lab/services/rabbitmq/data","rabbitmqQuadletPath":"/etc/containers/systemd/users/999/provision-lab-rabbitmq.container"#g' | sed 's#"imageManifest":"sha256:34fc91a9de04d612a340507b8e7e19c0ee1ec9839e09dc5fc98f54991633ce91"#"imageManifest":"sha256:34fc91a9de04d612a340507b8e7e19c0ee1ec9839e09dc5fc98f54991633ce91","serviceUnit":"provision-lab-rabbitmq.service","container":"provision-lab-rabbitmq","account":"provision-lab","dataPath":"/var/lib/provision/environments/lab/services/rabbitmq/data","quadletPath":"/etc/containers/systemd/users/999/provision-lab-rabbitmq.container"#g'
+	  command printf '%s\n' "$value" | sed 's#"rabbitmqImageManifest":"sha256:34fc91a9de04d612a340507b8e7e19c0ee1ec9839e09dc5fc98f54991633ce91"#"rabbitmqImageManifest":"sha256:34fc91a9de04d612a340507b8e7e19c0ee1ec9839e09dc5fc98f54991633ce91","rabbitmqServiceUnit":"provision-lab-rabbitmq.service","rabbitmqContainer":"provision-lab-rabbitmq","rabbitmqAccount":"provision-lab","rabbitmqDataPath":"/var/lib/provision/environments/lab/services/rabbitmq/data","rabbitmqQuadletPath":"/etc/containers/systemd/users/999/provision-lab-rabbitmq.container"#g' | sed 's#"imageManifest":"sha256:34fc91a9de04d612a340507b8e7e19c0ee1ec9839e09dc5fc98f54991633ce91"#"generationId":"provision-lab-messages-rabbitmq-4-3-6-34fc91a9de04","imageManifest":"sha256:34fc91a9de04d612a340507b8e7e19c0ee1ec9839e09dc5fc98f54991633ce91","serviceUnit":"provision-lab-rabbitmq.service","container":"provision-lab-rabbitmq","account":"provision-lab","dataPath":"/var/lib/provision/environments/lab/services/rabbitmq/data","quadletPath":"/etc/containers/systemd/users/999/provision-lab-rabbitmq.container","rabbitmqVersion":"4.3.6","health":"healthy","retryQueue":"provision-lab-messages.retry","deadLetterQueue":"provision-lab-messages.dead-letter","workExchange":"provision-lab-messages.work","retryExchange":"provision-lab-messages.retry","deadLetterExchange":"provision-lab-messages.dead-letter","bindings":[{"source":"provision-lab-messages.work","destination":"provision-lab-messages","routingKey":"provision-lab-messages"},{"source":"provision-lab-messages.retry","destination":"provision-lab-messages.retry","routingKey":"provision-lab-messages.retry"},{"source":"provision-lab-messages.dead-letter","destination":"provision-lab-messages.dead-letter","routingKey":"provision-lab-messages.dead-letter"}],"messageTtl":"24h0m0s","retryDelay":"10s","deadLetterTtl":"168h0m0s","deliveryLimit":3,"accepted":1,"available":0,"acknowledged":1,"deadLettered":0,"probeMessageId":"probe","supportedGuarantees":["publisher-confirms","manual-acknowledgement","at-least-once"],"ownedResources":["rabbitmq-queue:provision-lab-messages"]#g'
 }
 case "$*" in
   *"/usr/local/libexec/provision-host-executor inspect --environment lab --operator marlinf")
@@ -1088,7 +1112,7 @@ case "$*" in
 		observation_complete="${FAKE_ASYNC_OBSERVATION_COMPLETE:-true}"
 		packaging_complete="${FAKE_ASYNC_PACKAGING_COMPLETE:-true}"
 		ledger_digest="${FAKE_LEDGER_DIGEST:-sha256:9999999999999999999999999999999999999999999999999999999999999999}"
-		printf '{"schemaVersion":"provision.dev/host-inspection/v1alpha1","environment":"lab","operator":"marlinf","account":"provision-lab","os":"ubuntu","osVersion":"26.04","architecture":"x86_64","systemdVersion":"systemd 259 (259.5-0ubuntu3.4)","sshServerVersion":"OpenSSH_10.2p1","caddyVersion":"2.6.2","caddyActive":true,"journaldActive":true,"cgroupV2":true,"executorDigest":"sha256:e066cdc1a1b8a625dfc32db5ec74c1e4ba7bc459a3a3fc09ccc6488c44d606c5","authorityKeyId":"sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc","sshHostKeyFingerprint":"SHA256:ddddddddddddddddddddddddddddddddddddddddddd","generationStorageReady":true,"caddyConfigValid":true,"caddyAdminReachable":true,"caddyConfigDurable":true,"allowedOperations":["inspect","stageArtifact","installGeneration","startCandidate","verifyCandidate","switchEndpoint","verifyActive","drainPrevious","retainPrevious"],"ready":true,"findings":[],"async":{"schemaVersion":"provision.dev/host-async-inspection/v1alpha1","observationComplete":%s,"capabilities":{"podmanVersion":"5.7.0+ds2-3build1","quadlet":true,"rootlessEnvironmentAccount":true,"systemdCredentials":true,"subordinateIds":%s,"lingeringUserManager":%s,"quadletDefinitionRootOwned":%s,"dataPathEnvironmentOwned":%s,"encryptedCredentialObserved":%s,"workerAdmissionGate":%s,"rabbitmqQualificationDigest":"sha256:af41714b1aa2270ba6cd151bd24876ac117218e401e1e87515451a7081ac4c6d","rabbitmqVersion":"4.3.6","rabbitmqImageIndex":"sha256:d0bffe70e755f348625415f32b0a090662e5f06b3ba3f82a4c7aaa18621b1279","rabbitmqImageManifest":"sha256:34fc91a9de04d612a340507b8e7e19c0ee1ec9839e09dc5fc98f54991633ce91","scheduleAppletDigest":"%s","scheduleLedgerSchema":"provision.dev/schedule-ledger/v1alpha1"},"deployment":{"queue":{"id":"provision-lab-messages","exists":true,"ready":true,"queueType":"quorum","members":1,"durable":true,"imageManifest":"sha256:34fc91a9de04d612a340507b8e7e19c0ee1ec9839e09dc5fc98f54991633ce91"},"activeWorker":{"id":"provision-example-async-v0-aaaaaaaaaaaa","revision":"provision-example-async-v0","artifactDigest":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","systemdUnit":"provision-lab-consumer-aaaaaaaaaaaa.service","gate":"open","unitActive":true,"queueConnected":true,"inFlight":0},"activeTask":{"id":"provision-example-async-v0-bbbbbbbbbbbb","revision":"provision-example-async-v0","artifactDigest":"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","systemdUnit":"provision-lab-publish-bbbbbbbbbbbb.service"},"schedule":{"timerUnit":"provision-lab-every-minute.timer","taskGenerationId":"provision-example-async-v0-bbbbbbbbbbbb","appletDigest":"%s","ledgerSchema":"provision.dev/schedule-ledger/v1alpha1","ledgerDigest":"%s","fencingToken":7}}}}\n' "$observation_complete" "$packaging_complete" "$packaging_complete" "$packaging_complete" "$packaging_complete" "$packaging_complete" "$worker_gate" "$applet_digest" "$applet_digest" "$ledger_digest"
+		printf '{"schemaVersion":"provision.dev/host-inspection/v1alpha1","environment":"lab","operator":"marlinf","account":"provision-lab","os":"ubuntu","osVersion":"26.04","architecture":"x86_64","systemdVersion":"systemd 259 (259.5-0ubuntu3.4)","sshServerVersion":"OpenSSH_10.2p1","caddyVersion":"2.6.2","caddyActive":true,"journaldActive":true,"cgroupV2":true,"executorDigest":"sha256:e066cdc1a1b8a625dfc32db5ec74c1e4ba7bc459a3a3fc09ccc6488c44d606c5","authorityKeyId":"sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc","sshHostKeyFingerprint":"SHA256:ddddddddddddddddddddddddddddddddddddddddddd","generationStorageReady":true,"caddyConfigValid":true,"caddyAdminReachable":true,"caddyConfigDurable":true,"allowedOperations":["inspect","stageArtifact","installGeneration","startCandidate","verifyCandidate","switchEndpoint","verifyActive","drainPrevious","retainPrevious","prepareQueue"],"ready":true,"findings":[],"async":{"schemaVersion":"provision.dev/host-async-inspection/v1alpha1","observationComplete":%s,"capabilities":{"podmanVersion":"5.7.0+ds2-3build1","quadlet":true,"rootlessEnvironmentAccount":true,"systemdCredentials":true,"subordinateIds":%s,"lingeringUserManager":%s,"quadletDefinitionRootOwned":%s,"dataPathEnvironmentOwned":%s,"encryptedCredentialObserved":%s,"workerAdmissionGate":%s,"rabbitmqQualificationDigest":"sha256:af41714b1aa2270ba6cd151bd24876ac117218e401e1e87515451a7081ac4c6d","rabbitmqVersion":"4.3.6","rabbitmqImageIndex":"sha256:d0bffe70e755f348625415f32b0a090662e5f06b3ba3f82a4c7aaa18621b1279","rabbitmqImageManifest":"sha256:34fc91a9de04d612a340507b8e7e19c0ee1ec9839e09dc5fc98f54991633ce91","scheduleAppletDigest":"%s","scheduleLedgerSchema":"provision.dev/schedule-ledger/v1alpha1"},"deployment":{"queue":{"id":"provision-lab-messages","exists":true,"ready":true,"queueType":"quorum","members":1,"durable":true,"imageManifest":"sha256:34fc91a9de04d612a340507b8e7e19c0ee1ec9839e09dc5fc98f54991633ce91"},"activeWorker":{"id":"provision-example-async-v0-aaaaaaaaaaaa","revision":"provision-example-async-v0","artifactDigest":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","systemdUnit":"provision-lab-consumer-aaaaaaaaaaaa.service","gate":"open","unitActive":true,"queueConnected":true,"inFlight":0},"activeTask":{"id":"provision-example-async-v0-bbbbbbbbbbbb","revision":"provision-example-async-v0","artifactDigest":"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","systemdUnit":"provision-lab-publish-bbbbbbbbbbbb.service"},"schedule":{"timerUnit":"provision-lab-every-minute.timer","taskGenerationId":"provision-example-async-v0-bbbbbbbbbbbb","appletDigest":"%s","ledgerSchema":"provision.dev/schedule-ledger/v1alpha1","ledgerDigest":"%s","fencingToken":7}}}}\n' "$observation_complete" "$packaging_complete" "$packaging_complete" "$packaging_complete" "$packaging_complete" "$packaging_complete" "$worker_gate" "$applet_digest" "$applet_digest" "$ledger_digest"
     ;;
   *) exit 23 ;;
 esac

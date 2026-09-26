@@ -6,7 +6,7 @@ PATH=/usr/sbin:/usr/bin:/sbin:/bin
 export PATH
 
 usage() {
-  echo "usage: $0 (--dry-run|--apply) --environment NAME --operator USER --binary LINUX_EXECUTOR --authority-public-key FILE" >&2
+  echo "usage: $0 (--dry-run|--apply) [--replace-executor] --environment NAME --operator USER --binary LINUX_EXECUTOR --authority-public-key FILE" >&2
   exit 2
 }
 
@@ -15,6 +15,7 @@ environment=""
 operator=""
 binary=""
 authority_public_key=""
+replace_executor=false
 while (($#)); do
   case "$1" in
     --dry-run|--apply) [[ -z "$mode" ]] || usage; mode="$1"; shift ;;
@@ -22,6 +23,7 @@ while (($#)); do
     --operator) (($# >= 2)) || usage; operator="$2"; shift 2 ;;
     --binary) (($# >= 2)) || usage; binary="$2"; shift 2 ;;
     --authority-public-key) (($# >= 2)) || usage; authority_public_key="$2"; shift 2 ;;
+    --replace-executor) replace_executor=true; shift ;;
     *) usage ;;
   esac
 done
@@ -32,7 +34,10 @@ executor_path="/usr/local/libexec/provision-host-executor"
 record_path="/etc/provision/bootstrap/$environment.json"
 sudoers_path="/etc/sudoers.d/provision-$environment"
 environment_home="/var/lib/provision/environments/$environment"
+runtime_root="/var/lib/provision/runtime"
+runtime_home="$runtime_root/$environment"
 release_root="$environment_home/releases"
+service_root="$environment_home/services"
 authority_path="/etc/provision/authority/$environment.pub"
 authority_state="/var/lib/provision/authority/$environment"
 artifact_cache="/var/lib/provision/artifacts/sha256"
@@ -67,8 +72,9 @@ if [[ "$mode" == --dry-run ]]; then
   printf '  Authorization verifier: %s (%s)\n' "$authority_path" "$authority_key_id"
   printf '  Record: %s\n  Restricted sudoers: %s\n' "$record_path" "$sudoers_path"
   printf '  Durable Caddy service override: %s\n' "$caddy_override_path"
-  printf '  Required services: systemd, Caddy\n'
-  printf '  Enabled mutations: signed, Plan-bound Artifact staging, candidate install/start/verification, verified Endpoint switch, stable health verification with bounded rollback, bounded ordinary-HTTP drain completion, and rollback-window retention declaration.\nNo changes made.\n'
+  printf '  Required services: systemd, Caddy, rootless Podman/Quadlet\n'
+  printf '  Enabled mutations: signed, Plan-bound HTTP lifecycle operations and managed Queue preparation.\nNo changes made.\n'
+  [[ "$replace_executor" == true ]] && printf '  Existing executor replacement: explicitly requested.\n'
   exit 0
 fi
 
@@ -81,10 +87,10 @@ if find /etc/systemd/system -maxdepth 1 -name 'gimme-*' -print -quit | grep -q .
   exit 1
 fi
 id -u "$operator" >/dev/null 2>&1 || { echo "operator user does not exist" >&2; exit 1; }
-for path in /usr/local/libexec /etc/provision /etc/provision/bootstrap /etc/provision/authority /var/lib/provision /var/lib/provision/environments /var/lib/provision/authority /var/lib/provision/artifacts "$artifact_cache" "$authority_state" "$caddy_override_dir"; do
+for path in /usr/local/libexec /etc/provision /etc/provision/bootstrap /etc/provision/authority /etc/containers/systemd/users /var/lib/provision /var/lib/provision/environments "$runtime_root" /var/lib/provision/authority /var/lib/provision/artifacts "$artifact_cache" "$authority_state" "$caddy_override_dir"; do
   [[ ! -L "$path" ]] || { echo "symlink at $path; refusing bootstrap" >&2; exit 1; }
 done
-for path in "$executor_path" "$record_path" "$sudoers_path" "$environment_home" "$release_root" "$authority_path" "$caddy_override_path"; do
+for path in "$executor_path" "$record_path" "$sudoers_path" "$environment_home" "$runtime_home" "$release_root" "$service_root" "$authority_path" "$caddy_override_path"; do
   [[ ! -L "$path" ]] || { echo "symlink at $path; refusing bootstrap" >&2; exit 1; }
 done
 expect_existing_path() {
@@ -110,14 +116,18 @@ expect_existing_path "$sudoers_path" file 0:0:440
 expect_existing_path "$authority_path" file 0:0:644
 expect_existing_path "$caddy_override_dir" directory 0:0:755
 expect_existing_path "$caddy_override_path" file 0:0:644
+executor_differs=false
 if [[ -e "$executor_path" && "sha256:$(sha256_file "$executor_path")" != "$digest" ]]; then
+  executor_differs=true
+fi
+if [[ "$executor_differs" == true && "$replace_executor" != true ]]; then
   echo "an existing executor has different bytes; refusing bootstrap" >&2
   exit 1
 fi
 if getent passwd "$account" >/dev/null; then
   entry="$(getent passwd "$account")"
   IFS=: read -r _ _ existing_uid _ _ existing_home existing_shell <<< "$entry"
-  [[ "$existing_uid" =~ ^[0-9]+$ && "$existing_uid" -gt 0 && "$existing_uid" -lt 1000 && "$existing_home" == "$environment_home" && "$existing_shell" == /usr/sbin/nologin ]] || {
+  [[ "$existing_uid" =~ ^[0-9]+$ && "$existing_uid" -gt 0 && "$existing_uid" -lt 1000 && "$existing_home" == "$runtime_home" && "$existing_shell" == /usr/sbin/nologin ]] || {
     echo "Environment account differs from requested identity" >&2; exit 1;
   }
   expect_existing_path "$environment_home" directory 0:0:755
@@ -144,8 +154,12 @@ printf '%s\n' \
   "ExecReload=/usr/bin/caddy reload --config $caddy_autosave_path --force" > "$caddy_override_tmp"
 visudo -cf "$sudoers_tmp" >/dev/null
 if [[ -e "$record_path" ]] && ! cmp -s "$record_tmp" "$record_path"; then
-  echo "bootstrap record differs; refusing to overwrite" >&2
-  exit 1
+  normalized_existing="$(sed -E 's/"executorDigest":"sha256:[0-9a-f]{64}"/"executorDigest":"REPLACED"/' "$record_path")"
+  normalized_requested="$(sed -E 's/"executorDigest":"sha256:[0-9a-f]{64}"/"executorDigest":"REPLACED"/' "$record_tmp")"
+  if [[ "$replace_executor" != true || "$normalized_existing" != "$normalized_requested" ]]; then
+    echo "bootstrap record differs; refusing to overwrite" >&2
+    exit 1
+  fi
 fi
 if [[ -e "$sudoers_path" ]] && ! cmp -s "$sudoers_tmp" "$sudoers_path"; then
   echo "executor sudoers rule differs; refusing to overwrite" >&2
@@ -164,6 +178,11 @@ if ! command -v caddy >/dev/null 2>&1; then
   DEBIAN_FRONTEND=noninteractive apt-get update
   DEBIAN_FRONTEND=noninteractive apt-get install -y caddy
 fi
+if ! command -v podman >/dev/null 2>&1; then
+  DEBIAN_FRONTEND=noninteractive apt-get update
+  DEBIAN_FRONTEND=noninteractive apt-get install -y podman=5.7.0+ds2-3build1
+fi
+[[ "$(dpkg-query -W -f='${Version}' podman 2>/dev/null)" == 5.7.0+ds2-3build1 ]] || { echo "Podman version is not the qualified 5.7.0+ds2-3build1" >&2; exit 1; }
 systemctl enable --now caddy
 for _ in {1..50}; do
   [[ -f "$caddy_autosave_path" ]] && break
@@ -178,14 +197,27 @@ if [[ ! -e "$caddy_override_path" ]]; then
 fi
 
 if ! getent passwd "$account" >/dev/null; then
-  adduser --system --group --no-create-home --home "$environment_home" --shell /usr/sbin/nologin "$account"
+  adduser --system --group --home "$runtime_home" --shell /usr/sbin/nologin "$account"
 fi
-install -d -o root -g root -m 0755 /usr/local/libexec /etc/provision /etc/provision/bootstrap /etc/provision/authority /var/lib/provision /var/lib/provision/environments /var/lib/provision/artifacts "$artifact_cache"
+uid="$(id -u "$account")"
+gid="$(id -g "$account")"
+grep -q "^$account:" /etc/subuid || usermod --add-subuids 165536-231071 "$account"
+grep -q "^$account:" /etc/subgid || usermod --add-subgids 165536-231071 "$account"
+install -d -o root -g root -m 0755 /usr/local/libexec /etc/provision /etc/provision/bootstrap /etc/provision/authority /etc/containers /etc/containers/systemd /etc/containers/systemd/users /var/lib/provision /var/lib/provision/environments "$runtime_root" /var/lib/provision/artifacts "$artifact_cache"
 install -d -o root -g root -m 0700 /var/lib/provision/authority "$authority_state"
 install -d -o root -g root -m 0755 "$environment_home"
 install -d -o root -g root -m 0755 "$release_root"
-if [[ ! -e "$executor_path" ]]; then
-  install -o root -g root -m 0755 "$binary" "$executor_path"
+install -d -o root -g root -m 0755 "$service_root" "/etc/containers/systemd/users/$uid"
+install -d -o "$uid" -g "$gid" -m 0700 "$runtime_home" "$runtime_home/.config" "$runtime_home/.config/credstore.encrypted"
+loginctl enable-linger "$account"
+systemctl start "user@$uid.service"
+for _ in {1..50}; do [[ -S "/run/user/$uid/bus" ]] && break; sleep 0.1; done
+[[ -S "/run/user/$uid/bus" ]] || { echo "Environment user manager is unavailable" >&2; exit 1; }
+systemd-creds setup >/dev/null
+if [[ ! -e "$executor_path" || "$executor_differs" == true ]]; then
+  executor_tmp="$(mktemp /usr/local/libexec/.provision-host-executor.XXXXXX)"
+  install -o root -g root -m 0755 "$binary" "$executor_tmp"
+  mv -f -- "$executor_tmp" "$executor_path"
 fi
 install -o root -g root -m 0644 "$record_tmp" "$record_path"
 install -o root -g root -m 0644 "$authority_tmp" "$authority_path"

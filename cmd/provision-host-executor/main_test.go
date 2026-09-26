@@ -32,20 +32,33 @@ func TestExecutorRejectsDeploymentAndArbitraryCommands(t *testing.T) {
 	}
 }
 
-func TestEnvironmentAccountIdentityDoesNotRequireWritableHome(t *testing.T) {
-	fields := strings.Split("provision-lab:x:104:107::/var/lib/provision/environments/lab:/usr/sbin/nologin", ":")
-	if !validEnvironmentAccount(fields, "/var/lib/provision/environments/lab") {
+func TestEnvironmentAccountIdentityUsesDedicatedRuntimeHome(t *testing.T) {
+	fields := strings.Split("provision-lab:x:104:107::/var/lib/provision/runtime/lab:/usr/sbin/nologin", ":")
+	if !validEnvironmentAccount(fields, "/var/lib/provision/runtime/lab") {
 		t.Fatal("valid non-login system account rejected")
 	}
 
 	for _, invalid := range []string{
-		"provision-lab:x:1000:107::/var/lib/provision/environments/lab:/usr/sbin/nologin",
+		"provision-lab:x:1000:107::/var/lib/provision/runtime/lab:/usr/sbin/nologin",
 		"provision-lab:x:104:107::/tmp/writable:/usr/sbin/nologin",
-		"provision-lab:x:104:107::/var/lib/provision/environments/lab:/bin/sh",
+		"provision-lab:x:104:107::/var/lib/provision/runtime/lab:/bin/sh",
 	} {
-		if validEnvironmentAccount(strings.Split(invalid, ":"), "/var/lib/provision/environments/lab") {
+		if validEnvironmentAccount(strings.Split(invalid, ":"), "/var/lib/provision/runtime/lab") {
 			t.Fatalf("unsafe account identity accepted: %s", invalid)
 		}
+	}
+}
+
+func TestInstalledPodmanVersionUsesQualifiedPackageIdentity(t *testing.T) {
+	dir := t.TempDir()
+	dpkgQuery := filepath.Join(dir, "dpkg-query")
+	if err := os.WriteFile(dpkgQuery, []byte("#!/bin/sh\n[ \"$1|$2|$3|$4\" = '-W|-f=${Version}|podman|' ] || exit 2\nprintf '%s\\n' '5.7.0+ds2-3build1'\n"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir)
+
+	if got := installedPodmanPackageVersion(); got != "5.7.0+ds2-3build1" {
+		t.Fatalf("package version = %q", got)
 	}
 }
 

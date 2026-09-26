@@ -101,6 +101,8 @@ func verifyHostResult(envelope operation.Envelope, result operation.Result) erro
 		return errors.New("host operation kind cannot return an uncertain structured outcome")
 	}
 	switch envelope.Operation.Kind {
+	case planner.PrepareQueue:
+		return verifyQueueResult(envelope, result)
 	case planner.StageArtifact:
 		return verifyArtifactResult(envelope, result)
 	case planner.InstallGeneration:
@@ -120,6 +122,27 @@ func verifyHostResult(envelope operation.Envelope, result operation.Result) erro
 	default:
 		return errors.New("host operation result kind is unsupported")
 	}
+}
+
+func verifyQueueResult(envelope operation.Envelope, result operation.Result) error {
+	if envelope.Operation.Input.Async == nil || envelope.Operation.Input.Async.Queue == nil {
+		return errors.New("host Queue observation has no planned Queue")
+	}
+	input := envelope.Operation.Input.Async.Queue
+	var observed host.QueueStatus
+	if err := decodeObservation(result.Observation, &observed); err != nil {
+		return errors.New("host Queue observation is invalid")
+	}
+	if observed.ID != input.LogicalID || observed.GenerationID != input.GenerationID || observed.QueueType != input.QueueType || observed.Members != input.Members || observed.ImageManifest != input.ImageManifest || observed.ServiceUnit != input.ServiceUnit || observed.Container != input.Container || observed.Account != input.Account || observed.DataPath != input.DataPath || observed.QuadletPath != input.QuadletPath {
+		return errors.New("host Queue observation does not match the Plan")
+	}
+	if result.Outcome == operation.OutcomeSucceeded && (!observed.Exists || !observed.Ready || !observed.Durable || observed.Health != "healthy" || observed.RabbitMQVersion != input.RabbitMQVersion || observed.Accepted != observed.Available+observed.Acknowledged+observed.DeadLettered || observed.Accepted < 1 || observed.DeliveryLimit != 3 || observed.MessageTTL != "24h0m0s" || observed.RetryDelay != "10s" || observed.DeadLetterTTL != "168h0m0s" || len(observed.Bindings) != 3 || len(observed.SupportedGuarantees) != 3 || len(observed.OwnedResources) == 0) {
+		return errors.New("host Queue success observation is invalid")
+	}
+	if result.Outcome == operation.OutcomeFailed && (observed.Health != "failed" || observed.Reason == "" || observed.RecoveryAction == "") {
+		return errors.New("host Queue failure observation is invalid")
+	}
+	return nil
 }
 
 func verifyArtifactResult(envelope operation.Envelope, result operation.Result) error {

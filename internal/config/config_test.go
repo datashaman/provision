@@ -65,6 +65,24 @@ func TestLoadAsyncExampleDeterministically(t *testing.T) {
 	}
 }
 
+func TestLoadQueueOnlyExampleDeterministically(t *testing.T) {
+	path := filepath.Join("..", "..", "examples", "host-queue", "root.yaml")
+	first, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.Digest != second.Digest || !first.IsQueueOnly() || !first.IsAsync() {
+		t.Fatalf("invalid Queue-only compilation: %+v", first)
+	}
+	if len(first.Revision.Artifacts) != 0 || len(first.Environment.Implementations) != 1 {
+		t.Fatalf("Queue-only configuration has unrelated deployment inputs: %+v", first)
+	}
+}
+
 func TestEquivalentJSONRootHasSameDigest(t *testing.T) {
 	dir := copyExample(t)
 	jsonRoot := filepath.Join(dir, "root.json")
@@ -132,7 +150,7 @@ func TestRejectsUnsafeOrInvalidDocuments(t *testing.T) {
 		{"alias", "application.yaml", "name: provision-example-http", "name: &app provision-example-http", "aliases and anchors"},
 		{"multiple documents", "revision.yaml", "kind: Revision", "kind: Revision\n---\nkind: Revision", "multiple YAML documents"},
 		{"wrong application", "environment.yaml", "application: provision-example-http", "application: other", "same application"},
-		{"unsupported component", "application.yaml", "role: http", "role: worker", "must be an HTTP service"},
+		{"unsupported component", "application.yaml", "role: http", "role: worker", "requires exactly one Queue, Worker, Task, and Schedule"},
 		{"unsafe health path", "application.yaml", "path: /live", "path: /live check", "liveness health path"},
 		{"unsafe host", "environment.yaml", "address: base.local", "address: -oProxyCommand=evil", "existing remote host"},
 		{"missing drain mode", "environment.yaml", "mode: bounded-http", "mode: ''", "bounded-http drain mode"},

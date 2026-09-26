@@ -190,7 +190,7 @@ for operation in op-08 op-09 op-10 op-11 op-15; do
     echo "downstream Worker operation $operation became executable after failed verification" >&2
     exit 1
   fi
-  grep -Fq 'operation is not present in the approved Plan' "$work_dir/$operation-blocked.stderr" || {
+  grep -Fq 'operation is not present in the Plan' "$work_dir/$operation-blocked.stderr" || {
     echo "unapproved Worker handoff operation $operation was not rejected by exact-Plan authorization" >&2
     exit 1
   }

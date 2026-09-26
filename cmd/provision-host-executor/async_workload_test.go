@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -353,6 +354,72 @@ func TestWorkerRetentionRecordBindsCurrentPlan(t *testing.T) {
 	}
 	if err := validateRetentionRecord(record, input, "sha256:"+strings.Repeat("d", 64), record.OperationDigest); err == nil {
 		t.Fatal("retention record from another Plan accepted")
+	}
+}
+
+func TestWorkerActiveVerificationRecordAndPayloadKeepStableIdentity(t *testing.T) {
+	_, _, _, worker, _ := asyncOperationFixture(t)
+	worker.Previous = &host.WorkerGenerationStatus{ID: "provision-example-async-v0-ffffffffffff"}
+	input := planner.AsyncWorkerHandoffInput{Worker: worker, QueueGenerationID: "provision-lab-messages-rabbitmq", DrainOperationDigest: "sha256:" + strings.Repeat("d", 64)}
+	planID := "sha256:" + strings.Repeat("c", 64)
+	operationDigest := "sha256:" + strings.Repeat("e", 64)
+	messageID := workerVerificationMessageID(planID, operationDigest)
+	payload, err := workerVerificationPayload(planID, operationDigest, messageID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var message struct {
+		SchemaVersion, MessageID, ApplicationRevision, TaskArtifactDigest, InvocationID, Behavior string
+		Sequence                                                                                  int
+	}
+	if err := json.Unmarshal(payload, &message); err != nil || message.SchemaVersion != "provision.dev/example-async-message/v1alpha1" || message.MessageID != messageID || message.TaskArtifactDigest != operationDigest || message.Sequence != 1 || message.Behavior != "process" {
+		t.Fatalf("verification payload does not preserve its stable identity: %+v, %v", message, err)
+	}
+	startedAt := time.Date(2026, 9, 26, 9, 0, 0, 0, time.UTC)
+	confirmedAt := startedAt.Add(time.Second)
+	acknowledgedAt := confirmedAt.Add(time.Second)
+	record := workerActiveVerificationRecord{
+		SchemaVersion: "provision.dev/worker-active-verification/v1alpha1", PlanID: planID, OperationDigest: operationDigest,
+		QueueGenerationID: input.QueueGenerationID, CandidateID: worker.GenerationID, PreviousID: worker.Previous.ID,
+		MessageID: messageID, PublishStartedAt: startedAt, PublisherConfirmedAt: &confirmedAt,
+		CandidateAcknowledgedAt: &acknowledgedAt, CompletedAt: &acknowledgedAt, Outcome: "healthy",
+	}
+	if err := validateWorkerActiveVerificationRecord(record, input, planID, operationDigest); err != nil {
+		t.Fatalf("exact healthy Worker verification rejected: %v", err)
+	}
+	record.OperationDigest = "sha256:" + strings.Repeat("f", 64)
+	if err := validateWorkerActiveVerificationRecord(record, input, planID, operationDigest); err == nil {
+		t.Fatal("Worker verification from another operation accepted")
+	}
+	record.OperationDigest = operationDigest
+	tooEarly := startedAt.Add(-time.Second)
+	record.CompletedAt = &tooEarly
+	if err := validateWorkerActiveVerificationRecord(record, input, planID, operationDigest); err == nil {
+		t.Fatal("out-of-order Worker verification evidence accepted")
+	}
+}
+
+func TestUncertainWorkerActiveVerificationFencesUncommittedCandidate(t *testing.T) {
+	record, paths, _, worker, _ := asyncOperationFixture(t)
+	paths.healthTimeout = time.Second
+	controller := &fakeSystemdController{active: map[string]bool{worker.SystemdUnit: true}}
+	paths.systemd = controller
+	if err := os.MkdirAll(filepath.Dir(workerGatePath(paths, worker.GenerationID)), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(workerGatePath(paths, worker.GenerationID), []byte("open\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeJSONAtomic(workerStatePath(paths, worker.GenerationID), exampleWorkerState{Connected: true, Gated: true}, 0644); err != nil {
+		t.Fatal(err)
+	}
+	observed := host.AsyncWorkerActiveVerificationObservation{
+		PlanID: "sha256:" + strings.Repeat("c", 64), OperationDigest: "sha256:" + strings.Repeat("d", 64),
+		QueueGenerationID: "queue-generation-a", Candidate: workerStatus(worker, record, paths), MessageID: "msg-stable",
+	}
+	result, err := uncertainWorkerActiveVerificationWithCandidateFence(context.Background(), worker, record, paths, observed, "publisher confirmation is ambiguous")
+	if !errors.Is(err, errUncertainRecovery) || result.Status != host.WorkerActiveVerificationUncertain || result.Candidate.Gate != "closed" || controller.active[worker.SystemdUnit] || !strings.Contains(result.RecoveryAction, "candidate intake is fenced") {
+		t.Fatalf("uncertain verification did not fence the candidate: result=%+v err=%v", result, err)
 	}
 }
 

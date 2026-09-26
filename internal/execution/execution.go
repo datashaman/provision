@@ -237,6 +237,9 @@ func (e Engine) execute(ctx context.Context, request Request, resumeOfAttemptID 
 		if attempt.Operation.Kind == planner.VerifyActive {
 			return result, fmt.Errorf("%s; the previous Generation was restored", prefix)
 		}
+		if attempt.Operation.Kind == planner.VerifyWorkerActive && attempt.Operation.Input.Async != nil && attempt.Operation.Input.Async.WorkerHandoff != nil {
+			return result, fmt.Errorf("%s; the previous Worker Generation was restored and verified with the same stable message identity", prefix)
+		}
 		if attempt.Operation.Kind == planner.DrainPrevious {
 			return result, fmt.Errorf("%s; the previous Generation was not declared drained", prefix)
 		}

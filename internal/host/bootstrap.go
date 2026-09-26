@@ -283,6 +283,40 @@ type AsyncWorkerHandoffObservation struct {
 	RecoveryAction       string                 `json:"recoveryAction,omitempty"`
 }
 
+type WorkerActiveVerificationStatus string
+
+const (
+	WorkerActiveVerificationHealthy    WorkerActiveVerificationStatus = "healthy"
+	WorkerActiveVerificationRolledBack WorkerActiveVerificationStatus = "rolled-back"
+	WorkerActiveVerificationUncertain  WorkerActiveVerificationStatus = "uncertain"
+)
+
+// AsyncWorkerActiveVerificationObservation is the durable, message-level
+// proof for the externally visible Worker handoff. A rolled-back outcome is a
+// known failure of the candidate, not a claim of exactly-once processing: the
+// same stable message identity may have been redelivered to the restored
+// Worker.
+type AsyncWorkerActiveVerificationObservation struct {
+	Status                WorkerActiveVerificationStatus `json:"status"`
+	PlanID                string                         `json:"planId"`
+	OperationDigest       string                         `json:"operationDigest"`
+	QueueGenerationID     string                         `json:"queueGenerationId"`
+	Candidate             WorkerGenerationStatus         `json:"candidate"`
+	Previous              WorkerGenerationStatus         `json:"previous"`
+	MessageID             string                         `json:"messageId"`
+	PublisherConfirmed    bool                           `json:"publisherConfirmed"`
+	CandidateProcessed    bool                           `json:"candidateProcessed"`
+	CandidateAcknowledged bool                           `json:"candidateAcknowledged"`
+	PreviousProcessed     bool                           `json:"previousProcessed"`
+	PreviousAcknowledged  bool                           `json:"previousAcknowledged"`
+	RollbackAttempted     bool                           `json:"rollbackAttempted"`
+	RollbackSucceeded     bool                           `json:"rollbackSucceeded"`
+	Redelivered           bool                           `json:"redelivered"`
+	Restored              *WorkerGenerationStatus        `json:"restored,omitempty"`
+	Reason                string                         `json:"reason,omitempty"`
+	RecoveryAction        string                         `json:"recoveryAction,omitempty"`
+}
+
 type SystemdUnitDiagnostic struct {
 	LoadState      string `json:"loadState,omitempty"`
 	ActiveState    string `json:"activeState,omitempty"`

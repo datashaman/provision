@@ -4,6 +4,8 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -16,6 +18,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	amqp "github.com/rabbitmq/amqp091-go"
 
 	"provision/internal/authority"
 	"provision/internal/host"
@@ -85,6 +89,26 @@ type drainedWorkerGeneration struct {
 	ReleasedMessageID  string     `json:"releasedMessageId,omitempty"`
 	BoundElapsed       bool       `json:"boundElapsed"`
 	CompletedAt        *time.Time `json:"completedAt,omitempty"`
+}
+
+type workerActiveVerificationRecord struct {
+	SchemaVersion           string     `json:"schemaVersion"`
+	PlanID                  string     `json:"planId"`
+	OperationDigest         string     `json:"operationDigest"`
+	QueueGenerationID       string     `json:"queueGenerationId"`
+	CandidateID             string     `json:"candidateId"`
+	PreviousID              string     `json:"previousId"`
+	MessageID               string     `json:"messageId"`
+	PublishStartedAt        time.Time  `json:"publishStartedAt"`
+	PublisherConfirmedAt    *time.Time `json:"publisherConfirmedAt,omitempty"`
+	CandidateAcknowledgedAt *time.Time `json:"candidateAcknowledgedAt,omitempty"`
+	RollbackAttemptedAt     *time.Time `json:"rollbackAttemptedAt,omitempty"`
+	CandidateFencedAt       *time.Time `json:"candidateFencedAt,omitempty"`
+	PreviousStartedAt       *time.Time `json:"previousStartedAt,omitempty"`
+	RollbackAcknowledgedAt  *time.Time `json:"rollbackAcknowledgedAt,omitempty"`
+	CompletedAt             *time.Time `json:"completedAt,omitempty"`
+	Outcome                 string     `json:"outcome,omitempty"`
+	FailureReason           string     `json:"failureReason,omitempty"`
 }
 
 type exampleWorkerState struct {
@@ -326,7 +350,19 @@ func observeAsyncWorkloadOperation(ctx context.Context, planID string, planned p
 		} else if observed.Status == "unknown" || observed.Status == "failed" {
 			state = "unknown"
 		}
-	case planner.ActivateWorkerIntake, planner.VerifyWorkerActive:
+	case planner.VerifyWorkerActive:
+		if planned.Input.Async.WorkerHandoff != nil {
+			observed := observeWorkerActiveVerification(ctx, planID, planned, record, paths)
+			evidence = observed
+			if observed.Status == host.WorkerActiveVerificationHealthy {
+				state = "satisfied"
+			} else if observed.Status == host.WorkerActiveVerificationUncertain || observed.Status == host.WorkerActiveVerificationRolledBack {
+				state = "unknown"
+			}
+			break
+		}
+		fallthrough
+	case planner.ActivateWorkerIntake:
 		observed := observeWorkerGeneration(ctx, plannedWorkerInput(planned), record, paths)
 		if planned.Input.Async.WorkerHandoff != nil {
 			observed.QueueGenerationID = planned.Input.Async.WorkerHandoff.QueueGenerationID
@@ -423,7 +459,7 @@ func applyAsyncWorkloadOperation(ctx context.Context, planned planner.Operation,
 		}
 	case planner.VerifyWorkerActive:
 		if planned.Input.Async.WorkerHandoff != nil {
-			observed, actionErr = verifyWorkerHandoffActive(ctx, *planned.Input.Async.WorkerHandoff, claim.PlanID, record, paths)
+			observed, actionErr = verifyWorkerHandoffActive(ctx, planned, claim, record, paths)
 		} else {
 			observed, actionErr = verifyWorkerCandidate(ctx, *planned.Input.Async.Worker, record, paths, false)
 		}
@@ -591,15 +627,390 @@ func activateWorkerHandoff(ctx context.Context, input planner.AsyncWorkerHandoff
 	return observed, err
 }
 
-func verifyWorkerHandoffActive(ctx context.Context, input planner.AsyncWorkerHandoffInput, planID string, record bootstrapRecord, paths executionPaths) (host.AsyncWorkerOperationObservation, error) {
-	if err := requirePreviousWorkerDrained(ctx, input, planID, record, paths); err != nil {
-		observed := observeWorkerGeneration(ctx, input.Worker, record, paths)
-		observed.Status, observed.Reason = "failed", err.Error()
-		return observed, err
+func verifyWorkerHandoffActive(ctx context.Context, planned planner.Operation, claim authority.Claim, record bootstrapRecord, paths executionPaths) (host.AsyncWorkerActiveVerificationObservation, error) {
+	input := *planned.Input.Async.WorkerHandoff
+	observed := observeWorkerActiveVerification(ctx, claim.PlanID, planned, record, paths)
+	if observed.Status == host.WorkerActiveVerificationHealthy {
+		return observed, nil
 	}
-	observed, err := verifyWorkerCandidate(ctx, input.Worker, record, paths, false)
-	observed.QueueGenerationID = input.QueueGenerationID
-	return observed, err
+	if observed.Status == host.WorkerActiveVerificationRolledBack {
+		return observed, errors.New("active Worker verification failed and the retained previous Worker was restored")
+	}
+	verificationPath := workerActiveVerificationPath(paths, input.Worker.GenerationID)
+	if _, err := os.Lstat(verificationPath); err == nil || !errors.Is(err, os.ErrNotExist) {
+		return uncertainWorkerActiveVerificationWithCandidateFence(ctx, input.Worker, record, paths, observed, "durable Worker verification is incomplete or differs from the approved operation")
+	}
+	if err := requirePreviousWorkerDrained(ctx, input, claim.PlanID, record, paths); err != nil {
+		return uncertainWorkerActiveVerificationWithCandidateFence(ctx, input.Worker, record, paths, observed, err.Error())
+	}
+	queueInput, err := exactWorkerHandoffQueue(ctx, input, record, paths)
+	if err != nil {
+		return uncertainWorkerActiveVerificationWithCandidateFence(ctx, input.Worker, record, paths, observed, err.Error())
+	}
+	candidate := observeWorkerGeneration(ctx, input.Worker, record, paths)
+	candidateInstalled, candidateRecordErr := readWorkerGenerationRecord(workerGenerationRecordPath(paths, input.Worker.GenerationID))
+	candidateGate, candidateGateErr := os.ReadFile(workerGatePath(paths, input.Worker.GenerationID))
+	if candidateRecordErr != nil || !candidateInstalled.Verified || !workerRecordMatchesInput(candidateInstalled, input.Worker) || candidateGateErr != nil || string(candidateGate) != "open\n" {
+		return uncertainWorkerActiveVerificationWithCandidateFence(ctx, input.Worker, record, paths, observed, "candidate Worker is not the exact verified generation selected for active message verification")
+	}
+	digest, _ := planner.OperationDigest(planned)
+	now := time.Now().UTC()
+	verification := workerActiveVerificationRecord{
+		SchemaVersion: "provision.dev/worker-active-verification/v1alpha1", PlanID: claim.PlanID, OperationDigest: digest,
+		QueueGenerationID: input.QueueGenerationID, CandidateID: input.Worker.GenerationID, PreviousID: input.Worker.Previous.ID,
+		MessageID: workerVerificationMessageID(claim.PlanID, digest), PublishStartedAt: now,
+	}
+	if err := writeJSONAtomic(verificationPath, verification, 0444); err != nil {
+		return uncertainWorkerActiveVerificationWithCandidateFence(ctx, input.Worker, record, paths, observed, "record Worker verification intent before publishing: "+err.Error())
+	}
+	if err := publishWorkerVerificationMessage(ctx, queueInput, record.Environment, claim.PlanID, digest, verification.MessageID); err != nil {
+		return uncertainWorkerActiveVerificationWithCandidateFence(ctx, input.Worker, record, paths, observeWorkerActiveVerification(ctx, claim.PlanID, planned, record, paths), "Worker verification message publish is ambiguous: "+err.Error())
+	}
+	confirmedAt := time.Now().UTC()
+	verification.PublisherConfirmedAt = &confirmedAt
+	if err := writeJSONAtomic(verificationPath, verification, 0444); err != nil {
+		return uncertainWorkerActiveVerificationWithCandidateFence(ctx, input.Worker, record, paths, observeWorkerActiveVerification(ctx, claim.PlanID, planned, record, paths), "record publisher-confirmed Worker verification message: "+err.Error())
+	}
+
+	failureReason := "candidate Worker did not process and acknowledge the publisher-confirmed verification message"
+	deadline := time.Now().Add(paths.healthTimeout)
+	for {
+		processed, acknowledged := workerHandledMessage(workerEvidencePath(paths), verification.MessageID, input.Worker.Revision, input.Worker.ArtifactDigest)
+		candidate = observeWorkerGeneration(ctx, input.Worker, record, paths)
+		if processed && acknowledged {
+			acknowledgedAt := time.Now().UTC()
+			verification.CandidateAcknowledgedAt = &acknowledgedAt
+			if err := commitActiveWorker(input.Worker, paths); err != nil {
+				return uncertainWorkerActiveVerificationWithCandidateFence(ctx, input.Worker, record, paths, observeWorkerActiveVerification(ctx, claim.PlanID, planned, record, paths), "candidate processed the verification message but durable Worker authority could not be committed: "+err.Error())
+			}
+			completedAt := time.Now().UTC()
+			verification.CompletedAt, verification.Outcome = &completedAt, "healthy"
+			if err := writeJSONAtomic(verificationPath, verification, 0444); err != nil {
+				return uncertainWorkerActiveVerificationWithCandidateFence(ctx, input.Worker, record, paths, observeWorkerActiveVerification(ctx, claim.PlanID, planned, record, paths), "candidate Worker became authoritative but verification completion could not be recorded: "+err.Error())
+			}
+			return observeWorkerActiveVerification(ctx, claim.PlanID, planned, record, paths), nil
+		}
+		if candidate.Status != "active-open" || !candidate.Worker.UnitActive || !candidate.Worker.QueueConnected || candidate.Worker.Gate != "open" {
+			failureReason = "candidate Worker lost its exact active Queue-connected state before acknowledging the verification message"
+			break
+		}
+		if time.Now().After(deadline) || ctx.Err() != nil {
+			break
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+
+	rollbackAt := time.Now().UTC()
+	verification.RollbackAttemptedAt = &rollbackAt
+	verification.FailureReason = failureReason
+	if err := writeJSONAtomic(verificationPath, verification, 0444); err != nil {
+		return uncertainWorkerActiveVerification(observeWorkerActiveVerification(ctx, claim.PlanID, planned, record, paths), failureReason+"; rollback intent could not be recorded")
+	}
+	if err := fenceFailedWorkerCandidate(ctx, input.Worker, record, paths); err != nil {
+		return uncertainWorkerActiveVerification(observeWorkerActiveVerification(ctx, claim.PlanID, planned, record, paths), failureReason+"; candidate intake could not be proved fenced: "+err.Error())
+	}
+	fencedAt := time.Now().UTC()
+	verification.CandidateFencedAt = &fencedAt
+	if err := writeJSONAtomic(verificationPath, verification, 0444); err != nil {
+		return uncertainWorkerActiveVerification(observeWorkerActiveVerification(ctx, claim.PlanID, planned, record, paths), failureReason+"; candidate fence completion could not be recorded")
+	}
+	if processed, acknowledged := workerHandledMessage(workerEvidencePath(paths), verification.MessageID, input.Worker.Revision, input.Worker.ArtifactDigest); processed && acknowledged {
+		return uncertainWorkerActiveVerification(observeWorkerActiveVerification(ctx, claim.PlanID, planned, record, paths), failureReason+"; candidate acknowledgement raced with its intake fence")
+	}
+	if _, err := exactWorkerHandoffQueue(ctx, input, record, paths); err != nil {
+		return uncertainWorkerActiveVerification(observeWorkerActiveVerification(ctx, claim.PlanID, planned, record, paths), failureReason+"; "+err.Error())
+	}
+	previousInstalled, err := readWorkerGenerationRecord(workerGenerationRecordPath(paths, input.Worker.Previous.ID))
+	if err != nil || !workerGenerationRestartable(previousInstalled, record, paths) {
+		return uncertainWorkerActiveVerification(observeWorkerActiveVerification(ctx, claim.PlanID, planned, record, paths), failureReason+"; retained previous Worker is not exactly restartable")
+	}
+	if err := restorePreviousWorker(ctx, previousInstalled.Input, record, paths); err != nil {
+		return uncertainWorkerActiveVerification(observeWorkerActiveVerification(ctx, claim.PlanID, planned, record, paths), failureReason+"; retained previous Worker could not be restored: "+err.Error())
+	}
+	previousStartedAt := time.Now().UTC()
+	verification.PreviousStartedAt = &previousStartedAt
+	if err := writeJSONAtomic(verificationPath, verification, 0444); err != nil {
+		return uncertainWorkerActiveVerification(observeWorkerActiveVerification(ctx, claim.PlanID, planned, record, paths), failureReason+"; restored previous Worker start could not be recorded")
+	}
+	rollbackDeadline := time.Now().Add(paths.healthTimeout)
+	for {
+		processed, acknowledged := workerHandledMessage(workerEvidencePath(paths), verification.MessageID, previousInstalled.Input.Revision, previousInstalled.Input.ArtifactDigest)
+		if processed && acknowledged {
+			if _, err := exactWorkerHandoffQueue(ctx, input, record, paths); err != nil {
+				return uncertainWorkerActiveVerification(observeWorkerActiveVerification(ctx, claim.PlanID, planned, record, paths), failureReason+"; restored Worker acknowledged work but "+err.Error())
+			}
+			if err := commitActiveWorker(previousInstalled.Input, paths); err != nil {
+				return uncertainWorkerActiveVerification(observeWorkerActiveVerification(ctx, claim.PlanID, planned, record, paths), failureReason+"; restored Worker acknowledged work but durable authority could not be committed: "+err.Error())
+			}
+			acknowledgedAt := time.Now().UTC()
+			verification.RollbackAcknowledgedAt = &acknowledgedAt
+			verification.CompletedAt, verification.Outcome = &acknowledgedAt, "rolled-back"
+			if err := writeJSONAtomic(verificationPath, verification, 0444); err != nil {
+				return uncertainWorkerActiveVerification(observeWorkerActiveVerification(ctx, claim.PlanID, planned, record, paths), failureReason+"; rollback succeeded but completion could not be recorded")
+			}
+			rolledBack := observeWorkerActiveVerification(ctx, claim.PlanID, planned, record, paths)
+			return rolledBack, errors.New("active Worker verification failed and the retained previous Worker was restored")
+		}
+		previous := observeWorkerGeneration(ctx, previousInstalled.Input, record, paths)
+		if previous.Status != "active-open" || !previous.Worker.UnitActive || !previous.Worker.QueueConnected || time.Now().After(rollbackDeadline) || ctx.Err() != nil {
+			return uncertainWorkerActiveVerification(observeWorkerActiveVerification(ctx, claim.PlanID, planned, record, paths), failureReason+"; restored previous Worker did not acknowledge the same stable message identity")
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+}
+
+func observeWorkerActiveVerification(ctx context.Context, planID string, planned planner.Operation, record bootstrapRecord, paths executionPaths) host.AsyncWorkerActiveVerificationObservation {
+	input := *planned.Input.Async.WorkerHandoff
+	digest, _ := planner.OperationDigest(planned)
+	candidate := observeWorkerGeneration(ctx, input.Worker, record, paths)
+	result := host.AsyncWorkerActiveVerificationObservation{
+		PlanID: planID, OperationDigest: digest, QueueGenerationID: input.QueueGenerationID,
+		Candidate: candidate.Worker, MessageID: workerVerificationMessageID(planID, digest),
+	}
+	previousInstalled, previousErr := readWorkerGenerationRecord(workerGenerationRecordPath(paths, input.Worker.Previous.ID))
+	if previousErr == nil {
+		result.Previous = observeWorkerGeneration(ctx, previousInstalled.Input, record, paths).Worker
+	} else {
+		result.Previous = *input.Worker.Previous
+	}
+	var verification workerActiveVerificationRecord
+	if err := readExactJSON(workerActiveVerificationPath(paths, input.Worker.GenerationID), &verification); err != nil {
+		if _, statErr := os.Lstat(workerActiveVerificationPath(paths, input.Worker.GenerationID)); statErr == nil || !errors.Is(statErr, os.ErrNotExist) {
+			result.Status = host.WorkerActiveVerificationUncertain
+			result.Reason = "durable Worker verification record is unreadable or unsafe"
+			result.RecoveryAction = "keep candidate intake fenced and inspect the exact Worker, Queue, and verification records before choosing recovery"
+		}
+		return result
+	}
+	if err := validateWorkerActiveVerificationRecord(verification, input, planID, digest); err != nil {
+		result.Status = host.WorkerActiveVerificationUncertain
+		result.Reason = err.Error()
+		result.RecoveryAction = "keep candidate intake fenced and inspect the conflicting Worker verification record"
+		return result
+	}
+	result.PublisherConfirmed = verification.PublisherConfirmedAt != nil
+	result.CandidateProcessed, result.CandidateAcknowledged = workerHandledMessage(workerEvidencePath(paths), verification.MessageID, input.Worker.Revision, input.Worker.ArtifactDigest)
+	if previousErr == nil {
+		result.PreviousProcessed, result.PreviousAcknowledged = workerHandledMessage(workerEvidencePath(paths), verification.MessageID, previousInstalled.Input.Revision, previousInstalled.Input.ArtifactDigest)
+	}
+	result.RollbackAttempted = verification.RollbackAttemptedAt != nil
+	result.Redelivered = workerMessageEvent(workerEvidencePath(paths), verification.MessageID, input.Worker.Revision, input.Worker.ArtifactDigest, "requeued")
+	switch verification.Outcome {
+	case "healthy":
+		if verification.CompletedAt != nil && result.PublisherConfirmed && result.CandidateProcessed && result.CandidateAcknowledged && candidate.Status == "active-open" && candidate.Verified && candidate.Worker.Active {
+			result.Status = host.WorkerActiveVerificationHealthy
+			return result
+		}
+	case "rolled-back":
+		previous := observeWorkerGeneration(ctx, previousInstalled.Input, record, paths)
+		result.Previous = previous.Worker
+		result.Restored = &result.Previous
+		if verification.CompletedAt != nil && verification.RollbackAcknowledgedAt != nil && result.PublisherConfirmed && result.PreviousProcessed && result.PreviousAcknowledged && previous.Status == "active-open" && previous.Verified && previous.Worker.Active && candidate.Worker.Gate == "closed" && !candidate.Worker.UnitActive {
+			result.Status = host.WorkerActiveVerificationRolledBack
+			result.RollbackSucceeded = true
+			result.Reason = verification.FailureReason
+			return result
+		}
+	}
+	result.Status = host.WorkerActiveVerificationUncertain
+	result.Reason = "durable Worker verification has no exact completed outcome"
+	result.RecoveryAction = "keep candidate intake fenced and reconcile the stable message, Queue, and Worker authority before retrying"
+	return result
+}
+
+func validateWorkerActiveVerificationRecord(verification workerActiveVerificationRecord, input planner.AsyncWorkerHandoffInput, planID, digest string) error {
+	if verification.SchemaVersion != "provision.dev/worker-active-verification/v1alpha1" || verification.PlanID != planID || verification.OperationDigest != digest || verification.QueueGenerationID != input.QueueGenerationID || verification.CandidateID != input.Worker.GenerationID || verification.PreviousID != input.Worker.Previous.ID || verification.MessageID != workerVerificationMessageID(planID, digest) || verification.PublishStartedAt.IsZero() {
+		return errors.New("durable Worker verification record differs from the exact approved operation")
+	}
+	ordered := []*time.Time{verification.PublisherConfirmedAt, verification.CandidateAcknowledgedAt, verification.RollbackAttemptedAt, verification.CandidateFencedAt, verification.PreviousStartedAt, verification.RollbackAcknowledgedAt, verification.CompletedAt}
+	last := verification.PublishStartedAt
+	for _, moment := range ordered {
+		if moment == nil {
+			continue
+		}
+		if moment.Before(last) {
+			return errors.New("durable Worker verification record contains out-of-order evidence")
+		}
+		last = *moment
+	}
+	if verification.Outcome != "" && verification.Outcome != "healthy" && verification.Outcome != "rolled-back" || verification.Outcome != "" && verification.CompletedAt == nil {
+		return errors.New("durable Worker verification record contains an unsupported outcome")
+	}
+	if verification.Outcome == "healthy" && (verification.PublisherConfirmedAt == nil || verification.CandidateAcknowledgedAt == nil || verification.RollbackAttemptedAt != nil) {
+		return errors.New("durable healthy Worker verification record is incomplete")
+	}
+	if verification.Outcome == "rolled-back" && (verification.PublisherConfirmedAt == nil || verification.RollbackAttemptedAt == nil || verification.CandidateFencedAt == nil || verification.PreviousStartedAt == nil || verification.RollbackAcknowledgedAt == nil || verification.FailureReason == "") {
+		return errors.New("durable rolled-back Worker verification record is incomplete")
+	}
+	return nil
+}
+
+func workerVerificationMessageID(planID, operationDigest string) string {
+	revision := "provision-worker-verification"
+	invocation := "verify-" + strings.TrimPrefix(planID, "sha256:")[:16]
+	digest := sha256.Sum256([]byte(fmt.Sprintf("provision-example-async\x00%s\x00%s\x00%s\x00%d", revision, operationDigest, invocation, 1)))
+	return "msg-" + hex.EncodeToString(digest[:])
+}
+
+func workerVerificationPayload(planID, operationDigest, messageID string) ([]byte, error) {
+	return json.Marshal(struct {
+		SchemaVersion       string `json:"schemaVersion"`
+		MessageID           string `json:"messageId"`
+		ApplicationRevision string `json:"applicationRevision"`
+		TaskArtifactDigest  string `json:"taskArtifactDigest"`
+		InvocationID        string `json:"invocationId"`
+		Sequence            int    `json:"sequence"`
+		Behavior            string `json:"behavior"`
+	}{
+		SchemaVersion: "provision.dev/example-async-message/v1alpha1", MessageID: messageID,
+		ApplicationRevision: "provision-worker-verification", TaskArtifactDigest: operationDigest,
+		InvocationID: "verify-" + strings.TrimPrefix(planID, "sha256:")[:16], Sequence: 1, Behavior: "process",
+	})
+}
+
+func exactWorkerHandoffQueue(ctx context.Context, input planner.AsyncWorkerHandoffInput, record bootstrapRecord, paths executionPaths) (planner.AsyncQueueInput, error) {
+	var generation queueGenerationRecord
+	path := filepath.Join(paths.environmentHome, "services", "rabbitmq", "generation.json")
+	if err := readExactJSON(path, &generation); err != nil || generation.SchemaVersion != queueGenerationSchema || generation.Queue.GenerationID != input.QueueGenerationID || generation.Queue.LogicalID != input.Worker.QueueLogicalID {
+		return planner.AsyncQueueInput{}, errors.New("live Queue generation differs from the approved Worker verification")
+	}
+	queue, findings := inspectRecordedQueue(ctx, record.Environment, record.Account, paths)
+	if queue == nil || len(findings) != 0 || !queue.Ready || queue.GenerationID != input.QueueGenerationID {
+		return planner.AsyncQueueInput{}, errors.New("live Queue health or identity cannot be proved for Worker verification")
+	}
+	return generation.Queue, nil
+}
+
+func publishWorkerVerificationMessage(ctx context.Context, queue planner.AsyncQueueInput, environment, planID, operationDigest, messageID string) error {
+	command := exec.CommandContext(ctx, "systemd-creds", "decrypt", "--name=rabbitmq-url", queueURLCredentialPath(environment), "-")
+	var stderr bytes.Buffer
+	command.Stderr = &stderr
+	credential, err := command.Output()
+	if err != nil {
+		return fmt.Errorf("decrypt managed Queue credential: %w: %s", err, strings.TrimSpace(stderr.String()))
+	}
+	username, password, err := parseQueueSecret(strings.TrimSpace(string(credential)), queue.AMQPPort)
+	for index := range credential {
+		credential[index] = 0
+	}
+	if err != nil {
+		return err
+	}
+	config := amqp.Config{SASL: []amqp.Authentication{&amqp.PlainAuth{Username: username, Password: password}}, Heartbeat: 10 * time.Second, Locale: "en_US", Dial: amqp.DefaultDial(5 * time.Second), Properties: amqp.Table{"connection_name": "provision-worker-verification"}}
+	connection, err := amqp.DialConfig(fmt.Sprintf("amqp://127.0.0.1:%d/", queue.AMQPPort), config)
+	password = ""
+	if err != nil {
+		return errors.New("connect to managed Queue for Worker verification")
+	}
+	defer connection.Close()
+	channel, err := connection.Channel()
+	if err != nil {
+		return errors.New("open managed Queue channel for Worker verification")
+	}
+	defer channel.Close()
+	if err := channel.Confirm(false); err != nil {
+		return errors.New("enable publisher confirms for Worker verification")
+	}
+	confirmations := channel.NotifyPublish(make(chan amqp.Confirmation, 1))
+	returns := channel.NotifyReturn(make(chan amqp.Return, 1))
+	topology := topologyFor(queue.LogicalID)
+	payload, err := workerVerificationPayload(planID, operationDigest, messageID)
+	if err != nil {
+		return errors.New("encode Worker verification message")
+	}
+	if err := channel.PublishWithContext(ctx, topology.WorkExchange, queue.LogicalID, true, false, amqp.Publishing{ContentType: "application/json", DeliveryMode: amqp.Persistent, MessageId: messageID, Timestamp: time.Now().UTC(), Body: payload}); err != nil {
+		return errors.New("publish Worker verification message")
+	}
+	select {
+	case returned := <-returns:
+		return fmt.Errorf("Worker verification message was returned as unroutable with reply code %d", returned.ReplyCode)
+	case confirmation := <-confirmations:
+		if !confirmation.Ack {
+			return errors.New("Worker verification message was negatively acknowledged")
+		}
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-time.After(15 * time.Second):
+		return errors.New("Worker verification publisher confirm timed out")
+	}
+}
+
+func commitActiveWorker(input planner.AsyncWorkerInput, paths executionPaths) error {
+	recordPath := workerGenerationRecordPath(paths, input.GenerationID)
+	installed, err := readWorkerGenerationRecord(recordPath)
+	if err != nil || !installed.Verified || !workerRecordMatchesInput(installed, input) {
+		return errors.New("Worker immutable generation record is not exactly verified")
+	}
+	installed.Active = true
+	if err := writeJSONAtomic(recordPath, installed, 0444); err != nil {
+		return err
+	}
+	return writeJSONAtomic(filepath.Join(filepath.Dir(recordPath), "active.json"), installed, 0444)
+}
+
+func fenceFailedWorkerCandidate(ctx context.Context, input planner.AsyncWorkerInput, record bootstrapRecord, paths executionPaths) error {
+	if err := replaceGateFile(workerGatePath(paths, input.GenerationID), "closed\n"); err != nil {
+		return err
+	}
+	deadline := time.Now().Add(paths.healthTimeout)
+	for {
+		active, _ := paths.systemd.Run(ctx, "is-active", input.SystemdUnit)
+		if strings.TrimSpace(string(active)) != "active" {
+			break
+		}
+		state, stateErr := readWorkerState(workerStatePath(paths, input.GenerationID))
+		if stateErr == nil && state.Gated && !state.Consuming {
+			break
+		}
+		if time.Now().After(deadline) || ctx.Err() != nil {
+			return errors.New("candidate Worker did not close intake within the verification bound")
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	if output, err := paths.systemd.Run(ctx, "disable", "--now", input.SystemdUnit); err != nil {
+		return fmt.Errorf("stop and disable failed Worker candidate: %v: %s", err, strings.TrimSpace(string(output)))
+	}
+	active, _ := paths.systemd.Run(ctx, "is-active", input.SystemdUnit)
+	gate, gateErr := os.ReadFile(workerGatePath(paths, input.GenerationID))
+	if strings.TrimSpace(string(active)) == "active" || gateErr != nil || string(gate) != "closed\n" {
+		return errors.New("candidate Worker intake fence and stopped unit cannot be proved")
+	}
+	return nil
+}
+
+func restorePreviousWorker(ctx context.Context, input planner.AsyncWorkerInput, record bootstrapRecord, paths executionPaths) error {
+	if output, err := paths.systemd.Run(ctx, "enable", "--now", input.SystemdUnit); err != nil {
+		return fmt.Errorf("start retained previous Worker: %v: %s", err, strings.TrimSpace(string(output)))
+	}
+	if _, err := waitForWorker(ctx, input, record, paths, true); err != nil {
+		return err
+	}
+	if err := replaceGateFile(workerGatePath(paths, input.GenerationID), "open\n"); err != nil {
+		return err
+	}
+	_, err := waitForWorker(ctx, input, record, paths, false)
+	return err
+}
+
+func uncertainWorkerActiveVerification(observed host.AsyncWorkerActiveVerificationObservation, reason string) (host.AsyncWorkerActiveVerificationObservation, error) {
+	observed.Status = host.WorkerActiveVerificationUncertain
+	observed.Reason = reason
+	observed.RollbackSucceeded = false
+	observed.RecoveryAction = "keep candidate intake fenced and inspect the exact Queue message, Worker gates, units, and durable authority before choosing recovery"
+	return observed, fmt.Errorf("%w: %s", errUncertainRecovery, reason)
+}
+
+func uncertainWorkerActiveVerificationWithCandidateFence(ctx context.Context, candidate planner.AsyncWorkerInput, record bootstrapRecord, paths executionPaths, observed host.AsyncWorkerActiveVerificationObservation, reason string) (host.AsyncWorkerActiveVerificationObservation, error) {
+	if err := fenceFailedWorkerCandidate(ctx, candidate, record, paths); err != nil {
+		return uncertainWorkerActiveVerification(observed, reason+"; candidate intake could not be proved fenced: "+err.Error())
+	}
+	observed.Status = host.WorkerActiveVerificationUncertain
+	observed.Candidate = observeWorkerGeneration(ctx, candidate, record, paths).Worker
+	observed.RollbackSucceeded = false
+	observed.Reason = reason
+	observed.RecoveryAction = "candidate intake is fenced; inspect the exact Queue message, Worker units, and durable authority before choosing recovery"
+	return observed, fmt.Errorf("%w: %s", errUncertainRecovery, reason)
 }
 
 func fencePreviousWorkerIntake(ctx context.Context, planned planner.Operation, claim authority.Claim, record bootstrapRecord, paths executionPaths) (host.AsyncWorkerHandoffObservation, error) {
@@ -1358,6 +1769,7 @@ func inspectAsyncDeployment(ctx context.Context, environment, account string, pa
 	}
 	workerActivePath := filepath.Join(paths.environmentHome, "workers", "active.json")
 	activeWorkerID := ""
+	activeWorkerPreviousID := ""
 	if worker, err := readWorkerGenerationRecord(workerActivePath); err == nil {
 		observed := observeWorkerGeneration(ctx, worker.Input, record, paths)
 		if observed.Status != "active-open" || !observed.Verified {
@@ -1366,6 +1778,9 @@ func inspectAsyncDeployment(ctx context.Context, environment, account string, pa
 			status := observed.Worker
 			deployment.ActiveWorker = &status
 			activeWorkerID = status.ID
+			if worker.Input.Previous != nil {
+				activeWorkerPreviousID = worker.Input.Previous.ID
+			}
 		}
 	} else if activeRecordShouldExist(workerActivePath, filepath.Join(paths.environmentHome, "workers")) {
 		findings = append(findings, "installed Worker generation has no readable active Worker record")
@@ -1388,11 +1803,24 @@ func inspectAsyncDeployment(ctx context.Context, environment, account string, pa
 		}
 	} else if _, statErr := os.Lstat(workerRetentionRecordPath(paths)); statErr == nil || !errors.Is(statErr, os.ErrNotExist) {
 		findings = append(findings, "previous Worker retention record is unreadable")
+	} else if activeWorkerID != "" && activeWorkerPreviousID != "" {
+		var verification workerActiveVerificationRecord
+		previousInstalled, previousErr := readWorkerGenerationRecord(workerGenerationRecordPath(paths, activeWorkerPreviousID))
+		verificationErr := readExactJSON(workerActiveVerificationPath(paths, activeWorkerID), &verification)
+		if previousErr != nil || verificationErr != nil || verification.Outcome != "healthy" || verification.CandidateID != activeWorkerID || verification.PreviousID != activeWorkerPreviousID || !workerGenerationRestartable(previousInstalled, record, paths) {
+			findings = append(findings, "post-verification previous Worker generation is not an exact rollback-ready observation")
+		} else {
+			status := workerStatus(previousInstalled.Input, record, paths)
+			status.Health = "rollback-ready"
+			status.Restartable = true
+			deployment.Previous = &status
+			previousWorkerID = activeWorkerPreviousID
+		}
 	}
 	workerEntries, workerEntriesErr := os.ReadDir(filepath.Join(paths.environmentHome, "workers"))
 	if workerEntriesErr == nil {
 		for _, entry := range workerEntries {
-			if entry.IsDir() || entry.Name() == "active.json" || entry.Name() == "previous.json" || strings.HasSuffix(entry.Name(), ".drain.json") || !strings.HasSuffix(entry.Name(), ".json") {
+			if entry.IsDir() || entry.Name() == "active.json" || entry.Name() == "previous.json" || strings.HasSuffix(entry.Name(), ".drain.json") || strings.HasSuffix(entry.Name(), ".verification.json") || !strings.HasSuffix(entry.Name(), ".json") {
 				continue
 			}
 			candidate, readErr := readWorkerGenerationRecord(filepath.Join(paths.environmentHome, "workers", entry.Name()))
@@ -1664,6 +2092,9 @@ func workerDrainRecordPath(paths executionPaths, generation string) string {
 func workerRetentionRecordPath(paths executionPaths) string {
 	return filepath.Join(paths.environmentHome, "workers", "previous.json")
 }
+func workerActiveVerificationPath(paths executionPaths, generation string) string {
+	return filepath.Join(paths.environmentHome, "workers", generation+".verification.json")
+}
 func workerGatePath(paths executionPaths, generation string) string {
 	return filepath.Join(paths.environmentHome, "async", "worker", generation+".gate")
 }
@@ -1753,7 +2184,7 @@ func replaceGateFile(path, content string) error {
 	if err := os.WriteFile(temporary, []byte(content), 0644); err != nil {
 		return errors.New("write Worker admission gate")
 	}
-	if err := os.Chown(temporary, 0, 0); err != nil {
+	if err := os.Chown(temporary, os.Geteuid(), os.Getegid()); err != nil {
 		_ = os.Remove(temporary)
 		return errors.New("own Worker admission gate")
 	}
@@ -1800,6 +2231,28 @@ func workerAcknowledgedMessage(path, messageID, workerRevision, workerArtifactDi
 		acknowledged = acknowledged || event.Event == "acknowledged"
 	}
 	return processed, acknowledged
+}
+
+func workerHandledMessage(path, messageID, workerRevision, workerArtifactDigest string) (bool, bool) {
+	if messageID == "" {
+		return false, false
+	}
+	file, err := os.Open(path)
+	if err != nil {
+		return false, false
+	}
+	defer file.Close()
+	handled, acknowledged := false, false
+	scanner := bufio.NewScanner(file)
+	for scanner.Scan() {
+		var event struct{ Event, MessageID, WorkerApplicationRevision, WorkerArtifactDigest string }
+		if json.Unmarshal(scanner.Bytes(), &event) != nil || event.MessageID != messageID || event.WorkerApplicationRevision != workerRevision || event.WorkerArtifactDigest != workerArtifactDigest {
+			continue
+		}
+		handled = handled || event.Event == "processed" || event.Event == "duplicate_ignored"
+		acknowledged = acknowledged || event.Event == "acknowledged"
+	}
+	return handled, acknowledged
 }
 
 func scheduleRuntimePath(paths executionPaths) string {

@@ -2,7 +2,7 @@
 
 Issue #39 was exercised from a clean `provision-acceptance` VM snapshot using
 the committed Queue implementation at `30d8066` and the final response-loss
-acceptance harness at `ee8f448`. The seven-stage matrix completed with
+and isolation harness at `fe94baf`. The seven-stage matrix completed with
 `managed Queue acceptance passed`.
 
 ## Tested combination
@@ -45,8 +45,12 @@ acknowledged message.
 The first mutating SSH invocation completed remotely and its response was then
 deliberately discarded by killing the controller process. After the abandoned
 lease expired, `deployment resume` recorded a new intent with
-`resumeOfAttemptId`, fencing token `4`, observed the already-created exact Queue
+`resumeOfAttemptId`, fencing token `8`, observed the already-created exact Queue
 generation, and committed a successful outcome without recreating it.
+
+The retained controller backend included earlier acceptance attempts; the final
+clean-Host run is the fencing-token `7` intent followed by the token `8` resume
+and successful outcome.
 
 A second approved Plan used an independent State Backend and again observed the
 same generation and status without duplicating any Queue, exchange, service,
@@ -79,12 +83,12 @@ these SHA-256 digests at closeout:
 | File | SHA-256 |
 | --- | --- |
 | `plan.json` | `0e2a7e374aedfbd56b5ef24d40225ffce8219f7cc1d2c17833532fdd51b9f103` |
-| `approval.json` | `3ff2b209ea9c4e4c1f66b2bf14533785857757483f7d1e42717c78614d76b016` |
-| `execution.json` | `31076f6020b8f3d41c19b36d94bcfacab09255bcbfdf282a6836898d59a64092` |
-| `status.json` | `5f878f0f38595d219590c4f8468dc0ce0fad4c3753f9053d1102ab524b15345e` |
+| `approval.json` | `309089d2c11c33dc5a27e4f59e8a3c4602aadbc4a24f55c664097bf364bea17d` |
+| `execution.json` | `789263914765be8920b62e1545241911e642751955c6e0bd4ac7e266931500ff` |
+| `status.json` | `2aa9f1a9ff1d251cb1c742a326acbe39e297d7bf3b3b7ab1464e4dc652e59936` |
 | `bootstrap-after.json` | `9712084ccc06fe1aed6c51358e2322737467bcac0e1bc5e171b135e0c51adf69` |
-| `reexecution.json` | `44f3297db5be58d194e44f54d0855a61568c6ee4f82ca55dd4efca617db77351` |
-| `reexecution-status.json` | `c9e83422a1dc69ede7f5133d71f1ba31750f632274b193a22513a876ebbac7da` |
+| `reexecution.json` | `478e4a9a88baa0fc465f2688cc99f1fac86959a4823f80deaa5129ea1aea2169` |
+| `reexecution-status.json` | `727563a5f011ff109437d3aff92e931281d110aa35d1aa00f9ffe3c5c7767738` |
 
 This evidence qualifies the first typed managed-Queue operation and status path
 for the exact combination above. It does not qualify multi-node availability,

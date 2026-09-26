@@ -632,6 +632,7 @@ func TestAsyncPlanPreviewIsDeterministicCompleteAndReadOnly(t *testing.T) {
 		t.Fatalf("Worker-only replacement Plan failed: %v\n%s", existingErr, existing)
 	}
 	var replacement struct {
+		ID         string `json:"id"`
 		Operations []struct {
 			ID        string   `json:"id"`
 			Kind      string   `json:"kind"`
@@ -640,6 +641,22 @@ func TestAsyncPlanPreviewIsDeterministicCompleteAndReadOnly(t *testing.T) {
 	}
 	if err := json.Unmarshal(existing, &replacement); err != nil {
 		t.Fatal(err)
+	}
+	changedLedger, changedLedgerErr := preview(
+		"FAKE_NO_ACTIVE_ASYNC=0",
+		"FAKE_LEDGER_DIGEST=sha256:abababababababababababababababababababababababababababababababab",
+	)
+	if changedLedgerErr != nil {
+		t.Fatalf("runtime telemetry change prevented Worker-only planning: %v\n%s", changedLedgerErr, changedLedger)
+	}
+	var changedLedgerPlan struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(changedLedger, &changedLedgerPlan); err != nil {
+		t.Fatal(err)
+	}
+	if changedLedgerPlan.ID != replacement.ID {
+		t.Fatalf("Schedule ledger telemetry made the Worker-only Plan stale: %s != %s", changedLedgerPlan.ID, replacement.ID)
 	}
 	wantReplacement := []string{"prepareQueue", "stageArtifact", "installWorkerGeneration", "startWorkerCandidate", "verifyWorkerCandidate", "fenceWorkerIntake", "drainWorkerPrevious", "activateWorkerIntake", "verifyWorkerActive", "retainWorkerPrevious"}
 	if len(replacement.Operations) != len(wantReplacement) {
@@ -661,7 +678,7 @@ func TestAsyncPlanPreviewIsDeterministicCompleteAndReadOnly(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Count(string(commands), "provision-host-executor inspect") != 8 {
+	if strings.Count(string(commands), "provision-host-executor inspect") != 9 {
 		t.Fatalf("preview did not perform exactly one read-only inspection per Plan:\n%s", commands)
 	}
 	for _, forbidden := range []string{"--apply", " install ", " start ", " reload ", " execute "} {

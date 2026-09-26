@@ -267,7 +267,10 @@ func buildAsync(compiled config.Compiled, observation host.BootstrapStatus) (Pre
 		return preview, nil
 	}
 
-	observationDigest, err := digest(observation)
+	planObservation := stableAsyncPlanningObservation(observation)
+	evidence.Observed = planObservation
+	preview.Capability = evidence
+	observationDigest, err := digest(planObservation)
 	if err != nil {
 		return Preview{}, err
 	}
@@ -275,7 +278,7 @@ func buildAsync(compiled config.Compiled, observation host.BootstrapStatus) (Pre
 	for name, artifact := range compiled.Revision.Artifacts {
 		artifactDigests[name] = artifact.Digest
 	}
-	adapterPlan := hostasync.Plan(compiled, observation)
+	adapterPlan := hostasync.Plan(compiled, planObservation)
 	plan := Plan{
 		SchemaVersion:       SchemaVersion,
 		Application:         compiled.Application.Name,
@@ -298,6 +301,41 @@ func buildAsync(compiled config.Compiled, observation host.BootstrapStatus) (Pre
 	}
 	preview.Plan = &plan
 	return preview, nil
+}
+
+// stableAsyncPlanningObservation excludes runtime telemetry that can change
+// while a human reviews a Plan. Deployment identities and capability evidence
+// remain Plan-bound; occurrence, invocation, message, ledger-content, and
+// instantaneous in-flight observations are re-read by the operations that use
+// them instead of making approval race normal workload activity.
+func stableAsyncPlanningObservation(observation host.BootstrapStatus) host.BootstrapStatus {
+	if observation.Async == nil {
+		return observation
+	}
+	stable := observation
+	async := *observation.Async
+	deployment := async.Deployment
+	deployment.Occurrences = nil
+	deployment.Invocations = nil
+	deployment.Messages = nil
+	if deployment.ActiveWorker != nil {
+		worker := *deployment.ActiveWorker
+		worker.InFlight = 0
+		deployment.ActiveWorker = &worker
+	}
+	if deployment.Candidate != nil {
+		worker := *deployment.Candidate
+		worker.InFlight = 0
+		deployment.Candidate = &worker
+	}
+	if deployment.Schedule != nil {
+		schedule := *deployment.Schedule
+		schedule.LedgerDigest = ""
+		deployment.Schedule = &schedule
+	}
+	async.Deployment = deployment
+	stable.Async = &async
+	return stable
 }
 
 func composeAsyncOperations(adapterPlan hostasync.PlanningOutput) []Operation {

@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"flag"
+	"fmt"
 	"io"
 	"net/http"
 	"net/url"
@@ -471,7 +472,7 @@ func withHostFence(paths executionPaths, claim authority.Claim, planned planner.
 		return nil, errors.New("read host authorization fence")
 	}
 	if claim.FencingToken < fence.FencingToken || claim.FencingToken == fence.FencingToken && claim.AttemptID != fence.AttemptID {
-		return nil, errors.New("authorization fencing token is stale")
+		return nil, fmt.Errorf("authorization fencing token is stale: submitted=%d current=%d", claim.FencingToken, fence.FencingToken)
 	}
 	if claim.FencingToken > fence.FencingToken {
 		if err := writeJSONAtomic(fencePath, hostFence{FencingToken: claim.FencingToken, AttemptID: claim.AttemptID}, 0600); err != nil {

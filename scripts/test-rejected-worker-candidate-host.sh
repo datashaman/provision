@@ -3,7 +3,7 @@
 set -euo pipefail
 
 usage() {
-  echo "usage: $0 --provision BINARY --signing-key FILE --config ROOT.yaml --secret-file FILE --work-dir DIRECTORY --target HOST --target-user USER" >&2
+  echo "usage: $0 --provision BINARY --signing-key FILE --config ROOT.yaml --secret-file FILE --state-seed FILE --work-dir DIRECTORY --target HOST --target-user USER" >&2
   exit 2
 }
 
@@ -11,6 +11,7 @@ provision=""
 signing_key=""
 config=""
 secret_file=""
+state_seed=""
 work_dir=""
 target=""
 target_user=""
@@ -20,6 +21,7 @@ while (($#)); do
     --signing-key) (($# >= 2)) || usage; signing_key="$2"; shift 2 ;;
     --config) (($# >= 2)) || usage; config="$2"; shift 2 ;;
     --secret-file) (($# >= 2)) || usage; secret_file="$2"; shift 2 ;;
+    --state-seed) (($# >= 2)) || usage; state_seed="$2"; shift 2 ;;
     --work-dir) (($# >= 2)) || usage; work_dir="$2"; shift 2 ;;
     --target) (($# >= 2)) || usage; target="$2"; shift 2 ;;
     --target-user) (($# >= 2)) || usage; target_user="$2"; shift 2 ;;
@@ -27,12 +29,14 @@ while (($#)); do
   esac
 done
 
-[[ -x "$provision" && -f "$signing_key" && -f "$config" && -f "$secret_file" ]] || usage
+[[ -x "$provision" && -f "$signing_key" && -f "$config" && -f "$secret_file" && -f "$state_seed" ]] || usage
 [[ "$work_dir" == /* && ! -e "$work_dir" ]] || usage
 [[ "$target" =~ ^[A-Za-z0-9][A-Za-z0-9.-]*$ && "$target_user" =~ ^[a-z_][a-z0-9_-]*$ ]] || usage
 
 mkdir -m 0700 "$work_dir"
 state="$work_dir/state.db"
+cp -- "$state_seed" "$state"
+chmod 0600 "$state"
 secret_reference="secret://lab/rabbitmq-url"
 
 plan_id() {

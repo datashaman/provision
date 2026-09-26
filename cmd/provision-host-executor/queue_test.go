@@ -146,6 +146,10 @@ func TestQueueStatusIdentifiesOwnedResourcesByKind(t *testing.T) {
 		"container:" + input.Container,
 		"data-path:" + input.DataPath,
 		"quadlet:" + input.QuadletPath,
+		"generation-record:" + filepath.Join(filepath.Dir(input.DataPath), "generation.json"),
+		"probe-record:" + filepath.Join(filepath.Dir(input.DataPath), "probe.json"),
+		"credential-entrypoint:" + filepath.Join(filepath.Dir(input.DataPath), "credential-entrypoint"),
+		"encrypted-credential:/var/lib/provision/runtime/lab/.config/credstore.encrypted/rabbitmq-config",
 		"rabbitmq-queue:" + input.LogicalID,
 		"rabbitmq-queue:" + topology.RetryQueue,
 		"rabbitmq-queue:" + topology.DeadLetterQueue,
@@ -155,6 +159,10 @@ func TestQueueStatusIdentifiesOwnedResourcesByKind(t *testing.T) {
 	}
 	if got := queueStatusIdentity(input).OwnedResources; !slices.Equal(got, want) {
 		t.Fatalf("owned resources = %#v, want %#v", got, want)
+	}
+	status := queueStatusIdentity(input)
+	if status.RetryDelay != "10s" || status.DeadLetterTTL != "168h0m0s" || len(status.Bindings) != 3 || !slices.Equal(status.SupportedGuarantees, []string{"publisher-confirms", "manual-acknowledgement", "at-least-once"}) {
+		t.Fatalf("Queue status overclaims or omits topology: %+v", status)
 	}
 }
 

@@ -28,8 +28,6 @@ func Evaluate(observation host.BootstrapStatus, target config.TargetSelection) E
 			"digest-pinned-rabbitmq-quorum-queue",
 			"publisher-confirmed-at-least-once-delivery",
 			"manual-consumer-acknowledgement",
-			"bounded-redelivery-with-dead-lettering",
-			"24-hour-message-retention",
 		},
 		SupportEvidence: []string{
 			"restricted-bootstrap-ready",
@@ -37,6 +35,7 @@ func Evaluate(observation host.BootstrapStatus, target config.TargetSelection) E
 			"qualified-rabbitmq-packaging",
 			"rootless-quadlet-ready",
 			"systemd-credentials-ready",
+			"exact-retry-dead-letter-retention-configuration",
 			"journald-active",
 			"restricted-executor-identity-matched",
 		},
@@ -129,7 +128,8 @@ func Evaluate(observation host.BootstrapStatus, target config.TargetSelection) E
 			queue.RabbitMQVersion != "4.3.6" ||
 			queue.Health != "healthy" ||
 			queue.RetryQueue == "" || queue.DeadLetterQueue == "" ||
-			queue.MessageTTL != "24h0m0s" || queue.DeliveryLimit != 3 ||
+			queue.WorkExchange == "" || queue.RetryExchange == "" || queue.DeadLetterExchange == "" || len(queue.Bindings) != 3 ||
+			queue.MessageTTL != "24h0m0s" || queue.RetryDelay != "10s" || queue.DeadLetterTTL != "168h0m0s" || queue.DeliveryLimit != 3 ||
 			queue.Accepted != queue.Available+queue.Acknowledged+queue.DeadLettered ||
 			queue.Accepted < 1 || len(queue.SupportedGuarantees) == 0 || len(queue.OwnedResources) == 0 ||
 			queue.ImageManifest != ImageManifest ||

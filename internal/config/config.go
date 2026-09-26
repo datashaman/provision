@@ -237,6 +237,20 @@ func (c Compiled) PlanningTarget() (TargetSelection, error) {
 }
 
 func (c Compiled) IsAsync() bool {
+	return c.IsQueueOnly() || c.isCompleteAsync()
+}
+
+func (c Compiled) IsQueueOnly() bool {
+	if len(c.Application.Components) != 1 {
+		return false
+	}
+	for _, component := range c.Application.Components {
+		return component.Role == "queue"
+	}
+	return false
+}
+
+func (c Compiled) isCompleteAsync() bool {
 	if len(c.Application.Components) != 4 {
 		return false
 	}
@@ -462,6 +476,11 @@ func (c Compiled) validate() error {
 	if len(c.Application.Components) != 1 {
 		return c.validateAsync()
 	}
+	for _, component := range c.Application.Components {
+		if component.Role != "http" {
+			return c.validateAsync()
+		}
+	}
 	if len(c.Application.Components) != 1 || len(c.Environment.Implementations) != 1 || len(c.Revision.Artifacts) != 1 {
 		return errors.New("initial host tracer supports exactly one HTTP component")
 	}
@@ -520,6 +539,9 @@ func (c Compiled) validate() error {
 }
 
 func (c Compiled) validateAsync() error {
+	if c.IsQueueOnly() {
+		return c.validateQueueOnly()
+	}
 	if len(c.Application.Components) != 4 || len(c.Environment.Implementations) != 4 || len(c.Revision.Artifacts) != 2 {
 		return errors.New("asynchronous host tracer requires exactly one Queue, Worker, Task, and Schedule with Worker and Task Artifacts")
 	}
@@ -682,6 +704,52 @@ func (c Compiled) validateAsync() error {
 		if _, ok := c.Revision.Artifacts[name]; !ok {
 			return fmt.Errorf("component %q requires an immutable Artifact", name)
 		}
+	}
+	return nil
+}
+
+func (c Compiled) validateQueueOnly() error {
+	if len(c.Environment.Implementations) != 1 || len(c.Revision.Artifacts) != 0 {
+		return errors.New("Queue-only host tracer requires exactly one Queue implementation and no Artifacts")
+	}
+	var queueName string
+	for name, component := range c.Application.Components {
+		queueName = name
+		if !validName(name) || component.Role != "queue" {
+			return fmt.Errorf("component %q must be a Queue", name)
+		}
+		if err := validateAsyncComponentShape(name, component); err != nil {
+			return err
+		}
+		want := QueueContract{
+			Delivery: "at-least-once", Acknowledgement: "manual", PublisherConfirm: "required",
+			Retry: "bounded-redelivery-3", DeadLetter: "required", Retention: "24h0m0s",
+			Ordering: "unqualified", Deduplication: "unqualified",
+		}
+		if component.Queue != want {
+			return fmt.Errorf("Queue %q requests unsupported delivery, acknowledgement, retry, dead-letter, retention, ordering, or deduplication semantics", name)
+		}
+	}
+	implementation, ok := c.Environment.Implementations[queueName]
+	if !ok {
+		return fmt.Errorf("Queue %q has no implementation", queueName)
+	}
+	target, ok := c.Environment.Targets[implementation.Target]
+	if len(c.Environment.Targets) != 1 || !ok || target.Kind != "host" || !validName(implementation.Target) || !userPattern.MatchString(target.User) {
+		return errors.New("Queue-only host tracer requires exactly one valid Host Target and operator")
+	}
+	if target.Local {
+		if target.Address != "" {
+			return fmt.Errorf("local implementation target %q cannot declare an address", implementation.Target)
+		}
+	} else if !hostPattern.MatchString(target.Address) || strings.HasSuffix(target.Address, ".") {
+		return fmt.Errorf("implementation target %q must name an existing remote Host Target", implementation.Target)
+	}
+	if implementation.Endpoint != (Endpoint{}) || implementation.Worker != (WorkerImplementation{}) || implementation.Schedule != (ScheduleImplementation{}) {
+		return fmt.Errorf("Queue %q contains fields for another implementation type", queueName)
+	}
+	if implementation.Kind != "rabbitmq-quadlet" || implementation.Lifecycle != "managed" || implementation.Rollout != "required" || !validSecretReference(implementation.Credential) {
+		return fmt.Errorf("Queue %q requires a managed rabbitmq-quadlet implementation and Queue credential Secret Reference", queueName)
 	}
 	return nil
 }

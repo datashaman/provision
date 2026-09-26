@@ -594,16 +594,8 @@ func TestAsyncPlanPreviewIsDeterministicCompleteAndReadOnly(t *testing.T) {
 		t.Fatalf("observed occurrence-ledger change did not stale Plan %s", plan.ID)
 	}
 	unsupported, unsupportedErr := preview("FAKE_WORKER_GATE_CAPABILITY=false")
-	if unsupportedErr != nil {
-		t.Fatalf("Queue-only tracer Plan failed without later Worker capability: %v\n%s", unsupportedErr, unsupported)
-	}
-	var queueOnly struct {
-		Operations []struct {
-			Kind string `json:"kind"`
-		} `json:"operations"`
-	}
-	if json.Unmarshal(unsupported, &queueOnly) != nil || len(queueOnly.Operations) != 1 || queueOnly.Operations[0].Kind != "prepareQueue" {
-		t.Fatalf("missing later capability did not restrict the Plan to Queue preparation:\n%s", unsupported)
+	if unsupportedErr == nil || !strings.Contains(string(unsupported), "required Worker admission-gate capability is not observed") || strings.Contains(string(unsupported), `"operations"`) {
+		t.Fatalf("complete asynchronous Application silently narrowed around missing Worker capability: %v\n%s", unsupportedErr, unsupported)
 	}
 	incomplete, incompleteErr := preview("FAKE_ASYNC_OBSERVATION_COMPLETE=false")
 	if incompleteErr == nil || !strings.Contains(string(incomplete), "asynchronous deployment observation is incomplete") || strings.Contains(string(incomplete), `"operations"`) {
@@ -668,6 +660,30 @@ func TestAsyncPlanPreviewIsDeterministicCompleteAndReadOnly(t *testing.T) {
 		if strings.Contains(string(commands), forbidden) {
 			t.Fatalf("async preview attempted host mutation %q:\n%s", forbidden, commands)
 		}
+	}
+}
+
+func TestQueueOnlyPlanContainsOnlyDeclaredQueue(t *testing.T) {
+	dir := t.TempDir()
+	writeAsyncBootstrapInspectionSSH(t, dir)
+	configPath := filepath.Join("..", "..", "examples", "host-queue", "root.yaml")
+	command := exec.Command("go", "run", ".", "plan", "preview", "--file", configPath)
+	command.Env = append(os.Environ(), "PATH="+dir+string(os.PathListSeparator)+os.Getenv("PATH"), "FAKE_SSH_LOG="+filepath.Join(dir, "ssh.log"), "FAKE_WORKER_GATE_CAPABILITY=false", "FAKE_APPLET_DIGEST=")
+	output, err := command.CombinedOutput()
+	if err != nil {
+		t.Fatalf("Queue-only Plan failed because unrelated capabilities are absent: %v\n%s", err, output)
+	}
+	var plan struct {
+		ArtifactDigests map[string]string `json:"artifactDigests"`
+		Operations      []struct {
+			Kind string `json:"kind"`
+		} `json:"operations"`
+	}
+	if err := json.Unmarshal(output, &plan); err != nil {
+		t.Fatal(err)
+	}
+	if len(plan.ArtifactDigests) != 0 || len(plan.Operations) != 1 || plan.Operations[0].Kind != "prepareQueue" {
+		t.Fatalf("Queue-only Plan contains undeclared components: %s", output)
 	}
 }
 
@@ -1087,7 +1103,7 @@ printf '%s\n' "$*" >> "$FAKE_SSH_LOG"
 printf() {
   value="$(command printf "$@")"
   if [ "${FAKE_NO_ACTIVE_WORKER:-0}" = 1 ]; then value="$(command printf '%s' "$value" | sed -E 's/,"activeWorker":\{[^}]*\}//')"; fi
-  command printf '%s\n' "$value" | sed 's#"rabbitmqImageManifest":"sha256:34fc91a9de04d612a340507b8e7e19c0ee1ec9839e09dc5fc98f54991633ce91"#"rabbitmqImageManifest":"sha256:34fc91a9de04d612a340507b8e7e19c0ee1ec9839e09dc5fc98f54991633ce91","rabbitmqServiceUnit":"provision-lab-rabbitmq.service","rabbitmqContainer":"provision-lab-rabbitmq","rabbitmqAccount":"provision-lab","rabbitmqDataPath":"/var/lib/provision/environments/lab/services/rabbitmq/data","rabbitmqQuadletPath":"/etc/containers/systemd/users/999/provision-lab-rabbitmq.container"#g' | sed 's#"imageManifest":"sha256:34fc91a9de04d612a340507b8e7e19c0ee1ec9839e09dc5fc98f54991633ce91"#"generationId":"provision-lab-messages-rabbitmq-4-3-6-34fc91a9de04","imageManifest":"sha256:34fc91a9de04d612a340507b8e7e19c0ee1ec9839e09dc5fc98f54991633ce91","serviceUnit":"provision-lab-rabbitmq.service","container":"provision-lab-rabbitmq","account":"provision-lab","dataPath":"/var/lib/provision/environments/lab/services/rabbitmq/data","quadletPath":"/etc/containers/systemd/users/999/provision-lab-rabbitmq.container","rabbitmqVersion":"4.3.6","health":"healthy","retryQueue":"provision-lab-messages.retry","deadLetterQueue":"provision-lab-messages.dead-letter","messageTtl":"24h0m0s","deliveryLimit":3,"accepted":1,"available":0,"acknowledged":1,"deadLettered":0,"probeMessageId":"probe","supportedGuarantees":["publisher-confirms"],"ownedResources":["provision-lab-messages"]#g'
+	  command printf '%s\n' "$value" | sed 's#"rabbitmqImageManifest":"sha256:34fc91a9de04d612a340507b8e7e19c0ee1ec9839e09dc5fc98f54991633ce91"#"rabbitmqImageManifest":"sha256:34fc91a9de04d612a340507b8e7e19c0ee1ec9839e09dc5fc98f54991633ce91","rabbitmqServiceUnit":"provision-lab-rabbitmq.service","rabbitmqContainer":"provision-lab-rabbitmq","rabbitmqAccount":"provision-lab","rabbitmqDataPath":"/var/lib/provision/environments/lab/services/rabbitmq/data","rabbitmqQuadletPath":"/etc/containers/systemd/users/999/provision-lab-rabbitmq.container"#g' | sed 's#"imageManifest":"sha256:34fc91a9de04d612a340507b8e7e19c0ee1ec9839e09dc5fc98f54991633ce91"#"generationId":"provision-lab-messages-rabbitmq-4-3-6-34fc91a9de04","imageManifest":"sha256:34fc91a9de04d612a340507b8e7e19c0ee1ec9839e09dc5fc98f54991633ce91","serviceUnit":"provision-lab-rabbitmq.service","container":"provision-lab-rabbitmq","account":"provision-lab","dataPath":"/var/lib/provision/environments/lab/services/rabbitmq/data","quadletPath":"/etc/containers/systemd/users/999/provision-lab-rabbitmq.container","rabbitmqVersion":"4.3.6","health":"healthy","retryQueue":"provision-lab-messages.retry","deadLetterQueue":"provision-lab-messages.dead-letter","workExchange":"provision-lab-messages.work","retryExchange":"provision-lab-messages.retry","deadLetterExchange":"provision-lab-messages.dead-letter","bindings":[{"source":"provision-lab-messages.work","destination":"provision-lab-messages","routingKey":"provision-lab-messages"},{"source":"provision-lab-messages.retry","destination":"provision-lab-messages.retry","routingKey":"provision-lab-messages.retry"},{"source":"provision-lab-messages.dead-letter","destination":"provision-lab-messages.dead-letter","routingKey":"provision-lab-messages.dead-letter"}],"messageTtl":"24h0m0s","retryDelay":"10s","deadLetterTtl":"168h0m0s","deliveryLimit":3,"accepted":1,"available":0,"acknowledged":1,"deadLettered":0,"probeMessageId":"probe","supportedGuarantees":["publisher-confirms","manual-acknowledgement","at-least-once"],"ownedResources":["rabbitmq-queue:provision-lab-messages"]#g'
 }
 case "$*" in
   *"/usr/local/libexec/provision-host-executor inspect --environment lab --operator marlinf")

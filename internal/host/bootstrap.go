@@ -90,34 +90,46 @@ type AsyncDeploymentStatus struct {
 }
 
 type QueueStatus struct {
-	ID                  string   `json:"id"`
-	GenerationID        string   `json:"generationId,omitempty"`
-	Exists              bool     `json:"exists"`
-	Ready               bool     `json:"ready"`
-	QueueType           string   `json:"queueType"`
-	Members             int      `json:"members"`
-	Durable             bool     `json:"durable"`
-	ImageManifest       string   `json:"imageManifest"`
-	ServiceUnit         string   `json:"serviceUnit"`
-	Container           string   `json:"container"`
-	Account             string   `json:"account"`
-	DataPath            string   `json:"dataPath"`
-	QuadletPath         string   `json:"quadletPath"`
-	RabbitMQVersion     string   `json:"rabbitmqVersion,omitempty"`
-	Health              string   `json:"health,omitempty"`
-	Reason              string   `json:"reason,omitempty"`
-	RecoveryAction      string   `json:"recoveryAction,omitempty"`
-	RetryQueue          string   `json:"retryQueue,omitempty"`
-	DeadLetterQueue     string   `json:"deadLetterQueue,omitempty"`
-	MessageTTL          string   `json:"messageTtl,omitempty"`
-	DeliveryLimit       int      `json:"deliveryLimit,omitempty"`
-	Accepted            int      `json:"accepted,omitempty"`
-	Available           int      `json:"available,omitempty"`
-	Acknowledged        int      `json:"acknowledged,omitempty"`
-	DeadLettered        int      `json:"deadLettered,omitempty"`
-	ProbeMessageID      string   `json:"probeMessageId,omitempty"`
-	SupportedGuarantees []string `json:"supportedGuarantees,omitempty"`
-	OwnedResources      []string `json:"ownedResources,omitempty"`
+	ID                  string               `json:"id"`
+	GenerationID        string               `json:"generationId,omitempty"`
+	Exists              bool                 `json:"exists"`
+	Ready               bool                 `json:"ready"`
+	QueueType           string               `json:"queueType"`
+	Members             int                  `json:"members"`
+	Durable             bool                 `json:"durable"`
+	ImageManifest       string               `json:"imageManifest"`
+	ServiceUnit         string               `json:"serviceUnit"`
+	Container           string               `json:"container"`
+	Account             string               `json:"account"`
+	DataPath            string               `json:"dataPath"`
+	QuadletPath         string               `json:"quadletPath"`
+	RabbitMQVersion     string               `json:"rabbitmqVersion,omitempty"`
+	Health              string               `json:"health,omitempty"`
+	Reason              string               `json:"reason,omitempty"`
+	RecoveryAction      string               `json:"recoveryAction,omitempty"`
+	RetryQueue          string               `json:"retryQueue,omitempty"`
+	DeadLetterQueue     string               `json:"deadLetterQueue,omitempty"`
+	WorkExchange        string               `json:"workExchange,omitempty"`
+	RetryExchange       string               `json:"retryExchange,omitempty"`
+	DeadLetterExchange  string               `json:"deadLetterExchange,omitempty"`
+	Bindings            []QueueBindingStatus `json:"bindings,omitempty"`
+	MessageTTL          string               `json:"messageTtl,omitempty"`
+	RetryDelay          string               `json:"retryDelay,omitempty"`
+	DeadLetterTTL       string               `json:"deadLetterTtl,omitempty"`
+	DeliveryLimit       int                  `json:"deliveryLimit,omitempty"`
+	Accepted            int                  `json:"accepted,omitempty"`
+	Available           int                  `json:"available,omitempty"`
+	Acknowledged        int                  `json:"acknowledged,omitempty"`
+	DeadLettered        int                  `json:"deadLettered,omitempty"`
+	ProbeMessageID      string               `json:"probeMessageId,omitempty"`
+	SupportedGuarantees []string             `json:"supportedGuarantees,omitempty"`
+	OwnedResources      []string             `json:"ownedResources,omitempty"`
+}
+
+type QueueBindingStatus struct {
+	Source      string `json:"source"`
+	Destination string `json:"destination"`
+	RoutingKey  string `json:"routingKey"`
 }
 
 type WorkerGenerationStatus struct {

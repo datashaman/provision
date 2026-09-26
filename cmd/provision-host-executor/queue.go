@@ -658,11 +658,25 @@ func queueInputsEqual(left, right planner.AsyncQueueInput) bool {
 
 func queueStatusIdentity(input planner.AsyncQueueInput) host.QueueStatus {
 	topology := topologyFor(input.LogicalID)
-	return host.QueueStatus{ID: input.LogicalID, GenerationID: input.GenerationID, QueueType: input.QueueType, Members: input.Members, ImageManifest: input.ImageManifest, ServiceUnit: input.ServiceUnit, Container: input.Container, Account: input.Account, DataPath: input.DataPath, QuadletPath: input.QuadletPath, RetryQueue: topology.RetryQueue, DeadLetterQueue: topology.DeadLetterQueue, MessageTTL: topology.MessageTTL, DeliveryLimit: topology.DeliveryLimit, SupportedGuarantees: []string{"publisher-confirms", "manual-acknowledgement", "at-least-once", "bounded-redelivery-3", "dead-lettering", "24-hour-message-retention"}, OwnedResources: []string{
+	serviceRoot := filepath.Dir(input.DataPath)
+	environment := strings.TrimPrefix(input.CredentialReference, "secret://")
+	if separator := strings.IndexByte(environment, '/'); separator >= 0 {
+		environment = environment[:separator]
+	}
+	credentialPath := filepath.Join("/var/lib/provision/runtime", environment, ".config", "credstore.encrypted", queueCredentialName)
+	return host.QueueStatus{ID: input.LogicalID, GenerationID: input.GenerationID, QueueType: input.QueueType, Members: input.Members, ImageManifest: input.ImageManifest, ServiceUnit: input.ServiceUnit, Container: input.Container, Account: input.Account, DataPath: input.DataPath, QuadletPath: input.QuadletPath, RetryQueue: topology.RetryQueue, DeadLetterQueue: topology.DeadLetterQueue, WorkExchange: topology.WorkExchange, RetryExchange: topology.RetryExchange, DeadLetterExchange: topology.DeadLetterExchange, Bindings: []host.QueueBindingStatus{
+		{Source: topology.WorkExchange, Destination: input.LogicalID, RoutingKey: input.LogicalID},
+		{Source: topology.RetryExchange, Destination: topology.RetryQueue, RoutingKey: topology.RetryQueue},
+		{Source: topology.DeadLetterExchange, Destination: topology.DeadLetterQueue, RoutingKey: topology.DeadLetterQueue},
+	}, MessageTTL: topology.MessageTTL, RetryDelay: "10s", DeadLetterTTL: "168h0m0s", DeliveryLimit: topology.DeliveryLimit, SupportedGuarantees: []string{"publisher-confirms", "manual-acknowledgement", "at-least-once"}, OwnedResources: []string{
 		"systemd-unit:" + input.ServiceUnit,
 		"container:" + input.Container,
 		"data-path:" + input.DataPath,
 		"quadlet:" + input.QuadletPath,
+		"generation-record:" + filepath.Join(serviceRoot, "generation.json"),
+		"probe-record:" + filepath.Join(serviceRoot, "probe.json"),
+		"credential-entrypoint:" + filepath.Join(serviceRoot, "credential-entrypoint"),
+		"encrypted-credential:" + credentialPath,
 		"rabbitmq-queue:" + input.LogicalID,
 		"rabbitmq-queue:" + topology.RetryQueue,
 		"rabbitmq-queue:" + topology.DeadLetterQueue,

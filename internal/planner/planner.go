@@ -241,7 +241,16 @@ func buildAsync(compiled config.Compiled, observation host.BootstrapStatus) (Pre
 		Observed:        observation,
 		Decision:        "required-blue-green-supported",
 	}
-	reasons := evaluation.Reasons
+	reasons := append([]string(nil), evaluation.Reasons...)
+	if !compiled.IsQueueOnly() && observation.Async != nil {
+		capability := observation.Async.Capabilities
+		if !capability.WorkerAdmissionGate {
+			reasons = append(reasons, "required Worker admission-gate capability is not observed")
+		}
+		if capability.ScheduleAppletDigest == "" || capability.ScheduleLedgerSchema == "" {
+			reasons = append(reasons, "required Schedule runtime capability is not observed")
+		}
+	}
 	preview := Preview{SchemaVersion: PreviewSchemaVersion, Executable: len(reasons) == 0, Capability: evidence, Reasons: reasons}
 	if len(reasons) != 0 {
 		preview.Capability.Decision = "unsupported"

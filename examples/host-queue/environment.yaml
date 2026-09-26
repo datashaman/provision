@@ -1,0 +1,17 @@
+schemaVersion: provision.dev/v1alpha1
+kind: Environment
+name: lab
+application: provision-example-queue
+rollbackWindow: 30m0s
+targets:
+  base:
+    kind: host
+    address: base.local
+    user: marlinf
+implementations:
+  messages:
+    kind: rabbitmq-quadlet
+    target: base
+    lifecycle: managed
+    rollout: required
+    credential: secret://lab/rabbitmq-url

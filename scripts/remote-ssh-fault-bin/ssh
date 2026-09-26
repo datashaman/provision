@@ -4,6 +4,17 @@ set -eu
 real_ssh="${PROVISION_REAL_SSH:-/usr/bin/ssh}"
 case " $* " in
   *" /usr/local/libexec/provision-host-executor execute "*)
+    mode="${PROVISION_FAULT_MODE:-after}"
+    if [ "$mode" = before ]; then
+      : >"$PROVISION_FAULT_MARKER"
+      kill -KILL "$PPID"
+      sleep 1
+      exit 0
+    fi
+    if [ "$mode" != after ]; then
+      echo "unsupported PROVISION_FAULT_MODE: $mode" >&2
+      exit 2
+    fi
     captured="$(mktemp -t provision-remote-output.XXXXXX)"
     trap 'rm -f "$captured"' EXIT
     if "$real_ssh" "$@" >"$captured"; then

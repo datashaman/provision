@@ -34,6 +34,7 @@ const (
 
 type HandlerObservation struct {
 	State    ObservationState
+	Outcome  operation.Outcome
 	Evidence json.RawMessage
 }
 
@@ -189,16 +190,18 @@ func (e Engine) execute(ctx context.Context, request Request, resumeOfAttemptID 
 		return operation.Result{}, e.recordUncertain(journalContext, attempt, errors.New("fresh Host Target observation is ambiguous; mutation was not replayed"), before)
 	}
 	if before.State == ObservationSatisfied {
-		result := operation.Result{
-			SchemaVersion: operation.ResultSchemaVersion, PlanID: attempt.Plan.ID, OperationID: attempt.Operation.ID,
-			AttemptID: attempt.AttemptID, FencingToken: attempt.FencingToken, Outcome: operation.OutcomeSucceeded, Observation: before.Evidence,
+		result, err := resultFromObservation(attempt, before)
+		if err != nil {
+			journalContext, cancelJournal := failureContext(ctx)
+			defer cancelJournal()
+			return operation.Result{}, e.recordUncertain(journalContext, attempt, err, before)
 		}
 		commitContext, cancelCommit := failureContext(ctx)
 		defer cancelCommit()
 		if err := e.commitResult(commitContext, attempt, envelope, result); err != nil {
 			return operation.Result{}, err
 		}
-		return result, nil
+		return result, resultOutcomeError(attempt.Operation, result)
 	}
 	result, executeErr := e.executeWithLeaseRenewal(ctx, request, attempt, envelope)
 	if executeErr != nil {
@@ -206,16 +209,18 @@ func (e Engine) execute(ctx context.Context, request Request, resumeOfAttemptID 
 		after, observeErr := e.Handler.Observe(observationContext, attempt.Plan.ID, attempt.Operation)
 		cancelObservation()
 		if observeErr == nil && after.State == ObservationSatisfied {
-			result = operation.Result{
-				SchemaVersion: operation.ResultSchemaVersion, PlanID: attempt.Plan.ID, OperationID: attempt.Operation.ID,
-				AttemptID: attempt.AttemptID, FencingToken: attempt.FencingToken, Outcome: operation.OutcomeSucceeded, Observation: after.Evidence,
+			result, err = resultFromObservation(attempt, after)
+			if err != nil {
+				journalContext, cancelJournal := failureContext(ctx)
+				defer cancelJournal()
+				return operation.Result{}, e.recordUncertain(journalContext, attempt, err, after)
 			}
 			commitContext, cancelCommit := failureContext(ctx)
 			defer cancelCommit()
 			if err := e.commitResult(commitContext, attempt, envelope, result); err != nil {
 				return operation.Result{}, err
 			}
-			return result, nil
+			return result, resultOutcomeError(attempt.Operation, result)
 		}
 		if observeErr != nil {
 			executeErr = fmt.Errorf("%w; post-failure observation: %v", executeErr, observeErr)
@@ -228,30 +233,48 @@ func (e Engine) execute(ctx context.Context, request Request, resumeOfAttemptID 
 	if err := e.commitResult(ctx, attempt, envelope, result); err != nil {
 		return operation.Result{}, err
 	}
+	return result, resultOutcomeError(attempt.Operation, result)
+}
+
+func resultFromObservation(attempt state.OperationAttempt, observed HandlerObservation) (operation.Result, error) {
+	outcome := observed.Outcome
+	if outcome == "" {
+		outcome = operation.OutcomeSucceeded
+	}
+	if outcome != operation.OutcomeSucceeded && outcome != operation.OutcomeFailed {
+		return operation.Result{}, fmt.Errorf("satisfied observation declares unsupported outcome %q", outcome)
+	}
+	return operation.Result{
+		SchemaVersion: operation.ResultSchemaVersion, PlanID: attempt.Plan.ID, OperationID: attempt.Operation.ID,
+		AttemptID: attempt.AttemptID, FencingToken: attempt.FencingToken, Outcome: outcome, Observation: observed.Evidence,
+	}, nil
+}
+
+func resultOutcomeError(planned planner.Operation, result operation.Result) error {
 	if result.Outcome == operation.OutcomeFailed {
 		reason := operationFailureReason(result.Observation)
 		if reason == "" {
 			reason = "Host Target returned failed outcome without diagnostic evidence"
 		}
-		prefix := fmt.Sprintf("operation %s (%s) failed: %s", attempt.Operation.ID, attempt.Operation.Kind, reason)
-		if attempt.Operation.Kind == planner.VerifyActive {
-			return result, fmt.Errorf("%s; the previous Generation was restored", prefix)
+		prefix := fmt.Sprintf("operation %s (%s) failed: %s", planned.ID, planned.Kind, reason)
+		if planned.Kind == planner.VerifyActive {
+			return fmt.Errorf("%s; the previous Generation was restored", prefix)
 		}
-		if attempt.Operation.Kind == planner.VerifyWorkerActive && attempt.Operation.Input.Async != nil && attempt.Operation.Input.Async.WorkerHandoff != nil {
-			return result, fmt.Errorf("%s; the previous Worker Generation was restored and verified with the same stable message identity", prefix)
+		if planned.Kind == planner.VerifyWorkerActive && planned.Input.Async != nil && planned.Input.Async.WorkerHandoff != nil {
+			return fmt.Errorf("%s; the previous Worker Generation was restored and verified with the same stable message identity", prefix)
 		}
-		if attempt.Operation.Kind == planner.DrainPrevious {
-			return result, fmt.Errorf("%s; the previous Generation was not declared drained", prefix)
+		if planned.Kind == planner.DrainPrevious {
+			return fmt.Errorf("%s; the previous Generation was not declared drained", prefix)
 		}
-		if attempt.Operation.Kind == planner.RetainPrevious {
-			return result, fmt.Errorf("%s; the previous Generation was not declared restartable and retained", prefix)
+		if planned.Kind == planner.RetainPrevious {
+			return fmt.Errorf("%s; the previous Generation was not declared restartable and retained", prefix)
 		}
-		return result, errors.New(prefix)
+		return errors.New(prefix)
 	}
 	if result.Outcome == operation.OutcomeUncertain {
-		return result, errors.New("host operation requires explicit recovery because its outcome is uncertain")
+		return errors.New("host operation requires explicit recovery because its outcome is uncertain")
 	}
-	return result, nil
+	return nil
 }
 
 func operationFailureReason(observation json.RawMessage) string {
@@ -402,6 +425,14 @@ func recoveryAction(planned planner.Operation) string {
 		return "retain both Generations and inspect policy state before cleanup"
 	case planner.RetainQueue:
 		return "retain Queue data and observe the exact managed Queue generation before retrying"
+	case planner.KeepCandidateGated:
+		return "observe the exact Queue and both Worker generations; keep candidate intake closed until the previous Worker fence is proved"
+	case planner.ReleaseInflight:
+		return "observe the exact Queue, previous Worker unit, durable drain deadline, and message settlement before resuming"
+	case planner.RestorePreviousWorkerIntake:
+		return "fence candidate intake and observe the exact Queue, candidate, previous Worker, stable message disposition, and durable authority before choosing retry or rollback"
+	case planner.RetainBothWorkerGenerations:
+		return "retain both immutable Worker generations and observe active authority, Queue identity, and rollback-window evidence before cleanup"
 	default:
 		return "inspect the recorded evidence and Host Target before choosing the next operation"
 	}

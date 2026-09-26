@@ -2,6 +2,7 @@ package execution
 
 import (
 	"encoding/json"
+	"os/exec"
 	"strings"
 	"testing"
 	"time"
@@ -13,6 +14,19 @@ import (
 	"provision/internal/planner"
 	"provision/internal/rollbackwindow"
 )
+
+func TestHostObservationCarriesKnownFailedOutcomeForReconciliation(t *testing.T) {
+	command := exec.Command("sh", "-c", `cat >/dev/null; printf '%s' '{"state":"satisfied","outcome":"failed","evidence":{"status":"rolled-back","reason":"candidate failed"}}'`)
+	observed, err := executeHostObservation(command, planner.Operation{}, "test Host observation")
+	if err != nil || observed.State != ObservationSatisfied || observed.Outcome != operation.OutcomeFailed || !strings.Contains(string(observed.Evidence), "rolled-back") {
+		t.Fatalf("known failed observation = %+v, %v", observed, err)
+	}
+
+	command = exec.Command("sh", "-c", `cat >/dev/null; printf '%s' '{"state":"unknown","outcome":"failed","evidence":{"status":"uncertain"}}'`)
+	if _, err := executeHostObservation(command, planner.Operation{}, "test Host observation"); err == nil || !strings.Contains(err.Error(), "non-satisfied") {
+		t.Fatalf("non-satisfied outcome was accepted: %v", err)
+	}
+}
 
 func TestPlannedArtifactInputAcceptsTypedAsyncArtifact(t *testing.T) {
 	planned := planner.Operation{Kind: planner.StageArtifact, Input: planner.OperationInput{Async: &planner.AsyncOperationInput{Artifact: &planner.AsyncArtifactInput{Component: "consumer", Role: "worker", Source: "https://example.invalid/worker.tar.gz", Digest: "sha256:" + strings.Repeat("a", 64)}}}}

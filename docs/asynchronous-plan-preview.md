@@ -135,8 +135,24 @@ candidate after activation and proves restoration of the previous Worker. Its
 live evidence is recorded in the
 [Worker active-verification evidence](evidence/2026-09-26-worker-active-rollback.md).
 
+Every externally visible Worker handoff operation is resumable under a new,
+higher fencing token. Resume first re-observes the exact Queue, both Worker
+generations, systemd units, root-owned gates, durable drain or retention record,
+and active authority. An already completed fence, drain/release, activation,
+verification, rollback, or retention mutation is committed from that evidence
+without dispatching it again. Publisher-confirmed verification resumes from the
+same stable message and recorded rollback checkpoints; a publish whose
+confirmation was not durably recorded is ambiguous and pauses with the
+candidate fenced rather than guessing. A late lower-fence result is retained as
+non-authoritative diagnostic evidence and cannot change the journal or active
+Worker. The checked-in
+[`scripts/test-worker-handoff-recovery-host.sh`](../scripts/test-worker-handoff-recovery-host.sh)
+harness injects controller death before dispatch and after Host completion at
+each boundary. Its qualified run is recorded in the
+[Worker handoff recovery evidence](evidence/2026-09-26-worker-handoff-recovery.md).
+
 This tracer does not yet implement Schedule handoff between revisions, general
 retry/dead-letter policy acceptance, overlap behavior, missed-run catch-up,
-end-to-end crash-boundary recovery during Worker replacement, retention expiry
-cleanup, or Queue-generation replacement. Those remain explicit later
+retention expiry cleanup, Queue-generation replacement, or recovery after loss
+of the Host or RabbitMQ data. Those remain explicit later
 transitions rather than implied guarantees.

@@ -183,5 +183,6 @@ type RetentionObservation struct {
 
 type OperationObservation struct {
 	State    string          `json:"state"`
+	Outcome  string          `json:"outcome,omitempty"`
 	Evidence json.RawMessage `json:"evidence"`
 }

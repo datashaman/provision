@@ -399,6 +399,34 @@ func TestWorkerActiveVerificationRecordAndPayloadKeepStableIdentity(t *testing.T
 	}
 }
 
+func TestIncompleteConfirmedWorkerVerificationIsResumableButUnconfirmedPublishIsAmbiguous(t *testing.T) {
+	_, _, _, worker, _ := asyncOperationFixture(t)
+	worker.Previous = &host.WorkerGenerationStatus{ID: "provision-example-async-v0-ffffffffffff"}
+	input := planner.AsyncWorkerHandoffInput{Worker: worker, QueueGenerationID: "provision-lab-messages-rabbitmq", DrainOperationDigest: "sha256:" + strings.Repeat("d", 64)}
+	planID := "sha256:" + strings.Repeat("c", 64)
+	digest := "sha256:" + strings.Repeat("e", 64)
+	startedAt := time.Date(2026, 9, 26, 9, 0, 0, 0, time.UTC)
+	verification := workerActiveVerificationRecord{
+		SchemaVersion: "provision.dev/worker-active-verification/v1alpha1", PlanID: planID, OperationDigest: digest,
+		QueueGenerationID: input.QueueGenerationID, CandidateID: worker.GenerationID, PreviousID: worker.Previous.ID,
+		MessageID: workerVerificationMessageID(planID, digest), PublishStartedAt: startedAt,
+	}
+	if err := validateWorkerActiveVerificationRecord(verification, input, planID, digest); err != nil {
+		t.Fatalf("unconfirmed publish intent should remain valid ambiguous evidence: %v", err)
+	}
+	confirmedAt := startedAt.Add(time.Second)
+	verification.PublisherConfirmedAt = &confirmedAt
+	if err := validateWorkerActiveVerificationRecord(verification, input, planID, digest); err != nil {
+		t.Fatalf("publisher-confirmed checkpoint should be resumable: %v", err)
+	}
+	rollbackAt := confirmedAt.Add(time.Second)
+	verification.RollbackAttemptedAt = &rollbackAt
+	verification.FailureReason = "candidate stopped"
+	if err := validateWorkerActiveVerificationRecord(verification, input, planID, digest); err != nil {
+		t.Fatalf("rollback-intent checkpoint should be resumable: %v", err)
+	}
+}
+
 func TestUncertainWorkerActiveVerificationFencesUncommittedCandidate(t *testing.T) {
 	record, paths, _, worker, _ := asyncOperationFixture(t)
 	paths.healthTimeout = time.Second

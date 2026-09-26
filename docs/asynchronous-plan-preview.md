@@ -85,6 +85,24 @@ stopped, free of in-flight work, and backed by that drain record. After active
 verification, the old immutable artifact, generation record, unit, and closed
 gate remain restartable through the recorded rollback deadline.
 
+Active verification is message-level rather than process-only. Before the
+candidate becomes authoritative, the executor records a Plan- and
+operation-bound verification intent, publishes one persistent stable-identity
+message with broker confirmation, and requires matching processing and manual
+acknowledgement evidence from the candidate. Only then does it commit the exact
+active and previous Worker identities. The Queue generation is re-observed
+before this decision.
+
+If the candidate loses its verified active state before acknowledging that
+message, the same operation first closes and proves its intake fence, stops and
+disables its unit, re-observes the unchanged Queue, starts the retained previous
+generation gated, and only then reopens its intake. Rollback succeeds only when
+the restored generation processes and acknowledges the same stable message
+identity. A broker redelivery or the Worker's duplicate ledger remains an
+at-least-once outcome; it is never labelled exactly once. An unprovable fence,
+Queue identity, retained generation, message disposition, or durable authority
+record produces an explicit uncertain result with operator recovery guidance.
+
 The drain record is written before the executor waits. It binds the Plan,
 operation, two Worker generations, Queue generation, stable in-flight message
 identity, start, completion deadline, final deadline, optional release start,
@@ -109,8 +127,16 @@ with the deadline releasing the same message identity for the candidate. Its
 live evidence is recorded in the
 [Worker intake handoff evidence](evidence/2026-09-26-worker-intake-handoff.md).
 
+The message-level active check and automatic supported rollback are exercised
+by
+[`scripts/test-worker-active-rollback-host.sh`](../scripts/test-worker-active-rollback-host.sh):
+one clean-snapshot run commits a healthy candidate, while another stops the
+candidate after activation and proves restoration of the previous Worker. Its
+live evidence is recorded in the
+[Worker active-verification evidence](evidence/2026-09-26-worker-active-rollback.md).
+
 This tracer does not yet implement Schedule handoff between revisions, general
 retry/dead-letter policy acceptance, overlap behavior, missed-run catch-up,
-end-to-end crash-boundary recovery during Worker replacement, rollback execution, retention
-expiry cleanup, or Queue-generation replacement. Those remain explicit later
+end-to-end crash-boundary recovery during Worker replacement, retention expiry
+cleanup, or Queue-generation replacement. Those remain explicit later
 transitions rather than implied guarantees.

@@ -369,6 +369,59 @@ func TestVerifyWorkerActiveRequiresVerifiedDurableActiveRecord(t *testing.T) {
 	}
 }
 
+func TestVerifyWorkerActiveHandoffDistinguishesHealthyRollbackAndUncertain(t *testing.T) {
+	candidate := planner.AsyncWorkerInput{
+		GenerationID: "provision-example-async-v2-bbbbbbbbbbbb", Revision: "provision-example-async-v2",
+		ArtifactDigest: "sha256:" + strings.Repeat("b", 64), SystemdUnit: "provision-lab-consumer-bbbbbbbbbbbb.service",
+		Previous: &host.WorkerGenerationStatus{
+			ID: "provision-example-async-v1-aaaaaaaaaaaa", Revision: "provision-example-async-v1",
+			ArtifactDigest: "sha256:" + strings.Repeat("a", 64), SystemdUnit: "provision-lab-consumer-aaaaaaaaaaaa.service",
+		},
+	}
+	handoff := planner.AsyncWorkerHandoffInput{Worker: candidate, QueueGenerationID: "queue-generation-a", DrainOperationDigest: "sha256:" + strings.Repeat("d", 64)}
+	planned := planner.Operation{ID: "op-11", Kind: planner.VerifyWorkerActive, Input: planner.OperationInput{Async: &planner.AsyncOperationInput{WorkerHandoff: &handoff}}}
+	planID := "sha256:" + strings.Repeat("c", 64)
+	digest, _ := planner.OperationDigest(planned)
+	envelope := operation.Envelope{Authorization: authority.Proof{Claim: authority.Claim{PlanID: planID}}, Operation: planned}
+	observed := host.AsyncWorkerActiveVerificationObservation{
+		Status: host.WorkerActiveVerificationHealthy, PlanID: planID, OperationDigest: digest, QueueGenerationID: handoff.QueueGenerationID,
+		MessageID: "msg-stable", PublisherConfirmed: true, CandidateProcessed: true, CandidateAcknowledged: true,
+		Candidate: host.WorkerGenerationStatus{ID: candidate.GenerationID, Revision: candidate.Revision, ArtifactDigest: candidate.ArtifactDigest, Gate: "open", Active: true, UnitActive: true, QueueConnected: true},
+		Previous:  *candidate.Previous,
+	}
+	result := operation.Result{Outcome: operation.OutcomeSucceeded, Observation: mustJSON(t, observed)}
+	if err := verifyAsyncWorkerActiveVerificationResult(envelope, result); err != nil {
+		t.Fatalf("healthy message-level Worker verification rejected: %v", err)
+	}
+	observed.CandidateAcknowledged = false
+	result.Observation = mustJSON(t, observed)
+	if err := verifyAsyncWorkerActiveVerificationResult(envelope, result); err == nil {
+		t.Fatal("healthy Worker verification without candidate acknowledgement accepted")
+	}
+
+	observed.Status = host.WorkerActiveVerificationRolledBack
+	observed.Candidate.Gate, observed.Candidate.Active, observed.Candidate.UnitActive = "closed", false, false
+	observed.CandidateAcknowledged = false
+	observed.PreviousProcessed, observed.PreviousAcknowledged = true, true
+	observed.RollbackAttempted, observed.RollbackSucceeded = true, true
+	restored := *candidate.Previous
+	restored.Gate, restored.Active, restored.UnitActive, restored.QueueConnected = "open", true, true, true
+	observed.Restored = &restored
+	observed.Reason = "candidate stopped before acknowledging the verification message"
+	result.Outcome, result.Observation = operation.OutcomeFailed, mustJSON(t, observed)
+	if err := verifyAsyncWorkerActiveVerificationResult(envelope, result); err != nil {
+		t.Fatalf("proved Worker rollback rejected: %v", err)
+	}
+
+	observed.Status = host.WorkerActiveVerificationUncertain
+	observed.RollbackSucceeded, observed.Restored = false, nil
+	observed.RecoveryAction = "inspect exact Worker and Queue evidence"
+	result.Outcome, result.Observation = operation.OutcomeUncertain, mustJSON(t, observed)
+	if err := verifyAsyncWorkerActiveVerificationResult(envelope, result); err != nil {
+		t.Fatalf("explicit uncertain Worker recovery rejected: %v", err)
+	}
+}
+
 func TestVerifyWorkerRetentionBindsRollbackWindowAndDrainOperation(t *testing.T) {
 	candidate := planner.AsyncWorkerInput{
 		GenerationID: "provision-example-async-v2-bbbbbbbbbbbb", Revision: "provision-example-async-v2",

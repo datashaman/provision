@@ -109,7 +109,7 @@ func verifyHostResult(envelope operation.Envelope, result operation.Result) erro
 	if err := result.ValidateAgainst(envelope); err != nil {
 		return err
 	}
-	if result.Outcome == operation.OutcomeUncertain && envelope.Operation.Kind != planner.SwitchEndpoint && envelope.Operation.Kind != planner.VerifyActive && envelope.Operation.Kind != planner.DrainPrevious && envelope.Operation.Kind != planner.RetainPrevious {
+	if result.Outcome == operation.OutcomeUncertain && envelope.Operation.Kind != planner.SwitchEndpoint && envelope.Operation.Kind != planner.VerifyActive && envelope.Operation.Kind != planner.DrainPrevious && envelope.Operation.Kind != planner.RetainPrevious && envelope.Operation.Kind != planner.VerifyWorkerActive {
 		return errors.New("host operation kind cannot return an uncertain structured outcome")
 	}
 	switch envelope.Operation.Kind {
@@ -133,7 +133,12 @@ func verifyHostResult(envelope operation.Envelope, result operation.Result) erro
 		return verifyRetentionResult(envelope, result)
 	case planner.InstallTaskGeneration, planner.VerifyTaskGeneration:
 		return verifyAsyncTaskResult(envelope, result)
-	case planner.InstallWorkerGeneration, planner.StartWorkerCandidate, planner.VerifyWorkerCandidate, planner.ActivateWorkerIntake, planner.VerifyWorkerActive:
+	case planner.VerifyWorkerActive:
+		if envelope.Operation.Input.Async != nil && envelope.Operation.Input.Async.WorkerHandoff != nil {
+			return verifyAsyncWorkerActiveVerificationResult(envelope, result)
+		}
+		return verifyAsyncWorkerResult(envelope, result)
+	case planner.InstallWorkerGeneration, planner.StartWorkerCandidate, planner.VerifyWorkerCandidate, planner.ActivateWorkerIntake:
 		return verifyAsyncWorkerResult(envelope, result)
 	case planner.FenceWorkerIntake, planner.DrainWorkerPrevious, planner.RetainWorkerPrevious:
 		return verifyAsyncWorkerHandoffResult(envelope, result)
@@ -144,6 +149,38 @@ func verifyHostResult(envelope operation.Envelope, result operation.Result) erro
 	default:
 		return errors.New("host operation result kind is unsupported")
 	}
+}
+
+func verifyAsyncWorkerActiveVerificationResult(envelope operation.Envelope, result operation.Result) error {
+	input := envelope.Operation.Input.Async.WorkerHandoff
+	if input == nil || input.Worker.Previous == nil {
+		return errors.New("host Worker active verification has no planned handoff")
+	}
+	var observed host.AsyncWorkerActiveVerificationObservation
+	if err := decodeObservation(result.Observation, &observed); err != nil {
+		return errors.New("host Worker active verification observation is invalid")
+	}
+	digest, err := planner.OperationDigest(envelope.Operation)
+	previous := input.Worker.Previous
+	identitiesMatch := err == nil && observed.PlanID == envelope.Authorization.Claim.PlanID && observed.OperationDigest == digest && observed.QueueGenerationID == input.QueueGenerationID && observed.MessageID != "" && observed.Candidate.ID == input.Worker.GenerationID && observed.Candidate.Revision == input.Worker.Revision && observed.Candidate.ArtifactDigest == input.Worker.ArtifactDigest && observed.Previous.ID == previous.ID && observed.Previous.Revision == previous.Revision && observed.Previous.ArtifactDigest == previous.ArtifactDigest
+	if !identitiesMatch {
+		return errors.New("host Worker active verification observation does not match the Plan")
+	}
+	switch result.Outcome {
+	case operation.OutcomeSucceeded:
+		if observed.Status != host.WorkerActiveVerificationHealthy || !observed.PublisherConfirmed || !observed.CandidateProcessed || !observed.CandidateAcknowledged || observed.RollbackAttempted || observed.RollbackSucceeded || observed.Redelivered || observed.Restored != nil || observed.Candidate.Gate != "open" || !observed.Candidate.Active || !observed.Candidate.UnitActive || !observed.Candidate.QueueConnected || observed.Reason != "" || observed.RecoveryAction != "" {
+			return errors.New("host healthy Worker verification observation is invalid")
+		}
+	case operation.OutcomeFailed:
+		if observed.Status != host.WorkerActiveVerificationRolledBack || !observed.PublisherConfirmed || !observed.RollbackAttempted || !observed.RollbackSucceeded || !observed.PreviousProcessed || !observed.PreviousAcknowledged || observed.Restored == nil || observed.Restored.ID != previous.ID || observed.Restored.ArtifactDigest != previous.ArtifactDigest || observed.Restored.Gate != "open" || !observed.Restored.Active || !observed.Restored.UnitActive || !observed.Restored.QueueConnected || observed.Reason == "" || observed.RecoveryAction != "" || observed.Candidate.Gate != "closed" {
+			return errors.New("host rolled-back Worker verification observation is invalid")
+		}
+	case operation.OutcomeUncertain:
+		if observed.Status != host.WorkerActiveVerificationUncertain || observed.Reason == "" || observed.RecoveryAction == "" || observed.RollbackSucceeded {
+			return errors.New("host uncertain Worker verification observation is invalid")
+		}
+	}
+	return nil
 }
 
 func verifyAsyncWorkerHandoffResult(envelope operation.Envelope, result operation.Result) error {

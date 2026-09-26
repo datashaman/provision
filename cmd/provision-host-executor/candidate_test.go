@@ -87,6 +87,13 @@ func (controller *fakeSystemdController) Run(_ context.Context, args ...string) 
 		controller.stopped = append(controller.stopped, args[1])
 		controller.active[args[1]] = false
 		return nil, nil
+	case "enable":
+		controller.active[args[len(args)-1]] = true
+		return nil, nil
+	case "disable":
+		controller.stopped = append(controller.stopped, args[len(args)-1])
+		controller.active[args[len(args)-1]] = false
+		return nil, nil
 	case "is-active":
 		if controller.active[args[1]] {
 			return []byte("active\n"), nil

@@ -60,21 +60,40 @@ assert_secret_absent() {
 
 echo "[1/7] inspect the active asynchronous deployment"
 inspect_host > "$work_dir/bootstrap-before.json"
-python3 - "$work_dir/bootstrap-before.json" <<'PY'
+"$provision" config validate --file "$config" > "$work_dir/configuration.json"
+python3 - "$work_dir/bootstrap-before.json" "$work_dir/configuration.json" <<'PY'
 import json, sys
 status = json.load(open(sys.argv[1], encoding="utf-8"))["async"]["deployment"]
+configuration = json.load(open(sys.argv[2], encoding="utf-8"))
 if not status.get("activeWorker") or status["activeWorker"]["gate"] != "open":
     raise SystemExit("baseline has no exact open active Worker")
-if status.get("candidateWorker"):
-    raise SystemExit("baseline already has a Worker candidate")
 if not status.get("queue", {}).get("ready"):
     raise SystemExit("baseline Queue is not ready")
 if not status.get("activeTask") or not status.get("schedule", {}).get("active"):
     raise SystemExit("baseline Task or Schedule is not active")
+candidate = status.get("candidateWorker")
+if candidate:
+    workers = [name for name, component in configuration["application"]["components"].items() if component["role"] == "worker"]
+    if len(workers) != 1:
+        raise SystemExit(f"configuration does not have one Worker component: {workers!r}")
+    worker = workers[0]
+    revision = configuration["revision"]
+    artifact = revision["artifacts"][worker]
+    digest_id = artifact["digest"].removeprefix("sha256:")[:12]
+    expected = {
+        "id": f'{revision["name"]}-{digest_id}',
+        "revision": revision["name"],
+        "artifactDigest": artifact["digest"],
+        "systemdUnit": f'provision-{configuration["environment"]["name"]}-{worker}-{digest_id}.service',
+    }
+    mismatched = {key: (candidate.get(key), value) for key, value in expected.items() if candidate.get(key) != value}
+    if mismatched or candidate.get("active") or candidate.get("gate") != "closed" or candidate.get("inFlight") != 0:
+        raise SystemExit(f"baseline has a conflicting Worker candidate: mismatched={mismatched!r} status={candidate!r}")
+    if candidate.get("unitActive") != candidate.get("queueConnected"):
+        raise SystemExit(f"resumable Worker candidate has inconsistent runtime state: {candidate!r}")
 PY
 
 echo "[2/7] preview and approve the Worker-only replacement Plan"
-"$provision" config validate --file "$config" > "$work_dir/configuration.json"
 configured_target="$(python3 - "$work_dir/configuration.json" <<'PY'
 import json, sys
 configuration = json.load(open(sys.argv[1], encoding="utf-8"))

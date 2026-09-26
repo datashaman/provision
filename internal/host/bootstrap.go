@@ -286,6 +286,7 @@ type AsyncWorkerHandoffObservation struct {
 type WorkerActiveVerificationStatus string
 
 const (
+	WorkerActiveVerificationPending    WorkerActiveVerificationStatus = "pending"
 	WorkerActiveVerificationHealthy    WorkerActiveVerificationStatus = "healthy"
 	WorkerActiveVerificationRolledBack WorkerActiveVerificationStatus = "rolled-back"
 	WorkerActiveVerificationUncertain  WorkerActiveVerificationStatus = "uncertain"

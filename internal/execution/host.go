@@ -70,7 +70,14 @@ func executeHostObservation(command *exec.Cmd, planned planner.Operation, subjec
 	if state != ObservationPending && state != ObservationSatisfied && state != ObservationUnknown {
 		return HandlerObservation{}, fmt.Errorf("%s returned an unsupported observation state", subject)
 	}
-	return HandlerObservation{State: state, Evidence: observed.Evidence}, nil
+	outcome := operation.Outcome(observed.Outcome)
+	if outcome != "" && outcome != operation.OutcomeSucceeded && outcome != operation.OutcomeFailed {
+		return HandlerObservation{}, fmt.Errorf("%s returned an unsupported observed outcome", subject)
+	}
+	if state != ObservationSatisfied && outcome != "" {
+		return HandlerObservation{}, fmt.Errorf("%s returned an outcome for a non-satisfied observation", subject)
+	}
+	return HandlerObservation{State: state, Outcome: outcome, Evidence: observed.Evidence}, nil
 }
 
 func executeHostEnvelope(command *exec.Cmd, envelope operation.Envelope, subject string) (operation.Result, error) {

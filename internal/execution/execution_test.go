@@ -353,6 +353,47 @@ func TestEngineResumesInterruptedOperationFromFreshSatisfiedObservation(t *testi
 	}
 }
 
+func TestEngineReconstructsKnownFailedOutcomeFromFreshObservation(t *testing.T) {
+	now := time.Date(2026, 9, 26, 12, 0, 0, 0, time.UTC)
+	applyCalled := false
+	handler := &handlerFake{observations: []HandlerObservation{{
+		State: ObservationSatisfied, Outcome: operation.OutcomeFailed,
+		Evidence: json.RawMessage(`{"status":"rolled-back","reason":"candidate lost Queue connectivity"}`),
+	}}, apply: func(operation.Envelope) (operation.Result, error) {
+		applyCalled = true
+		return operation.Result{}, errors.New("must not replay a completed rollback")
+	}}
+	engine, backend, plan := executionFixture(t, &now, handler)
+	defer backend.Close()
+	interrupted, err := backend.BeginOperation(context.Background(), state.BeginOperationRequest{
+		PlanID: plan.ID, OperationID: "op-01", Holder: "interrupted-holder", StartedAt: now, LeaseDuration: 5 * time.Second,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	now = now.Add(6 * time.Second)
+	result, err := engine.Resume(context.Background(), ResumeRequest{PlanID: plan.ID, Holder: "resume-holder", LeaseDuration: time.Minute})
+	if err == nil || !strings.Contains(err.Error(), "candidate lost Queue connectivity") || result.Outcome != operation.OutcomeFailed || result.AttemptID == interrupted.AttemptID || result.FencingToken <= interrupted.FencingToken || applyCalled {
+		t.Fatalf("reconstructed failed result = %+v, %v, applyCalled=%t", result, err, applyCalled)
+	}
+	events, journalErr := backend.LoadJournal(context.Background(), plan.ID)
+	if journalErr != nil || len(events) != 3 || events[2].Outcome != state.ExecutionFailed || !strings.Contains(string(events[2].Observation), "rolled-back") {
+		t.Fatalf("reconstructed failed journal = %+v, %v", events, journalErr)
+	}
+	lateErr := backend.CompleteOperation(context.Background(), state.CompleteOperationRequest{
+		AttemptID: interrupted.AttemptID, Holder: interrupted.Holder, PlanID: plan.ID, OperationID: "op-01",
+		FencingToken: interrupted.FencingToken, Outcome: state.ExecutionSucceeded,
+		Observation: json.RawMessage(`{"status":"late-stale-success"}`), CompletedAt: now.Add(time.Second),
+	})
+	if lateErr == nil || !strings.Contains(lateErr.Error(), "stale") {
+		t.Fatalf("stale result changed a reconstructed failed outcome: %v", lateErr)
+	}
+	rejected, rejectedErr := backend.LoadRejectedResults(context.Background(), plan.ID)
+	if rejectedErr != nil || len(rejected) != 1 || rejected[0].AttemptID != interrupted.AttemptID || !strings.Contains(string(rejected[0].SubmittedObservation), "late-stale-success") {
+		t.Fatalf("stale diagnostic evidence = %+v, %v", rejected, rejectedErr)
+	}
+}
+
 func TestEngineResumePausesOnAmbiguousFreshObservation(t *testing.T) {
 	now := time.Date(2026, 9, 25, 8, 0, 0, 0, time.UTC)
 	applyCalled := false

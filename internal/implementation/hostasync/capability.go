@@ -113,12 +113,10 @@ func Evaluate(observation host.BootstrapStatus, target config.TargetSelection) E
 	}
 	if capability.WorkerAdmissionGate && strings.HasPrefix(capability.ScheduleAppletDigest, "sha256:") && len(capability.ScheduleAppletDigest) == 71 && capability.ScheduleLedgerSchema == "provision.dev/schedule-ledger/v1alpha1" {
 		evaluation.Guarantees = append(evaluation.Guarantees,
-			"gated-worker-candidate", "bounded-in-flight-worker-drain", "generation-specific-task",
-			"stable-schedule-timer", "fenced-schedule-handoff", "previous-worker-generation-retention")
+			"gated-worker-candidate", "generation-specific-task", "stable-schedule-timer")
 		evaluation.SupportEvidence = append(evaluation.SupportEvidence,
 			"worker-admission-control-proven", "pinned-schedule-applet", "versioned-occurrence-ledger")
 	}
-
 	if queue := deployment.Queue; queue != nil && queue.Exists {
 		if !queue.Ready ||
 			queue.GenerationID == "" ||
@@ -174,6 +172,23 @@ func Evaluate(observation host.BootstrapStatus, target config.TargetSelection) E
 
 	evaluation.Reasons = unique(issues)
 	return evaluation
+}
+
+func InitialSchedulePolicyReason(schedule config.ScheduleContract) string {
+	if schedule.Retry.MaxAttempts != 1 {
+		return "initial Schedule runtime supports exactly one Task attempt"
+	}
+	if schedule.MissedRun.Mode != "skip" || schedule.MissedRun.MaxOccurrences != 0 {
+		return "initial Schedule runtime supports only missed-run skip policy"
+	}
+	return ""
+}
+
+func InitialReplacementReason(deployment host.AsyncDeploymentStatus) string {
+	if deployment.ActiveWorker != nil || deployment.ActiveTask != nil || deployment.Schedule != nil {
+		return "initial asynchronous tracer does not support replacing an active Worker, Task, or Schedule generation"
+	}
+	return ""
 }
 
 func observed(value string) string {

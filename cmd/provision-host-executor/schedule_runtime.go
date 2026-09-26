@@ -14,29 +14,35 @@ import (
 	"strings"
 	"time"
 
+	"provision/internal/config"
 	"provision/internal/scheduler"
 )
 
 const scheduleRecordSchema = "provision.dev/installed-schedule/v1alpha1"
 
 type installedScheduleRecord struct {
-	SchemaVersion       string `json:"schemaVersion"`
-	Environment         string `json:"environment"`
-	Component           string `json:"component"`
-	Task                string `json:"task"`
-	TaskGenerationID    string `json:"taskGenerationId"`
-	TaskUnit            string `json:"taskUnit"`
-	ApplicationRevision string `json:"applicationRevision"`
-	ConfigurationDigest string `json:"configurationDigest"`
-	TimerUnit           string `json:"timerUnit"`
-	Expression          string `json:"expression"`
-	Timezone            string `json:"timezone"`
-	AppletDigest        string `json:"appletDigest"`
-	LedgerSchema        string `json:"ledgerSchema"`
-	LedgerPath          string `json:"ledgerPath"`
-	TaskEvidencePath    string `json:"taskEvidencePath"`
-	WorkerEvidencePath  string `json:"workerEvidencePath"`
-	FencingToken        int64  `json:"fencingToken"`
+	SchemaVersion       string                   `json:"schemaVersion"`
+	Environment         string                   `json:"environment"`
+	Component           string                   `json:"component"`
+	Task                string                   `json:"task"`
+	TaskGenerationID    string                   `json:"taskGenerationId"`
+	TaskUnit            string                   `json:"taskUnit"`
+	ApplicationRevision string                   `json:"applicationRevision"`
+	ConfigurationDigest string                   `json:"configurationDigest"`
+	TimerUnit           string                   `json:"timerUnit"`
+	Expression          string                   `json:"expression"`
+	Timezone            string                   `json:"timezone"`
+	DaylightSaving      string                   `json:"daylightSaving"`
+	Overlap             string                   `json:"overlap"`
+	Retry               config.ScheduleRetry     `json:"retry"`
+	MissedRun           config.ScheduleMissedRun `json:"missedRun"`
+	Failure             string                   `json:"failure"`
+	AppletDigest        string                   `json:"appletDigest"`
+	LedgerSchema        string                   `json:"ledgerSchema"`
+	LedgerPath          string                   `json:"ledgerPath"`
+	TaskEvidencePath    string                   `json:"taskEvidencePath"`
+	WorkerEvidencePath  string                   `json:"workerEvidencePath"`
+	FencingToken        int64                    `json:"fencingToken"`
 }
 
 func runScheduleRuntime(args []string) error {
@@ -58,6 +64,9 @@ func runScheduleRuntime(args []string) error {
 	}
 	if record.LedgerSchema != scheduler.SchemaVersion {
 		return errors.New("installed Schedule ledger schema is unsupported")
+	}
+	if record.DaylightSaving != "wall-clock" || record.Overlap != "forbid" || record.Retry.MaxAttempts != 1 || record.MissedRun.Mode != "skip" || record.MissedRun.MaxOccurrences != 0 || record.Failure != "record" {
+		return errors.New("installed Schedule policy exceeds the initial runtime contract")
 	}
 	store, err := scheduler.Open(record.LedgerPath)
 	if err != nil {

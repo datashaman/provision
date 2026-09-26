@@ -37,9 +37,9 @@ components:
       daylightSaving: wall-clock
       overlap: forbid
       retry:
-        maxAttempts: 3
+        maxAttempts: 1
         delay: 10s
       missedRun:
-        mode: bounded-catch-up
-        maxOccurrences: 2
+        mode: skip
+        maxOccurrences: 0
       failure: record

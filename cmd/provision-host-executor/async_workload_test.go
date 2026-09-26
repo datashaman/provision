@@ -34,10 +34,15 @@ func TestInitialAsyncOperationValidationPinsTaskWorkerAndScheduleIdentities(t *t
 	if err := validateAsyncWorkloadOperation(planner.Operation{ID: "op-13", Kind: planner.HandoffSchedule, Input: planner.OperationInput{Async: &planner.AsyncOperationInput{Schedule: &tamperedSchedule}}}, record, paths); err == nil {
 		t.Fatal("unimplemented Schedule expression accepted")
 	}
+	tamperedSchedule = schedule
+	tamperedSchedule.Retry.MaxAttempts = 3
+	if err := validateAsyncWorkloadOperation(planner.Operation{ID: "op-13", Kind: planner.HandoffSchedule, Input: planner.OperationInput{Async: &planner.AsyncOperationInput{Schedule: &tamperedSchedule}}}, record, paths); err == nil {
+		t.Fatal("unimplemented Schedule retry policy accepted")
+	}
 }
 
 func TestRenderedAsyncUnitsAreGenerationBoundAndSecretFree(t *testing.T) {
-	record, paths, task, worker, _ := asyncOperationFixture(t)
+	record, paths, task, worker, schedule := asyncOperationFixture(t)
 	taskUnit := renderTaskUnit(task, record, paths, "provision-example-async-task")
 	workerUnit := renderWorkerUnit(worker, record, paths, "provision-example-async-worker")
 	for name, unit := range map[string]string{"Task": taskUnit, "Worker": workerUnit} {
@@ -48,6 +53,14 @@ func TestRenderedAsyncUnitsAreGenerationBoundAndSecretFree(t *testing.T) {
 	if !strings.Contains(taskUnit, "--invocation %i") || !strings.Contains(taskUnit, task.ArtifactDigest) || !strings.Contains(workerUnit, "--gate-file ") || !strings.Contains(workerUnit, worker.ArtifactDigest) {
 		t.Fatal("rendered units are not bound to generation-specific runtime inputs")
 	}
+	scheduleService := renderScheduleService(schedule, record)
+	scheduleTimer := renderScheduleTimer(schedule, record)
+	if !strings.Contains(scheduleService, "/var/lib/provision/environments/lab/runtime/provision-runtime-schedule") || strings.Contains(scheduleService, "/usr/local/libexec/provision-runtime-schedule") {
+		t.Fatalf("Schedule service does not use an Environment-pinned runtime:\n%s", scheduleService)
+	}
+	if !strings.Contains(scheduleTimer, "Persistent=false") {
+		t.Fatalf("initial missed-run skip policy is not explicit:\n%s", scheduleTimer)
+	}
 }
 
 func TestScheduleVerificationJoinsPublisherAndWorkerEvidenceByMessageIdentity(t *testing.T) {
@@ -57,13 +70,31 @@ func TestScheduleVerificationJoinsPublisherAndWorkerEvidenceByMessageIdentity(t 
 	if err := os.WriteFile(taskPath, []byte("{\"event\":\"message_confirmed\",\"messageId\":\"msg-123\",\"invocationId\":\"inv-123\"}\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(workerPath, []byte("{\"event\":\"processed\",\"messageId\":\"msg-123\"}\n{\"event\":\"acknowledgement_decided\",\"messageId\":\"msg-123\"}\n"), 0600); err != nil {
+	workerRevision := "provision-example-async-v1"
+	workerDigest := "sha256:" + strings.Repeat("a", 64)
+	workerEvidence := "{\"event\":\"processed\",\"messageId\":\"msg-123\",\"workerApplicationRevision\":\"" + workerRevision + "\",\"workerArtifactDigest\":\"" + workerDigest + "\"}\n" +
+		"{\"event\":\"acknowledged\",\"messageId\":\"msg-123\",\"workerApplicationRevision\":\"" + workerRevision + "\",\"workerArtifactDigest\":\"" + workerDigest + "\"}\n"
+	if err := os.WriteFile(workerPath, []byte(workerEvidence), 0600); err != nil {
 		t.Fatal(err)
 	}
 	messageID, confirmed := taskConfirmedMessage(taskPath, "inv-123")
-	processed, acknowledged := workerAcknowledgedMessage(workerPath, messageID)
+	processed, acknowledged := workerAcknowledgedMessage(workerPath, messageID, workerRevision, workerDigest)
 	if !confirmed || !processed || !acknowledged || messageID != "msg-123" {
 		t.Fatalf("evidence was not joined exactly: id=%q confirmed=%t processed=%t acknowledged=%t", messageID, confirmed, processed, acknowledged)
+	}
+}
+
+func TestScheduleVerificationRejectsDecisionDuplicateAndWrongWorkerEvidence(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "worker.jsonl")
+	evidence := "{\"event\":\"duplicate_ignored\",\"messageId\":\"msg-123\",\"workerApplicationRevision\":\"revision-a\",\"workerArtifactDigest\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}\n" +
+		"{\"event\":\"acknowledgement_decided\",\"messageId\":\"msg-123\",\"workerApplicationRevision\":\"revision-a\",\"workerArtifactDigest\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}\n" +
+		"{\"event\":\"acknowledged\",\"messageId\":\"msg-123\",\"workerApplicationRevision\":\"revision-b\",\"workerArtifactDigest\":\"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\"}\n"
+	if err := os.WriteFile(path, []byte(evidence), 0600); err != nil {
+		t.Fatal(err)
+	}
+	processed, acknowledged := workerAcknowledgedMessage(path, "msg-123", "revision-a", "sha256:"+strings.Repeat("a", 64))
+	if processed || acknowledged {
+		t.Fatalf("decision, duplicate, or wrong-generation evidence satisfied verification: processed=%t acknowledged=%t", processed, acknowledged)
 	}
 }
 
@@ -113,6 +144,6 @@ func asyncOperationFixture(t *testing.T) (bootstrapRecord, executionPaths, plann
 	appletDigest := "sha256:" + strings.Repeat("d", 64)
 	task := planner.AsyncTaskInput{Component: "publish", Queue: "messages", QueueLogicalID: "provision-lab-messages", GenerationID: "provision-example-async-v1-bbbbbbbbbbbb", Revision: "provision-example-async-v1", ConfigurationDigest: configDigest, ArtifactDigest: taskDigest, SystemdUnit: "provision-lab-publish-bbbbbbbbbbbb@.service", Timeout: "1m0s", Rollout: "required"}
 	worker := planner.AsyncWorkerInput{Component: "consumer", Queue: "messages", QueueLogicalID: "provision-lab-messages", GenerationID: "provision-example-async-v1-aaaaaaaaaaaa", Revision: "provision-example-async-v1", ArtifactDigest: workerDigest, SystemdUnit: "provision-lab-consumer-aaaaaaaaaaaa.service", Admission: "gated", Drain: config.WorkerDrain{Mode: "bounded-in-flight", MaxDuration: "30s"}, Rollout: "required"}
-	schedule := planner.AsyncScheduleInput{Component: "every-minute", Task: "publish", TaskGenerationID: task.GenerationID, TaskUnit: task.SystemdUnit, ApplicationRevision: task.Revision, ConfigurationDigest: configDigest, TimerUnit: "provision-lab-every-minute.timer", Expression: "* * * * *", Timezone: "Africa/Johannesburg", DaylightSaving: "wall-clock", Overlap: "forbid", Retry: config.ScheduleRetry{MaxAttempts: 3, Delay: "10s"}, MissedRun: config.ScheduleMissedRun{Mode: "bounded-catch-up", MaxOccurrences: 2}, Failure: "record", Rollout: "required", AppletDigest: appletDigest, LedgerSchema: "provision.dev/schedule-ledger/v1alpha1"}
+	schedule := planner.AsyncScheduleInput{Component: "every-minute", Task: "publish", TaskGenerationID: task.GenerationID, TaskUnit: task.SystemdUnit, ApplicationRevision: task.Revision, ConfigurationDigest: configDigest, TimerUnit: "provision-lab-every-minute.timer", Expression: "* * * * *", Timezone: "Africa/Johannesburg", DaylightSaving: "wall-clock", Overlap: "forbid", Retry: config.ScheduleRetry{MaxAttempts: 1, Delay: "10s"}, MissedRun: config.ScheduleMissedRun{Mode: "skip", MaxOccurrences: 0}, Failure: "record", Rollout: "required", AppletDigest: appletDigest, LedgerSchema: "provision.dev/schedule-ledger/v1alpha1"}
 	return record, paths, task, worker, schedule
 }

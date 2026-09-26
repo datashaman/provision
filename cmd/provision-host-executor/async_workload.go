@@ -25,7 +25,6 @@ import (
 
 const (
 	asyncGenerationSchema = "provision.dev/async-generation/v1alpha1"
-	scheduleRuntimePath   = "/usr/local/libexec/provision-runtime-schedule"
 )
 
 var taskTemplateUnit = regexp.MustCompile(`^provision-[a-z0-9-]+@\.service$`)
@@ -131,7 +130,7 @@ func validateAsyncWorkerInput(input planner.AsyncWorkerInput, record bootstrapRe
 }
 
 func validateAsyncScheduleInput(input planner.AsyncScheduleInput, record bootstrapRecord) error {
-	if !deploymentIdentifier.MatchString(input.Component) || !deploymentIdentifier.MatchString(input.Task) || !deploymentIdentifier.MatchString(input.TaskGenerationID) || !deploymentIdentifier.MatchString(input.ApplicationRevision) || !digestPattern.MatchString(input.ConfigurationDigest) || !taskTemplateUnit.MatchString(input.TaskUnit) || input.TimerUnit != fmt.Sprintf("provision-%s-%s.timer", record.Environment, input.Component) || input.Expression != "* * * * *" || input.Timezone == "" || input.DaylightSaving != "wall-clock" || input.Overlap != "forbid" || input.Failure != "record" || input.Rollout != "required" || !digestPattern.MatchString(input.AppletDigest) || input.LedgerSchema != scheduler.SchemaVersion {
+	if !deploymentIdentifier.MatchString(input.Component) || !deploymentIdentifier.MatchString(input.Task) || !deploymentIdentifier.MatchString(input.TaskGenerationID) || !deploymentIdentifier.MatchString(input.ApplicationRevision) || !digestPattern.MatchString(input.ConfigurationDigest) || !taskTemplateUnit.MatchString(input.TaskUnit) || input.TimerUnit != fmt.Sprintf("provision-%s-%s.timer", record.Environment, input.Component) || input.Expression != "* * * * *" || input.Timezone == "" || input.DaylightSaving != "wall-clock" || input.Overlap != "forbid" || input.Retry.MaxAttempts != 1 || input.MissedRun.Mode != "skip" || input.MissedRun.MaxOccurrences != 0 || input.Failure != "record" || input.Rollout != "required" || !digestPattern.MatchString(input.AppletDigest) || input.LedgerSchema != scheduler.SchemaVersion {
 		return errors.New("Schedule input does not match the supported initial runtime contract")
 	}
 	return nil
@@ -189,7 +188,7 @@ func observeAsyncWorkloadOperation(ctx context.Context, planned planner.Operatio
 			state = asyncObservationState(observed.Status, "active-gated")
 		}
 	case planner.InstallScheduleRuntime:
-		observed := observeScheduleRuntime(*planned.Input.Async.Runtime)
+		observed := observeScheduleRuntime(*planned.Input.Async.Runtime, paths)
 		evidence = observed
 		state = asyncObservationState(observed.Status, "installed")
 	case planner.HandoffSchedule:
@@ -254,7 +253,7 @@ func applyAsyncWorkloadOperation(ctx context.Context, planned planner.Operation,
 	case planner.VerifyWorkerActive:
 		observed, actionErr = verifyWorkerCandidate(ctx, *planned.Input.Async.Worker, record, paths, false)
 	case planner.InstallScheduleRuntime:
-		observed, actionErr = installScheduleRuntime(*planned.Input.Async.Runtime)
+		observed, actionErr = installScheduleRuntime(*planned.Input.Async.Runtime, paths)
 	case planner.HandoffSchedule:
 		observed, actionErr = handoffInitialSchedule(ctx, *planned.Input.Async.Schedule, claim.FencingToken, record, paths)
 	case planner.VerifySchedule:
@@ -541,8 +540,9 @@ func exactActiveWorkerRecord(paths executionPaths, recorded installedWorkerGener
 	return err == nil && reflect.DeepEqual(active, recorded)
 }
 
-func installScheduleRuntime(input planner.AsyncRuntimeInput) (host.AsyncRuntimeObservation, error) {
-	result := host.AsyncRuntimeObservation{Status: "absent", Path: scheduleRuntimePath, AppletDigest: input.AppletDigest, LedgerSchema: input.LedgerSchema}
+func installScheduleRuntime(input planner.AsyncRuntimeInput, paths executionPaths) (host.AsyncRuntimeObservation, error) {
+	runtimePath := scheduleRuntimePath(paths)
+	result := host.AsyncRuntimeObservation{Status: "absent", Path: runtimePath, AppletDigest: input.AppletDigest, LedgerSchema: input.LedgerSchema}
 	executorDigest := regularFileDigest(host.ExecutorPath)
 	if executorDigest != input.AppletDigest {
 		result.Status, result.Reason = "failed", "installed executor bytes do not match the approved Schedule applet digest"
@@ -553,20 +553,25 @@ func installScheduleRuntime(input planner.AsyncRuntimeInput) (host.AsyncRuntimeO
 		result.Status, result.Reason = "failed", "read approved Schedule runtime bytes"
 		return result, errors.New(result.Reason)
 	}
-	if err := installExactFile(scheduleRuntimePath, data, 0555, 0, 0); err != nil {
+	if err := ensureDirectory(filepath.Dir(runtimePath), 0755, 0, 0); err != nil {
 		result.Status, result.Reason = "failed", err.Error()
 		return result, err
 	}
-	return observeScheduleRuntime(input), nil
+	if err := installExactFile(runtimePath, data, 0555, 0, 0); err != nil {
+		result.Status, result.Reason = "failed", err.Error()
+		return result, err
+	}
+	return observeScheduleRuntime(input, paths), nil
 }
 
-func observeScheduleRuntime(input planner.AsyncRuntimeInput) host.AsyncRuntimeObservation {
-	result := host.AsyncRuntimeObservation{Status: "absent", Path: scheduleRuntimePath, AppletDigest: input.AppletDigest, LedgerSchema: input.LedgerSchema}
-	info, err := os.Lstat(scheduleRuntimePath)
+func observeScheduleRuntime(input planner.AsyncRuntimeInput, paths executionPaths) host.AsyncRuntimeObservation {
+	runtimePath := scheduleRuntimePath(paths)
+	result := host.AsyncRuntimeObservation{Status: "absent", Path: runtimePath, AppletDigest: input.AppletDigest, LedgerSchema: input.LedgerSchema}
+	info, err := os.Lstat(runtimePath)
 	if errors.Is(err, os.ErrNotExist) {
 		return result
 	}
-	if err != nil || !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 || info.Mode().Perm() != 0555 || !ownedByExecutor(info) || regularFileDigest(scheduleRuntimePath) != input.AppletDigest {
+	if err != nil || !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 || info.Mode().Perm() != 0555 || !ownedByExecutor(info) || regularFileDigest(runtimePath) != input.AppletDigest {
 		result.Status, result.Reason = "unknown", "Schedule runtime bytes or permissions differ from the approved Plan"
 		return result
 	}
@@ -575,7 +580,7 @@ func observeScheduleRuntime(input planner.AsyncRuntimeInput) host.AsyncRuntimeOb
 }
 
 func handoffInitialSchedule(ctx context.Context, input planner.AsyncScheduleInput, fencingToken int64, record bootstrapRecord, paths executionPaths) (host.AsyncScheduleOperationObservation, error) {
-	runtime := observeScheduleRuntime(planner.AsyncRuntimeInput{AppletDigest: input.AppletDigest, LedgerSchema: input.LedgerSchema})
+	runtime := observeScheduleRuntime(planner.AsyncRuntimeInput{AppletDigest: input.AppletDigest, LedgerSchema: input.LedgerSchema}, paths)
 	if runtime.Status != "installed" {
 		return host.AsyncScheduleOperationObservation{Status: "failed", Reason: "approved Schedule runtime is not installed"}, errors.New("approved Schedule runtime is not installed")
 	}
@@ -596,6 +601,7 @@ func handoffInitialSchedule(ctx context.Context, input planner.AsyncScheduleInpu
 		Task: input.Task, TaskGenerationID: input.TaskGenerationID, TaskUnit: input.TaskUnit,
 		ApplicationRevision: input.ApplicationRevision, ConfigurationDigest: input.ConfigurationDigest,
 		TimerUnit: input.TimerUnit, Expression: input.Expression, Timezone: input.Timezone,
+		DaylightSaving: input.DaylightSaving, Overlap: input.Overlap, Retry: input.Retry, MissedRun: input.MissedRun, Failure: input.Failure,
 		AppletDigest: input.AppletDigest, LedgerSchema: input.LedgerSchema, LedgerPath: ledgerPath,
 		TaskEvidencePath: taskEvidencePath(paths), WorkerEvidencePath: workerEvidencePath(paths), FencingToken: fencingToken,
 	}
@@ -677,7 +683,11 @@ func observeInstalledSchedule(ctx context.Context, input planner.AsyncScheduleIn
 		return result
 	}
 	messageID, confirmed := taskConfirmedMessage(installed.TaskEvidencePath, invocation.ID)
-	processed, acknowledged := workerAcknowledgedMessage(installed.WorkerEvidencePath, messageID)
+	worker, workerErr := readWorkerGenerationRecord(filepath.Join(paths.environmentHome, "workers", "active.json"))
+	if workerErr != nil {
+		return result
+	}
+	processed, acknowledged := workerAcknowledgedMessage(installed.WorkerEvidencePath, messageID, worker.Input.Revision, worker.Input.ArtifactDigest)
 	if !confirmed || !processed || !acknowledged {
 		return result
 	}
@@ -687,7 +697,7 @@ func observeInstalledSchedule(ctx context.Context, input planner.AsyncScheduleIn
 }
 
 func scheduleRecordMatchesInput(record installedScheduleRecord, input planner.AsyncScheduleInput, environment string) bool {
-	return record.SchemaVersion == scheduleRecordSchema && record.Environment == environment && record.Component == input.Component && record.Task == input.Task && record.TaskGenerationID == input.TaskGenerationID && record.TaskUnit == input.TaskUnit && record.ApplicationRevision == input.ApplicationRevision && record.ConfigurationDigest == input.ConfigurationDigest && record.TimerUnit == input.TimerUnit && record.Expression == input.Expression && record.Timezone == input.Timezone && record.AppletDigest == input.AppletDigest && record.LedgerSchema == input.LedgerSchema && record.FencingToken > 0
+	return record.SchemaVersion == scheduleRecordSchema && record.Environment == environment && record.Component == input.Component && record.Task == input.Task && record.TaskGenerationID == input.TaskGenerationID && record.TaskUnit == input.TaskUnit && record.ApplicationRevision == input.ApplicationRevision && record.ConfigurationDigest == input.ConfigurationDigest && record.TimerUnit == input.TimerUnit && record.Expression == input.Expression && record.Timezone == input.Timezone && record.DaylightSaving == input.DaylightSaving && record.Overlap == input.Overlap && record.Retry == input.Retry && record.MissedRun == input.MissedRun && record.Failure == input.Failure && record.AppletDigest == input.AppletDigest && record.LedgerSchema == input.LedgerSchema && record.FencingToken > 0
 }
 
 func inspectAsyncDeployment(ctx context.Context, environment, account string, paths executionPaths) (host.AsyncDeploymentStatus, []string) {
@@ -827,7 +837,7 @@ PrivateTmp=true
 ProtectSystem=strict
 ProtectHome=true
 ReadWritePaths=/var/lib/provision/environments/%s/schedules
-`, input.Component, scheduleRuntimePath, record.Environment, input.Component, record.Environment)
+`, input.Component, scheduleRuntimePath(systemExecutionPaths(record.Environment)), record.Environment, input.Component, record.Environment)
 }
 
 func renderScheduleTimer(input planner.AsyncScheduleInput, record bootstrapRecord) string {
@@ -836,7 +846,7 @@ Description=Provision stable Schedule %s
 
 [Timer]
 OnCalendar=*-*-* *:*:00 %s
-Persistent=true
+Persistent=false
 AccuracySec=1s
 Unit=%s
 
@@ -989,7 +999,7 @@ func taskConfirmedMessage(path, invocation string) (string, bool) {
 	return "", false
 }
 
-func workerAcknowledgedMessage(path, messageID string) (bool, bool) {
+func workerAcknowledgedMessage(path, messageID, workerRevision, workerArtifactDigest string) (bool, bool) {
 	if messageID == "" {
 		return false, false
 	}
@@ -1001,14 +1011,18 @@ func workerAcknowledgedMessage(path, messageID string) (bool, bool) {
 	processed, acknowledged := false, false
 	scanner := bufio.NewScanner(file)
 	for scanner.Scan() {
-		var event struct{ Event, MessageID string }
-		if json.Unmarshal(scanner.Bytes(), &event) != nil || event.MessageID != messageID {
+		var event struct{ Event, MessageID, WorkerApplicationRevision, WorkerArtifactDigest string }
+		if json.Unmarshal(scanner.Bytes(), &event) != nil || event.MessageID != messageID || event.WorkerApplicationRevision != workerRevision || event.WorkerArtifactDigest != workerArtifactDigest {
 			continue
 		}
-		processed = processed || event.Event == "processed" || event.Event == "duplicate_ignored"
-		acknowledged = acknowledged || event.Event == "acknowledgement_decided"
+		processed = processed || event.Event == "processed"
+		acknowledged = acknowledged || event.Event == "acknowledged"
 	}
 	return processed, acknowledged
+}
+
+func scheduleRuntimePath(paths executionPaths) string {
+	return filepath.Join(paths.environmentHome, "runtime", "provision-runtime-schedule")
 }
 
 func execCommandContext(ctx context.Context, name string, args ...string) ([]byte, error) {

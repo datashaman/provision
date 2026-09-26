@@ -503,6 +503,15 @@ func TestAsyncPlanPreviewIsDeterministicCompleteAndReadOnly(t *testing.T) {
 	preview := func(extraEnv ...string) ([]byte, error) {
 		command := exec.Command("go", "run", ".", "plan", "preview", "--file", configPath)
 		command.Env = append(os.Environ(), "PATH="+dir+string(os.PathListSeparator)+os.Getenv("PATH"), "FAKE_SSH_LOG="+sshLog)
+		hasAsyncStateOverride := false
+		for _, value := range extraEnv {
+			if strings.HasPrefix(value, "FAKE_NO_ACTIVE_ASYNC=") {
+				hasAsyncStateOverride = true
+			}
+		}
+		if !hasAsyncStateOverride {
+			command.Env = append(command.Env, "FAKE_NO_ACTIVE_ASYNC=1")
+		}
 		command.Env = append(command.Env, extraEnv...)
 		return command.CombinedOutput()
 	}
@@ -531,9 +540,7 @@ func TestAsyncPlanPreviewIsDeterministicCompleteAndReadOnly(t *testing.T) {
 	wantOperations := []string{
 		"prepareQueue", "stageArtifact", "stageArtifact", "installTaskGeneration", "verifyTaskGeneration",
 		"installWorkerGeneration", "startWorkerCandidate", "verifyWorkerCandidate",
-		"fenceWorkerIntake", "drainWorkerPrevious", "activateWorkerIntake",
-		"verifyWorkerActive", "installScheduleRuntime", "handoffSchedule",
-		"verifySchedule", "retainWorkerPrevious",
+		"activateWorkerIntake", "verifyWorkerActive", "installScheduleRuntime", "handoffSchedule", "verifySchedule",
 	}
 	if len(plan.Operations) != len(wantOperations) {
 		t.Fatalf("async operation count = %d, want %d:\n%s", len(plan.Operations), len(wantOperations), first)
@@ -560,7 +567,6 @@ func TestAsyncPlanPreviewIsDeterministicCompleteAndReadOnly(t *testing.T) {
 		`"appletDigest": "sha256:7777777777777777777777777777777777777777777777777777777777777777"`,
 		`"recovery": "retain-queue"`,
 		`"recovery": "keep-candidate-gated"`,
-		`"recovery": "retain-both-worker-generations"`,
 	} {
 		if !strings.Contains(string(first), want) {
 			t.Fatalf("async Plan omitted %s:\n%s", want, first)
@@ -582,16 +588,6 @@ func TestAsyncPlanPreviewIsDeterministicCompleteAndReadOnly(t *testing.T) {
 	}
 	if changed.ID == plan.ID {
 		t.Fatalf("runtime asset change did not stale Plan %s", plan.ID)
-	}
-	changedObservation, observationErr := preview("FAKE_LEDGER_DIGEST=sha256:6666666666666666666666666666666666666666666666666666666666666666")
-	if observationErr != nil {
-		t.Fatalf("changed observed state did not produce a Plan: %v\n%s", observationErr, changedObservation)
-	}
-	if err := json.Unmarshal(changedObservation, &changed); err != nil {
-		t.Fatal(err)
-	}
-	if changed.ID == plan.ID {
-		t.Fatalf("observed occurrence-ledger change did not stale Plan %s", plan.ID)
 	}
 	unsupported, unsupportedErr := preview("FAKE_WORKER_GATE_CAPABILITY=false")
 	if unsupportedErr == nil || !strings.Contains(string(unsupported), "required Worker admission-gate capability is not observed") || strings.Contains(string(unsupported), `"operations"`) {
@@ -619,7 +615,7 @@ func TestAsyncPlanPreviewIsDeterministicCompleteAndReadOnly(t *testing.T) {
 		t.Fatal(err)
 	}
 	changedConfigCommand := exec.Command("go", "run", ".", "plan", "preview", "--file", filepath.Join(changedConfigDir, "root.yaml"))
-	changedConfigCommand.Env = append(os.Environ(), "PATH="+dir+string(os.PathListSeparator)+os.Getenv("PATH"), "FAKE_SSH_LOG="+sshLog)
+	changedConfigCommand.Env = append(os.Environ(), "PATH="+dir+string(os.PathListSeparator)+os.Getenv("PATH"), "FAKE_SSH_LOG="+sshLog, "FAKE_NO_ACTIVE_ASYNC=1")
 	changedConfigOutput, changedConfigErr := changedConfigCommand.CombinedOutput()
 	if changedConfigErr != nil {
 		t.Fatalf("changed Artifact identity did not produce a Plan: %v\n%s", changedConfigErr, changedConfigOutput)
@@ -630,30 +626,16 @@ func TestAsyncPlanPreviewIsDeterministicCompleteAndReadOnly(t *testing.T) {
 	if changed.ID == plan.ID {
 		t.Fatalf("Artifact identity change did not stale Plan %s", plan.ID)
 	}
-	initialOutput, initialErr := preview("FAKE_NO_ACTIVE_WORKER=1")
-	if initialErr != nil {
-		t.Fatalf("initial Worker Plan preview failed: %v\n%s", initialErr, initialOutput)
-	}
-	var initial struct {
-		Operations []struct {
-			Kind string `json:"kind"`
-		} `json:"operations"`
-	}
-	if err := json.Unmarshal(initialOutput, &initial); err != nil {
-		t.Fatal(err)
-	}
-	for _, operation := range initial.Operations {
-		switch operation.Kind {
-		case "fenceWorkerIntake", "drainWorkerPrevious", "retainWorkerPrevious":
-			t.Fatalf("initial Worker Plan contains impossible previous-Generation operation %q", operation.Kind)
-		}
+	existing, existingErr := preview("FAKE_NO_ACTIVE_ASYNC=0")
+	if existingErr == nil || !strings.Contains(string(existing), "does not support replacing an active Worker, Task, or Schedule generation") || strings.Contains(string(existing), `"operations"`) {
+		t.Fatalf("existing asynchronous deployment did not fail closed: %v\n%s", existingErr, existing)
 	}
 
 	commands, err := os.ReadFile(sshLog)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Count(string(commands), "provision-host-executor inspect") != 9 {
+	if strings.Count(string(commands), "provision-host-executor inspect") != 8 {
 		t.Fatalf("preview did not perform exactly one read-only inspection per Plan:\n%s", commands)
 	}
 	for _, forbidden := range []string{"--apply", " install ", " start ", " reload ", " execute "} {
@@ -1102,7 +1084,9 @@ func writeAsyncBootstrapInspectionSSH(t *testing.T, dir string) {
 printf '%s\n' "$*" >> "$FAKE_SSH_LOG"
 printf() {
   value="$(command printf "$@")"
-  if [ "${FAKE_NO_ACTIVE_WORKER:-0}" = 1 ]; then value="$(command printf '%s' "$value" | sed -E 's/,"activeWorker":\{[^}]*\}//')"; fi
+	if [ "${FAKE_NO_ACTIVE_ASYNC:-0}" = 1 ]; then
+		value="$(command printf '%s' "$value" | sed -E 's/,"activeWorker":\{[^}]*\}//; s/,"activeTask":\{[^}]*\}//; s/,"schedule":\{[^}]*\}//')"
+	fi
 	  command printf '%s\n' "$value" | sed 's#"rabbitmqImageManifest":"sha256:34fc91a9de04d612a340507b8e7e19c0ee1ec9839e09dc5fc98f54991633ce91"#"rabbitmqImageManifest":"sha256:34fc91a9de04d612a340507b8e7e19c0ee1ec9839e09dc5fc98f54991633ce91","rabbitmqServiceUnit":"provision-lab-rabbitmq.service","rabbitmqContainer":"provision-lab-rabbitmq","rabbitmqAccount":"provision-lab","rabbitmqDataPath":"/var/lib/provision/environments/lab/services/rabbitmq/data","rabbitmqQuadletPath":"/etc/containers/systemd/users/999/provision-lab-rabbitmq.container"#g' | sed 's#"imageManifest":"sha256:34fc91a9de04d612a340507b8e7e19c0ee1ec9839e09dc5fc98f54991633ce91"#"generationId":"provision-lab-messages-rabbitmq-4-3-6-34fc91a9de04","imageManifest":"sha256:34fc91a9de04d612a340507b8e7e19c0ee1ec9839e09dc5fc98f54991633ce91","serviceUnit":"provision-lab-rabbitmq.service","container":"provision-lab-rabbitmq","account":"provision-lab","dataPath":"/var/lib/provision/environments/lab/services/rabbitmq/data","quadletPath":"/etc/containers/systemd/users/999/provision-lab-rabbitmq.container","rabbitmqVersion":"4.3.6","health":"healthy","retryQueue":"provision-lab-messages.retry","deadLetterQueue":"provision-lab-messages.dead-letter","workExchange":"provision-lab-messages.work","retryExchange":"provision-lab-messages.retry","deadLetterExchange":"provision-lab-messages.dead-letter","bindings":[{"source":"provision-lab-messages.work","destination":"provision-lab-messages","routingKey":"provision-lab-messages"},{"source":"provision-lab-messages.retry","destination":"provision-lab-messages.retry","routingKey":"provision-lab-messages.retry"},{"source":"provision-lab-messages.dead-letter","destination":"provision-lab-messages.dead-letter","routingKey":"provision-lab-messages.dead-letter"}],"messageTtl":"24h0m0s","retryDelay":"10s","deadLetterTtl":"168h0m0s","deliveryLimit":3,"accepted":1,"available":0,"acknowledged":1,"deadLettered":0,"probeMessageId":"probe","supportedGuarantees":["publisher-confirms","manual-acknowledgement","at-least-once"],"ownedResources":["rabbitmq-queue:provision-lab-messages"]#g'
 }
 case "$*" in
@@ -1247,7 +1231,7 @@ func TestConfigValidateRejectsInvalidAsyncContracts(t *testing.T) {
 		{"noncanonical Worker drain", "environment.yaml", "maxDuration: 30s", "maxDuration: 30000ms", "bounded drain"},
 		{"preferred Worker rollout", "environment.yaml", "kind: systemd-worker\n    target: base\n    rollout: required", "kind: systemd-worker\n    target: base\n    rollout: preferred", "requires gated systemd-worker blue-green"},
 		{"unknown Schedule timezone", "application.yaml", "timezone: Africa/Johannesburg", "timezone: Mars/Olympus", "unknown timezone"},
-		{"unbounded catch-up", "application.yaml", "maxOccurrences: 2", "maxOccurrences: 0", "bounded catch-up"},
+		{"unbounded catch-up", "application.yaml", "mode: skip\n        maxOccurrences: 0", "mode: bounded-catch-up\n        maxOccurrences: 101", "bounded catch-up"},
 		{"resolved Queue credential", "environment.yaml", "secret://lab/rabbitmq-url", "amqp://guest:guest@localhost", "Secret Reference"},
 		{"component cycle", "application.yaml", "role: queue\n    queue:", "role: queue\n    requires: [consumer]\n    queue:", "contain a cycle"},
 	}

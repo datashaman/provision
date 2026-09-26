@@ -206,6 +206,58 @@ func TestSQLiteBackendEnablesIndependentQueuePreparation(t *testing.T) {
 	}
 }
 
+func TestSQLiteBackendAllowsArtifactStagingAfterQueuePreparation(t *testing.T) {
+	path := t.TempDir() + "/state.db"
+	backend, err := OpenSQLite(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer backend.Close()
+
+	plan := contractPlan(t, "application-a", "lab", "revision-a")
+	plan.Operations = []planner.Operation{
+		{
+			ID: "op-01", Kind: planner.PrepareQueue,
+			Input: planner.OperationInput{Async: &planner.AsyncOperationInput{Queue: &planner.AsyncQueueInput{
+				LogicalID: "provision-lab-messages", GenerationID: "provision-lab-messages-rabbitmq-4-3-6-34fc91a9de04",
+			}}},
+		},
+		{
+			ID: "op-02", Kind: planner.StageArtifact, DependsOn: []string{"op-01"},
+			Input: planner.OperationInput{Async: &planner.AsyncOperationInput{Artifact: &planner.AsyncArtifactInput{
+				Component: "consumer", Role: "worker", Source: "https://artifacts.example/consumer.tar.gz", Digest: "sha256:" + strings.Repeat("3", 64),
+			}}},
+		},
+	}
+	plan.ID = ""
+	encoded, err := json.Marshal(plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	digest := sha256.Sum256(encoded)
+	plan.ID = "sha256:" + hex.EncodeToString(digest[:])
+	now := time.Date(2026, 9, 26, 12, 0, 0, 0, time.UTC)
+	if err := backend.StoreCurrentPlan(context.Background(), plan, now); err != nil {
+		t.Fatal(err)
+	}
+	if err := backend.RecordApproval(context.Background(), plan.ID, ApprovalRecord{Actor: "tester", Decision: DecisionApproved, DecidedAt: now, ExpiresAt: now.Add(time.Hour)}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := backend.BeginOperation(context.Background(), BeginOperationRequest{PlanID: plan.ID, OperationID: "op-02", Holder: "holder", StartedAt: now.Add(time.Minute), LeaseDuration: time.Minute}); err == nil || !strings.Contains(err.Error(), "op-01 has no recorded outcome") {
+		t.Fatalf("asynchronous Artifact staging began before Queue preparation: %v", err)
+	}
+	queueAttempt, err := backend.BeginOperation(context.Background(), BeginOperationRequest{PlanID: plan.ID, OperationID: "op-01", Holder: "holder", StartedAt: now.Add(2 * time.Minute), LeaseDuration: time.Minute})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := backend.CompleteOperation(context.Background(), CompleteOperationRequest{AttemptID: queueAttempt.AttemptID, Holder: queueAttempt.Holder, PlanID: plan.ID, OperationID: "op-01", FencingToken: queueAttempt.FencingToken, Outcome: ExecutionSucceeded, Observation: json.RawMessage(`{"status":"ready"}`), CompletedAt: now.Add(2*time.Minute + time.Second)}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := backend.BeginOperation(context.Background(), BeginOperationRequest{PlanID: plan.ID, OperationID: "op-02", Holder: "holder", StartedAt: now.Add(3 * time.Minute), LeaseDuration: time.Minute}); err != nil {
+		t.Fatalf("asynchronous Artifact staging did not begin after successful Queue preparation: %v", err)
+	}
+}
+
 func runBackendContract(t *testing.T, factory backendContractFactory) {
 	t.Helper()
 	ctx := context.Background()

@@ -81,23 +81,25 @@ func Plan(compiled config.Compiled, observation host.BootstrapStatus) PlanningOu
 	workerGenerationID := compiled.Revision.Name + "-" + workerDigestID
 	taskGenerationID := compiled.Revision.Name + "-" + taskDigestID
 	workerUnit := fmt.Sprintf("provision-%s-%s-%s.service", compiled.Environment.Name, workerName, workerDigestID)
-	taskUnit := fmt.Sprintf("provision-%s-%s-%s.service", compiled.Environment.Name, taskName, taskDigestID)
+	taskUnit := fmt.Sprintf("provision-%s-%s-%s@.service", compiled.Environment.Name, taskName, taskDigestID)
 	timerUnit := fmt.Sprintf("provision-%s-%s.timer", compiled.Environment.Name, scheduleName)
 	workerInput := &planmodel.AsyncWorkerInput{
-		Component: workerName, Queue: workerComponent.Worker.Queue, GenerationID: workerGenerationID,
+		Component: workerName, Queue: workerComponent.Worker.Queue, QueueLogicalID: queueInput.LogicalID, GenerationID: workerGenerationID,
 		Revision: compiled.Revision.Name, ArtifactDigest: workerArtifact.Digest, SystemdUnit: workerUnit,
 		Admission: workerImplementation.Worker.Admission, Drain: workerImplementation.Worker.Drain,
 		Rollout:  workerImplementation.Rollout,
 		Previous: async.Deployment.ActiveWorker,
 	}
 	taskInput := &planmodel.AsyncTaskInput{
-		Component: taskName, GenerationID: taskGenerationID, Revision: compiled.Revision.Name,
-		ArtifactDigest: taskArtifact.Digest, SystemdUnit: taskUnit, Timeout: taskComponent.Task.Timeout,
+		Component: taskName, Queue: workerComponent.Worker.Queue, QueueLogicalID: queueInput.LogicalID, GenerationID: taskGenerationID, Revision: compiled.Revision.Name,
+		ConfigurationDigest: compiled.Digest,
+		ArtifactDigest:      taskArtifact.Digest, SystemdUnit: taskUnit, Timeout: taskComponent.Task.Timeout,
 		Rollout:  taskImplementation.Rollout,
 		Previous: async.Deployment.ActiveTask,
 	}
 	scheduleInput := &planmodel.AsyncScheduleInput{
-		Component: scheduleName, Task: scheduleComponent.Schedule.Task, TaskGenerationID: taskGenerationID,
+		Component: scheduleName, Task: scheduleComponent.Schedule.Task, TaskGenerationID: taskGenerationID, TaskUnit: taskUnit,
+		ApplicationRevision: compiled.Revision.Name, ConfigurationDigest: compiled.Digest,
 		TimerUnit: timerUnit, Expression: scheduleComponent.Schedule.Expression, Timezone: scheduleComponent.Schedule.Timezone,
 		DaylightSaving: scheduleComponent.Schedule.DaylightSaving, Overlap: scheduleComponent.Schedule.Overlap,
 		Retry: scheduleComponent.Schedule.Retry, MissedRun: scheduleComponent.Schedule.MissedRun,
@@ -148,7 +150,7 @@ func Plan(compiled config.Compiled, observation host.BootstrapStatus) PlanningOu
 	if workerInput.Previous == nil {
 		workerOperations = append(workerOperations,
 			planmodel.Operation{ID: "op-10", Kind: planmodel.ActivateWorkerIntake, DependsOn: []string{"op-07"}, Input: planmodel.OperationInput{Async: &planmodel.AsyncOperationInput{Worker: workerInput}}, Preconditions: conditions("worker-candidate", workerGenerationID, "verified"), ExpectedObservations: conditions("worker-admission", workerGenerationID, "open"), Recovery: planmodel.KeepCandidateGated},
-			planmodel.Operation{ID: "op-11", Kind: planmodel.VerifyWorkerActive, DependsOn: []string{"op-10"}, Input: planmodel.OperationInput{Async: &planmodel.AsyncOperationInput{Worker: workerInput}}, Preconditions: conditions("worker-admission", workerGenerationID, "open"), ExpectedObservations: conditions("worker-processing", workerGenerationID, "verified-at-least-once"), Recovery: planmodel.KeepCandidateGated},
+			planmodel.Operation{ID: "op-11", Kind: planmodel.VerifyWorkerActive, DependsOn: []string{"op-10"}, Input: planmodel.OperationInput{Async: &planmodel.AsyncOperationInput{Worker: workerInput}}, Preconditions: conditions("worker-admission", workerGenerationID, "open"), ExpectedObservations: conditions("worker-intake", workerGenerationID, "open-queue-connected"), Recovery: planmodel.KeepCandidateGated},
 		)
 	} else {
 		workerOperations = append(workerOperations,

@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	"provision/internal/authority"
@@ -228,21 +229,40 @@ func (e Engine) execute(ctx context.Context, request Request, resumeOfAttemptID 
 		return operation.Result{}, err
 	}
 	if result.Outcome == operation.OutcomeFailed {
+		reason := operationFailureReason(result.Observation)
+		if reason == "" {
+			reason = "Host Target returned failed outcome without diagnostic evidence"
+		}
+		prefix := fmt.Sprintf("operation %s (%s) failed: %s", attempt.Operation.ID, attempt.Operation.Kind, reason)
 		if attempt.Operation.Kind == planner.VerifyActive {
-			return result, errors.New("post-switch verification failed; the previous Generation was restored")
+			return result, fmt.Errorf("%s; the previous Generation was restored", prefix)
 		}
 		if attempt.Operation.Kind == planner.DrainPrevious {
-			return result, errors.New("bounded HTTP drain failed; the previous Generation was not declared drained")
+			return result, fmt.Errorf("%s; the previous Generation was not declared drained", prefix)
 		}
 		if attempt.Operation.Kind == planner.RetainPrevious {
-			return result, errors.New("rollback-window retention failed; the previous Generation was not declared restartable and retained")
+			return result, fmt.Errorf("%s; the previous Generation was not declared restartable and retained", prefix)
 		}
-		return result, errors.New("host preparation operation failed")
+		return result, errors.New(prefix)
 	}
 	if result.Outcome == operation.OutcomeUncertain {
 		return result, errors.New("host operation requires explicit recovery because its outcome is uncertain")
 	}
 	return result, nil
+}
+
+func operationFailureReason(observation json.RawMessage) string {
+	var diagnostic struct {
+		Reason string `json:"reason"`
+	}
+	if json.Unmarshal(observation, &diagnostic) != nil {
+		return ""
+	}
+	reason := strings.Join(strings.Fields(diagnostic.Reason), " ")
+	if len(reason) > 1024 {
+		reason = reason[:1024] + "…"
+	}
+	return reason
 }
 
 func resolvedValuesForOperation(plan planner.Plan, operationID string, available map[string]string) (map[string]string, error) {

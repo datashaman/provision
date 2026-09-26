@@ -243,12 +243,22 @@ func buildAsync(compiled config.Compiled, observation host.BootstrapStatus) (Pre
 	}
 	reasons := append([]string(nil), evaluation.Reasons...)
 	if !compiled.IsQueueOnly() && observation.Async != nil {
+		if reason := hostasync.InitialReplacementReason(observation.Async.Deployment); reason != "" {
+			reasons = append(reasons, reason)
+		}
 		capability := observation.Async.Capabilities
 		if !capability.WorkerAdmissionGate {
 			reasons = append(reasons, "required Worker admission-gate capability is not observed")
 		}
 		if capability.ScheduleAppletDigest == "" || capability.ScheduleLedgerSchema == "" {
 			reasons = append(reasons, "required Schedule runtime capability is not observed")
+		}
+		for _, component := range compiled.Application.Components {
+			if component.Role == "schedule" {
+				if reason := hostasync.InitialSchedulePolicyReason(component.Schedule); reason != "" {
+					reasons = append(reasons, reason)
+				}
+			}
 		}
 	}
 	preview := Preview{SchemaVersion: PreviewSchemaVersion, Executable: len(reasons) == 0, Capability: evidence, Reasons: reasons}

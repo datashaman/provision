@@ -32,6 +32,17 @@ func artifactHandlerObservation(observed host.ArtifactObservation) (HandlerObser
 	}
 }
 
+func plannedArtifactInput(planned planner.Operation) (*planner.ArtifactInput, error) {
+	if planned.Input.Artifact != nil {
+		return planned.Input.Artifact, nil
+	}
+	if planned.Input.Async != nil && planned.Input.Async.Artifact != nil {
+		artifact := planned.Input.Async.Artifact
+		return &planner.ArtifactInput{Source: artifact.Source, Digest: artifact.Digest}, nil
+	}
+	return nil, errors.New("host Artifact preparation has no typed Artifact input")
+}
+
 func executeHostObservation(command *exec.Cmd, planned planner.Operation, subject string) (HandlerObservation, error) {
 	encoded, err := json.Marshal(planned)
 	if err != nil {
@@ -119,9 +130,109 @@ func verifyHostResult(envelope operation.Envelope, result operation.Result) erro
 		return verifyDrainResult(envelope, result)
 	case planner.RetainPrevious:
 		return verifyRetentionResult(envelope, result)
+	case planner.InstallTaskGeneration, planner.VerifyTaskGeneration:
+		return verifyAsyncTaskResult(envelope, result)
+	case planner.InstallWorkerGeneration, planner.StartWorkerCandidate, planner.VerifyWorkerCandidate, planner.ActivateWorkerIntake, planner.VerifyWorkerActive:
+		return verifyAsyncWorkerResult(envelope, result)
+	case planner.InstallScheduleRuntime:
+		return verifyAsyncRuntimeResult(envelope, result)
+	case planner.HandoffSchedule, planner.VerifySchedule:
+		return verifyAsyncScheduleResult(envelope, result)
 	default:
 		return errors.New("host operation result kind is unsupported")
 	}
+}
+
+func verifyAsyncTaskResult(envelope operation.Envelope, result operation.Result) error {
+	if envelope.Operation.Input.Async == nil || envelope.Operation.Input.Async.Task == nil {
+		return errors.New("host Task observation has no planned Task")
+	}
+	input := envelope.Operation.Input.Async.Task
+	var observed host.AsyncTaskOperationObservation
+	if err := decodeObservation(result.Observation, &observed); err != nil {
+		return errors.New("host Task observation is invalid")
+	}
+	if observed.Task.ID != input.GenerationID || observed.Task.Revision != input.Revision || observed.Task.ArtifactDigest != input.ArtifactDigest || observed.Task.SystemdUnit != input.SystemdUnit || observed.Task.Queue != input.QueueLogicalID || observed.Task.ConfigurationDigest != input.ConfigurationDigest {
+		return errors.New("host Task observation does not match the Plan")
+	}
+	if result.Outcome == operation.OutcomeSucceeded {
+		if observed.Status != "installed" || observed.Executable == "" || envelope.Operation.Kind == planner.VerifyTaskGeneration && !observed.Verified {
+			return errors.New("host Task success observation is invalid")
+		}
+	} else if result.Outcome == operation.OutcomeFailed && observed.Reason == "" {
+		return errors.New("host Task failure observation is invalid")
+	}
+	return nil
+}
+
+func verifyAsyncWorkerResult(envelope operation.Envelope, result operation.Result) error {
+	if envelope.Operation.Input.Async == nil || envelope.Operation.Input.Async.Worker == nil {
+		return errors.New("host Worker observation has no planned Worker")
+	}
+	input := envelope.Operation.Input.Async.Worker
+	var observed host.AsyncWorkerOperationObservation
+	if err := decodeObservation(result.Observation, &observed); err != nil {
+		return errors.New("host Worker observation is invalid")
+	}
+	if observed.Worker.ID != input.GenerationID || observed.Worker.Revision != input.Revision || observed.Worker.ArtifactDigest != input.ArtifactDigest || observed.Worker.SystemdUnit != input.SystemdUnit {
+		return errors.New("host Worker observation does not match the Plan")
+	}
+	if result.Outcome == operation.OutcomeSucceeded {
+		switch envelope.Operation.Kind {
+		case planner.InstallWorkerGeneration:
+			if observed.Status != "installed" {
+				return errors.New("host Worker installation observation is invalid")
+			}
+		case planner.StartWorkerCandidate, planner.VerifyWorkerCandidate:
+			if observed.Status != "active-gated" || !observed.Worker.UnitActive || !observed.Worker.QueueConnected || observed.Worker.Gate != "closed" {
+				return errors.New("host gated Worker observation is invalid")
+			}
+		case planner.ActivateWorkerIntake, planner.VerifyWorkerActive:
+			if observed.Status != "active-open" || !observed.Worker.UnitActive || !observed.Worker.QueueConnected || observed.Worker.Gate != "open" {
+				return errors.New("host active Worker observation is invalid")
+			}
+		}
+	} else if result.Outcome == operation.OutcomeFailed && observed.Reason == "" {
+		return errors.New("host Worker failure observation is invalid")
+	}
+	return nil
+}
+
+func verifyAsyncRuntimeResult(envelope operation.Envelope, result operation.Result) error {
+	input := envelope.Operation.Input.Async
+	if input == nil || input.Runtime == nil {
+		return errors.New("host Schedule runtime observation has no planned runtime")
+	}
+	var observed host.AsyncRuntimeObservation
+	if err := decodeObservation(result.Observation, &observed); err != nil || observed.AppletDigest != input.Runtime.AppletDigest || observed.LedgerSchema != input.Runtime.LedgerSchema {
+		return errors.New("host Schedule runtime observation does not match the Plan")
+	}
+	if result.Outcome == operation.OutcomeSucceeded && observed.Status != "installed" || result.Outcome == operation.OutcomeFailed && observed.Reason == "" {
+		return errors.New("host Schedule runtime outcome is invalid")
+	}
+	return nil
+}
+
+func verifyAsyncScheduleResult(envelope operation.Envelope, result operation.Result) error {
+	input := envelope.Operation.Input.Async
+	if input == nil || input.Schedule == nil {
+		return errors.New("host Schedule observation has no planned Schedule")
+	}
+	var observed host.AsyncScheduleOperationObservation
+	if err := decodeObservation(result.Observation, &observed); err != nil || observed.Schedule.Component != input.Schedule.Component || observed.Schedule.TimerUnit != input.Schedule.TimerUnit || observed.Schedule.TaskGenerationID != input.Schedule.TaskGenerationID || observed.Schedule.AppletDigest != input.Schedule.AppletDigest || observed.Schedule.LedgerSchema != input.Schedule.LedgerSchema {
+		return errors.New("host Schedule observation does not match the Plan")
+	}
+	if result.Outcome == operation.OutcomeSucceeded {
+		if envelope.Operation.Kind == planner.HandoffSchedule && (observed.Status != "active" || !observed.Schedule.Active || observed.Schedule.FencingToken < 1) {
+			return errors.New("host Schedule handoff observation is invalid")
+		}
+		if envelope.Operation.Kind == planner.VerifySchedule && (observed.Status != "verified" || observed.Occurrence == nil || observed.Invocation == nil || observed.Invocation.Outcome != "succeeded" || observed.MessageID == "" || !observed.Acknowledged) {
+			return errors.New("host Schedule verification observation is invalid")
+		}
+	} else if result.Outcome == operation.OutcomeFailed && observed.Reason == "" {
+		return errors.New("host Schedule failure observation is invalid")
+	}
+	return nil
 }
 
 func verifyQueueResult(envelope operation.Envelope, result operation.Result) error {
@@ -152,9 +263,9 @@ func verifyArtifactResult(envelope operation.Envelope, result operation.Result) 
 	if err := decoder.Decode(&observed); err != nil {
 		return errors.New("host Artifact observation is invalid")
 	}
-	artifact := envelope.Operation.Input.Artifact
-	if artifact == nil {
-		return errors.New("host Artifact observation has no planned Artifact")
+	artifact, err := plannedArtifactInput(envelope.Operation)
+	if err != nil {
+		return err
 	}
 	expectedPath, err := host.ArtifactCachePath(host.ArtifactCacheRoot, artifact.Digest)
 	if err != nil {

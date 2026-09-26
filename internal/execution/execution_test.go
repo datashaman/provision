@@ -125,13 +125,14 @@ func (*cancelingHandler) Recovery(planned planner.Operation) planner.RecoveryMod
 func TestEngineRecordsFailureAndUncertainRecoveryEvidence(t *testing.T) {
 	start := time.Date(2026, 9, 24, 12, 0, 0, 0, time.UTC)
 	tests := []struct {
-		name         string
-		handler      func(*time.Time) *handlerFake
-		wantOutcome  state.ExecutionOutcome
-		wantKind     state.JournalEventKind
-		wantError    bool
-		wantEvidence string
-		wantRejected bool
+		name          string
+		handler       func(*time.Time) *handlerFake
+		wantOutcome   state.ExecutionOutcome
+		wantKind      state.JournalEventKind
+		wantError     bool
+		wantErrorText string
+		wantEvidence  string
+		wantRejected  bool
 	}{
 		{
 			name: "initial observation failure",
@@ -149,7 +150,8 @@ func TestEngineRecordsFailureAndUncertainRecoveryEvidence(t *testing.T) {
 					return matchingResult(envelope, operation.OutcomeFailed, `{"status":"failed","reason":"digest mismatch"}`), nil
 				}}
 			},
-			wantOutcome: state.ExecutionFailed, wantKind: state.JournalOutcome, wantError: true, wantEvidence: "digest mismatch",
+			wantOutcome: state.ExecutionFailed, wantKind: state.JournalOutcome, wantError: true,
+			wantErrorText: "operation op-01 (stageArtifact) failed: digest mismatch", wantEvidence: "digest mismatch",
 		},
 		{
 			name: "structured uncertain host outcome",
@@ -212,6 +214,9 @@ func TestEngineRecordsFailureAndUncertainRecoveryEvidence(t *testing.T) {
 			_, err := engine.Execute(context.Background(), Request{PlanID: plan.ID, OperationID: "op-01", Holder: "test-holder", LeaseDuration: time.Minute})
 			if (err != nil) != test.wantError {
 				t.Fatalf("Execute error = %v, wantError=%v", err, test.wantError)
+			}
+			if test.wantErrorText != "" && (err == nil || !strings.Contains(err.Error(), test.wantErrorText)) {
+				t.Fatalf("Execute error = %v, want text %q", err, test.wantErrorText)
 			}
 			events, err := backend.LoadJournal(context.Background(), plan.ID)
 			if test.wantRejected {

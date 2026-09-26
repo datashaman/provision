@@ -24,6 +24,18 @@ func TestEnvironmentCommandRunsFromAccessibleRuntimeHome(t *testing.T) {
 	}
 }
 
+func TestCredentialEncryptionScopeMatchesConsumingServiceManager(t *testing.T) {
+	uid := 102
+	userArgs := encryptedCredentialArguments("rabbitmq-config", "/tmp/user-credential", &uid)
+	systemArgs := encryptedCredentialArguments("rabbitmq-url", "/tmp/system-credential", nil)
+	if !slices.Contains(userArgs, "--uid=102") {
+		t.Fatalf("user-manager credential lacks user scope: %#v", userArgs)
+	}
+	if slices.Contains(systemArgs, "--uid=102") {
+		t.Fatalf("system-manager credential was encrypted for a user manager: %#v", systemArgs)
+	}
+}
+
 func TestSubordinateIdentityRangeIsBounded(t *testing.T) {
 	for _, test := range []struct {
 		id   int
@@ -150,6 +162,7 @@ func TestQueueStatusIdentifiesOwnedResourcesByKind(t *testing.T) {
 		"probe-record:" + filepath.Join(filepath.Dir(input.DataPath), "probe.json"),
 		"credential-entrypoint:" + filepath.Join(filepath.Dir(input.DataPath), "credential-entrypoint"),
 		"encrypted-credential:/var/lib/provision/runtime/lab/.config/credstore.encrypted/rabbitmq-config",
+		"encrypted-credential:/var/lib/provision/environments/lab/credentials/rabbitmq-url",
 		"rabbitmq-queue:" + input.LogicalID,
 		"rabbitmq-queue:" + topology.RetryQueue,
 		"rabbitmq-queue:" + topology.DeadLetterQueue,

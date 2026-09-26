@@ -419,11 +419,18 @@ func (b *sqliteBackend) BeginOperation(ctx context.Context, request BeginOperati
 		return OperationAttempt{}, errors.New("operation is not present in the approved Plan")
 	}
 	switch operation.Kind {
-	case planner.StageArtifact, planner.PrepareQueue:
+	case planner.PrepareQueue:
 		if len(operation.DependsOn) != 0 {
-			return OperationAttempt{}, errors.New("initial preparation operation cannot have operation dependencies")
+			return OperationAttempt{}, errors.New("Queue preparation cannot have operation dependencies")
 		}
-	case planner.InstallGeneration, planner.StartCandidate, planner.VerifyCandidate, planner.SwitchEndpoint, planner.VerifyActive, planner.DrainPrevious, planner.RetainPrevious:
+	case planner.StageArtifact:
+		// HTTP artifacts may be the first operation, while asynchronous
+		// artifacts deliberately follow Queue preparation. The dependency
+		// loop below enforces either shape from the approved Plan.
+	case planner.InstallGeneration, planner.StartCandidate, planner.VerifyCandidate, planner.SwitchEndpoint, planner.VerifyActive, planner.DrainPrevious, planner.RetainPrevious,
+		planner.InstallTaskGeneration, planner.VerifyTaskGeneration,
+		planner.InstallWorkerGeneration, planner.StartWorkerCandidate, planner.VerifyWorkerCandidate, planner.ActivateWorkerIntake, planner.VerifyWorkerActive,
+		planner.InstallScheduleRuntime, planner.HandoffSchedule, planner.VerifySchedule:
 		if len(operation.DependsOn) == 0 {
 			return OperationAttempt{}, errors.New("candidate operation requires a successful dependency")
 		}

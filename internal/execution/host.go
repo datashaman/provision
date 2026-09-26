@@ -9,6 +9,7 @@ import (
 	"io"
 	"os/exec"
 	"strings"
+	"time"
 
 	"provision/internal/host"
 	"provision/internal/operation"
@@ -134,6 +135,8 @@ func verifyHostResult(envelope operation.Envelope, result operation.Result) erro
 		return verifyAsyncTaskResult(envelope, result)
 	case planner.InstallWorkerGeneration, planner.StartWorkerCandidate, planner.VerifyWorkerCandidate, planner.ActivateWorkerIntake, planner.VerifyWorkerActive:
 		return verifyAsyncWorkerResult(envelope, result)
+	case planner.FenceWorkerIntake, planner.DrainWorkerPrevious, planner.RetainWorkerPrevious:
+		return verifyAsyncWorkerHandoffResult(envelope, result)
 	case planner.InstallScheduleRuntime:
 		return verifyAsyncRuntimeResult(envelope, result)
 	case planner.HandoffSchedule, planner.VerifySchedule:
@@ -141,6 +144,46 @@ func verifyHostResult(envelope operation.Envelope, result operation.Result) erro
 	default:
 		return errors.New("host operation result kind is unsupported")
 	}
+}
+
+func verifyAsyncWorkerHandoffResult(envelope operation.Envelope, result operation.Result) error {
+	if envelope.Operation.Input.Async == nil || envelope.Operation.Input.Async.WorkerHandoff == nil {
+		return errors.New("host Worker handoff observation has no planned handoff")
+	}
+	input := envelope.Operation.Input.Async.WorkerHandoff
+	var observed host.AsyncWorkerHandoffObservation
+	if err := decodeObservation(result.Observation, &observed); err != nil {
+		return errors.New("host Worker handoff observation is invalid")
+	}
+	previous := input.Worker.Previous
+	digest, err := planner.OperationDigest(envelope.Operation)
+	if err != nil || previous == nil || observed.OperationDigest != digest || observed.Candidate.ID != input.Worker.GenerationID || observed.Candidate.ArtifactDigest != input.Worker.ArtifactDigest || observed.Previous.ID != previous.ID || observed.Previous.ArtifactDigest != previous.ArtifactDigest || observed.QueueGenerationID != input.QueueGenerationID {
+		return errors.New("host Worker handoff observation does not match the Plan")
+	}
+	if result.Outcome == operation.OutcomeSucceeded {
+		switch envelope.Operation.Kind {
+		case planner.FenceWorkerIntake:
+			if observed.Status != "previous-fenced" || observed.Previous.Gate != "closed" || observed.Candidate.Gate != "closed" {
+				return errors.New("host Worker intake-fence observation is invalid")
+			}
+		case planner.DrainWorkerPrevious:
+			maximum, durationErr := time.ParseDuration(input.Worker.Drain.MaxDuration)
+			validDeadline := durationErr == nil && observed.DrainStartedAt != nil && observed.CompletionDeadline != nil && observed.DrainDeadline != nil && observed.DrainCompletedAt != nil && observed.DrainDeadline.Equal(observed.DrainStartedAt.Add(maximum)) && observed.CompletionDeadline.Equal(observed.DrainDeadline.Add(-planner.WorkerDrainReleaseBudget(maximum))) && !observed.DrainCompletedAt.Before(*observed.DrainStartedAt) && !observed.DrainCompletedAt.After(*observed.DrainDeadline)
+			drained := observed.Status == "previous-drained" && !observed.BoundElapsed && observed.ReleasedMessageID == ""
+			released := observed.Status == "previous-released" && observed.BoundElapsed && observed.CompletionDeadline != nil && observed.ReleaseStartedAt != nil && observed.DrainCompletedAt != nil && !observed.ReleaseStartedAt.Before(*observed.CompletionDeadline) && !observed.ReleaseStartedAt.After(*observed.DrainCompletedAt) && observed.InFlightMessageID != "" && observed.ReleasedMessageID == observed.InFlightMessageID
+			if observed.PlanID != envelope.Authorization.Claim.PlanID || !validDeadline || !drained && !released || observed.Previous.UnitActive || observed.Previous.InFlight != 0 {
+				return errors.New("host Worker drain observation is invalid")
+			}
+		case planner.RetainWorkerPrevious:
+			duration, durationErr := input.RollbackWindow.Duration()
+			if observed.PlanID != envelope.Authorization.Claim.PlanID || observed.DrainOperationDigest != input.DrainOperationDigest || observed.Status != "previous-retained" || observed.RollbackWindow != input.RollbackWindow || durationErr != nil || !observed.Previous.Restartable || observed.RetainUntil == nil || observed.RetainedAt == nil || !observed.RetainUntil.Equal(observed.RetainedAt.Add(duration)) {
+				return errors.New("host Worker retention observation is invalid")
+			}
+		}
+	} else if result.Outcome == operation.OutcomeFailed && (observed.Reason == "" || observed.RecoveryAction == "") {
+		return errors.New("host Worker handoff failure observation is invalid")
+	}
+	return nil
 }
 
 func verifyAsyncTaskResult(envelope operation.Envelope, result operation.Result) error {
@@ -166,21 +209,26 @@ func verifyAsyncTaskResult(envelope operation.Envelope, result operation.Result)
 }
 
 func verifyAsyncWorkerResult(envelope operation.Envelope, result operation.Result) error {
-	if envelope.Operation.Input.Async == nil || envelope.Operation.Input.Async.Worker == nil {
+	if envelope.Operation.Input.Async == nil || envelope.Operation.Input.Async.Worker == nil && envelope.Operation.Input.Async.WorkerHandoff == nil {
 		return errors.New("host Worker observation has no planned Worker")
 	}
 	input := envelope.Operation.Input.Async.Worker
+	expectedQueueGenerationID := ""
+	if envelope.Operation.Input.Async.WorkerHandoff != nil {
+		input = &envelope.Operation.Input.Async.WorkerHandoff.Worker
+		expectedQueueGenerationID = envelope.Operation.Input.Async.WorkerHandoff.QueueGenerationID
+	}
 	var observed host.AsyncWorkerOperationObservation
 	if err := decodeObservation(result.Observation, &observed); err != nil {
 		return errors.New("host Worker observation is invalid")
 	}
-	if observed.Worker.ID != input.GenerationID || observed.Worker.Revision != input.Revision || observed.Worker.ArtifactDigest != input.ArtifactDigest || observed.Worker.SystemdUnit != input.SystemdUnit {
+	if observed.Worker.ID != input.GenerationID || observed.Worker.Revision != input.Revision || observed.Worker.ArtifactDigest != input.ArtifactDigest || observed.Worker.SystemdUnit != input.SystemdUnit || observed.QueueGenerationID != expectedQueueGenerationID {
 		return errors.New("host Worker observation does not match the Plan")
 	}
 	if result.Outcome == operation.OutcomeSucceeded {
 		switch envelope.Operation.Kind {
 		case planner.InstallWorkerGeneration:
-			if observed.Status != "installed" {
+			if observed.Status != "installed" && observed.Status != "active-gated" && observed.Status != "active-open" {
 				return errors.New("host Worker installation observation is invalid")
 			}
 		case planner.StartWorkerCandidate:
@@ -191,9 +239,13 @@ func verifyAsyncWorkerResult(envelope operation.Envelope, result operation.Resul
 			if observed.Status != "active-gated" || !observed.Verified || !observed.Checks.Liveness || !observed.Checks.QueueConnectivity || !observed.Checks.RevisionIdentity || !observed.Checks.IntakeDisabled || observed.Worker.Gate != "closed" {
 				return errors.New("host Worker candidate verification observation is invalid")
 			}
-		case planner.ActivateWorkerIntake, planner.VerifyWorkerActive:
+		case planner.ActivateWorkerIntake:
 			if observed.Status != "active-open" || !observed.Worker.UnitActive || !observed.Worker.QueueConnected || observed.Worker.Gate != "open" {
-				return errors.New("host active Worker observation is invalid")
+				return fmt.Errorf("host active Worker observation is invalid (status=%q gate=%q unitActive=%t queueConnected=%t consuming-state-required=true)", observed.Status, observed.Worker.Gate, observed.Worker.UnitActive, observed.Worker.QueueConnected)
+			}
+		case planner.VerifyWorkerActive:
+			if observed.Status != "active-open" || !observed.Verified || !observed.Worker.Active || !observed.Worker.UnitActive || !observed.Worker.QueueConnected || observed.Worker.Gate != "open" {
+				return fmt.Errorf("host verified active Worker observation is invalid (status=%q verified=%t active=%t gate=%q unitActive=%t queueConnected=%t)", observed.Status, observed.Verified, observed.Worker.Active, observed.Worker.Gate, observed.Worker.UnitActive, observed.Worker.QueueConnected)
 			}
 		}
 	} else if result.Outcome == operation.OutcomeFailed && observed.Reason == "" {

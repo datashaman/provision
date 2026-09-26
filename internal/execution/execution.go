@@ -18,7 +18,7 @@ import (
 )
 
 type Handler interface {
-	Observe(context.Context, planner.Operation) (HandlerObservation, error)
+	Observe(context.Context, string, planner.Operation) (HandlerObservation, error)
 	ApplyOrResume(context.Context, operation.Envelope) (operation.Result, error)
 	Verify(operation.Envelope, operation.Result) error
 	Recovery(planner.Operation) planner.RecoveryMode
@@ -177,7 +177,7 @@ func (e Engine) execute(ctx context.Context, request Request, resumeOfAttemptID 
 		return operation.Result{}, e.recordUncertain(ctx, attempt, err, HandlerObservation{State: ObservationUnknown})
 	}
 	envelope := operation.Envelope{SchemaVersion: operation.EnvelopeSchemaVersion, Authorization: proof, Operation: attempt.Operation, SensitiveValues: sensitiveValues}
-	before, err := e.Handler.Observe(ctx, attempt.Operation)
+	before, err := e.Handler.Observe(ctx, attempt.Plan.ID, attempt.Operation)
 	if err != nil {
 		journalContext, cancelJournal := failureContext(ctx)
 		defer cancelJournal()
@@ -203,7 +203,7 @@ func (e Engine) execute(ctx context.Context, request Request, resumeOfAttemptID 
 	result, executeErr := e.executeWithLeaseRenewal(ctx, request, attempt, envelope)
 	if executeErr != nil {
 		observationContext, cancelObservation := failureContext(ctx)
-		after, observeErr := e.Handler.Observe(observationContext, attempt.Operation)
+		after, observeErr := e.Handler.Observe(observationContext, attempt.Plan.ID, attempt.Operation)
 		cancelObservation()
 		if observeErr == nil && after.State == ObservationSatisfied {
 			result = operation.Result{

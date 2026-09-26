@@ -20,6 +20,7 @@ import (
 	"provision/internal/authority"
 	"provision/internal/host"
 	"provision/internal/planner"
+	"provision/internal/rollbackwindow"
 	"provision/internal/scheduler"
 )
 
@@ -33,6 +34,7 @@ func isAsyncWorkloadKind(kind planner.OperationKind) bool {
 	switch kind {
 	case planner.InstallTaskGeneration, planner.VerifyTaskGeneration,
 		planner.InstallWorkerGeneration, planner.StartWorkerCandidate, planner.VerifyWorkerCandidate,
+		planner.FenceWorkerIntake, planner.DrainWorkerPrevious, planner.RetainWorkerPrevious,
 		planner.ActivateWorkerIntake, planner.VerifyWorkerActive,
 		planner.InstallScheduleRuntime, planner.HandoffSchedule, planner.VerifySchedule:
 		return true
@@ -56,6 +58,35 @@ type installedWorkerGeneration struct {
 	Active        bool                     `json:"active"`
 }
 
+type retainedWorkerGeneration struct {
+	SchemaVersion        string                `json:"schemaVersion"`
+	PlanID               string                `json:"planId"`
+	OperationDigest      string                `json:"operationDigest"`
+	DrainOperationDigest string                `json:"drainOperationDigest"`
+	CandidateID          string                `json:"candidateId"`
+	PreviousID           string                `json:"previousId"`
+	RollbackWindow       rollbackwindow.Window `json:"rollbackWindow"`
+	RetainedAt           time.Time             `json:"retainedAt"`
+	RetainUntil          time.Time             `json:"retainUntil"`
+}
+
+type drainedWorkerGeneration struct {
+	SchemaVersion      string     `json:"schemaVersion"`
+	PlanID             string     `json:"planId"`
+	OperationDigest    string     `json:"operationDigest"`
+	CandidateID        string     `json:"candidateId"`
+	PreviousID         string     `json:"previousId"`
+	QueueGenerationID  string     `json:"queueGenerationId"`
+	StartedAt          time.Time  `json:"startedAt"`
+	CompletionDeadline time.Time  `json:"completionDeadline"`
+	Deadline           time.Time  `json:"deadline"`
+	ReleaseStartedAt   *time.Time `json:"releaseStartedAt,omitempty"`
+	InFlightMessageID  string     `json:"inFlightMessageId,omitempty"`
+	ReleasedMessageID  string     `json:"releasedMessageId,omitempty"`
+	BoundElapsed       bool       `json:"boundElapsed"`
+	CompletedAt        *time.Time `json:"completedAt,omitempty"`
+}
+
 type exampleWorkerState struct {
 	SchemaVersion        string `json:"schemaVersion"`
 	ApplicationRevision  string `json:"applicationRevision"`
@@ -74,17 +105,52 @@ func validateAsyncWorkloadOperation(planned planner.Operation, record bootstrapR
 	input := planned.Input.Async
 	switch planned.Kind {
 	case planner.InstallTaskGeneration, planner.VerifyTaskGeneration:
-		if input.Task == nil || input.Queue != nil || input.Artifact != nil || input.Worker != nil || input.Schedule != nil || input.Runtime != nil {
+		if input.Task == nil || input.Queue != nil || input.Artifact != nil || input.Worker != nil || input.WorkerHandoff != nil || input.Schedule != nil || input.Runtime != nil {
 			return errors.New("Task operation requires only its typed Task input")
 		}
 		return validateAsyncTaskInput(*input.Task, record, paths)
-	case planner.InstallWorkerGeneration, planner.StartWorkerCandidate, planner.VerifyWorkerCandidate, planner.ActivateWorkerIntake, planner.VerifyWorkerActive:
-		if input.Worker == nil || input.Queue != nil || input.Artifact != nil || input.Task != nil || input.Schedule != nil || input.Runtime != nil {
+	case planner.InstallWorkerGeneration, planner.StartWorkerCandidate, planner.VerifyWorkerCandidate:
+		if input.Worker == nil || input.Queue != nil || input.Artifact != nil || input.Task != nil || input.WorkerHandoff != nil || input.Schedule != nil || input.Runtime != nil {
 			return errors.New("Worker operation requires only its typed Worker input")
 		}
-		return validateAsyncWorkerInput(*input.Worker, record, paths)
+		if err := validateAsyncWorkerInput(*input.Worker, record, paths); err != nil {
+			return err
+		}
+		return validateWorkerTransitionState(planned.Kind, *input.Worker, paths)
+	case planner.ActivateWorkerIntake, planner.VerifyWorkerActive:
+		if input.Queue != nil || input.Artifact != nil || input.Task != nil || input.Schedule != nil || input.Runtime != nil || (input.Worker == nil) == (input.WorkerHandoff == nil) {
+			return errors.New("Worker activation operation requires exactly one typed Worker or Worker handoff input")
+		}
+		if input.WorkerHandoff != nil {
+			if err := validateAsyncWorkerHandoffInput(*input.WorkerHandoff, record, paths); err != nil {
+				return err
+			}
+			if !digestPattern.MatchString(input.WorkerHandoff.DrainOperationDigest) {
+				return errors.New("Worker activation requires the exact approved drain operation digest")
+			}
+			return validateWorkerTransitionState(planned.Kind, input.WorkerHandoff.Worker, paths)
+		}
+		if err := validateAsyncWorkerInput(*input.Worker, record, paths); err != nil {
+			return err
+		}
+		return validateWorkerTransitionState(planned.Kind, *input.Worker, paths)
+	case planner.FenceWorkerIntake, planner.DrainWorkerPrevious, planner.RetainWorkerPrevious:
+		if input.WorkerHandoff == nil || input.Queue != nil || input.Artifact != nil || input.Task != nil || input.Worker != nil || input.Schedule != nil || input.Runtime != nil {
+			return errors.New("Worker handoff operation requires only its typed Worker handoff input")
+		}
+		if err := validateAsyncWorkerHandoffInput(*input.WorkerHandoff, record, paths); err != nil {
+			return err
+		}
+		if planned.Kind == planner.RetainWorkerPrevious {
+			if !digestPattern.MatchString(input.WorkerHandoff.DrainOperationDigest) {
+				return errors.New("Worker retention requires the exact approved drain operation digest")
+			}
+		} else if input.WorkerHandoff.DrainOperationDigest != "" {
+			return errors.New("Worker fence and drain inputs cannot claim a prior drain operation")
+		}
+		return validateWorkerTransitionState(planned.Kind, input.WorkerHandoff.Worker, paths)
 	case planner.InstallScheduleRuntime:
-		if input.Runtime == nil || input.Queue != nil || input.Artifact != nil || input.Task != nil || input.Worker != nil || input.Schedule != nil {
+		if input.Runtime == nil || input.Queue != nil || input.Artifact != nil || input.Task != nil || input.Worker != nil || input.WorkerHandoff != nil || input.Schedule != nil {
 			return errors.New("Schedule runtime operation requires only its typed runtime input")
 		}
 		if input.Runtime.LedgerSchema != scheduler.SchemaVersion || !digestPattern.MatchString(input.Runtime.AppletDigest) {
@@ -92,13 +158,23 @@ func validateAsyncWorkloadOperation(planned planner.Operation, record bootstrapR
 		}
 		return nil
 	case planner.HandoffSchedule, planner.VerifySchedule:
-		if input.Schedule == nil || input.Queue != nil || input.Artifact != nil || input.Task != nil || input.Worker != nil || input.Runtime != nil {
+		if input.Schedule == nil || input.Queue != nil || input.Artifact != nil || input.Task != nil || input.Worker != nil || input.WorkerHandoff != nil || input.Runtime != nil {
 			return errors.New("Schedule operation requires only its typed Schedule input")
 		}
 		return validateAsyncScheduleInput(*input.Schedule, record)
 	default:
 		return errors.New("host executor does not allow this asynchronous operation kind")
 	}
+}
+
+func validateAsyncWorkerHandoffInput(input planner.AsyncWorkerHandoffInput, record bootstrapRecord, paths executionPaths) error {
+	if input.Worker.Previous == nil || !deploymentIdentifier.MatchString(input.QueueGenerationID) {
+		return errors.New("Worker handoff requires exact previous Worker and Queue generation identities")
+	}
+	if _, err := input.RollbackWindow.Duration(); err != nil {
+		return errors.New("Worker handoff rollback window is unsupported")
+	}
+	return validateAsyncWorkerInput(input.Worker, record, paths)
 }
 
 func validateAsyncTaskInput(input planner.AsyncTaskInput, record bootstrapRecord, paths executionPaths) error {
@@ -139,19 +215,53 @@ func validatePlannedPreviousWorker(input planner.AsyncWorkerInput, record bootst
 	if previous.ID == input.GenerationID || previous.ArtifactDigest == input.ArtifactDigest || previous.SystemdUnit == input.SystemdUnit {
 		return errors.New("Worker candidate must be a separate immutable Generation from the active Worker")
 	}
-	active, err := readWorkerGenerationRecord(filepath.Join(paths.environmentHome, "workers", "active.json"))
-	if err != nil || !active.Active || active.Input.GenerationID != previous.ID || active.Input.Revision != previous.Revision || active.Input.ArtifactDigest != previous.ArtifactDigest || active.Input.SystemdUnit != previous.SystemdUnit {
-		return errors.New("planned previous Worker does not match the durable active Worker record")
-	}
-	gate, err := os.ReadFile(workerGatePath(paths, active.Input.GenerationID))
-	if err != nil || string(gate) != "open\n" {
-		return errors.New("planned previous Worker intake is not durably open")
-	}
-	state, err := readWorkerState(workerStatePath(paths, active.Input.GenerationID))
-	if err != nil || state.ApplicationRevision != active.Input.Revision || state.WorkerArtifactDigest != active.Input.ArtifactDigest || state.Queue != active.Input.QueueLogicalID || !state.Connected || state.Gated || !state.Consuming {
-		return errors.New("planned previous Worker runtime state is not exact and active")
+	installed, err := readWorkerGenerationRecord(workerGenerationRecordPath(paths, previous.ID))
+	if err != nil || !installed.Verified || !installed.Active || installed.Input.GenerationID != previous.ID || installed.Input.Revision != previous.Revision || installed.Input.ArtifactDigest != previous.ArtifactDigest || installed.Input.SystemdUnit != previous.SystemdUnit || installed.Input.QueueLogicalID != input.QueueLogicalID {
+		return errors.New("planned previous Worker does not match its immutable generation record")
 	}
 	return nil
+}
+
+func validateWorkerTransitionState(kind planner.OperationKind, input planner.AsyncWorkerInput, paths executionPaths) error {
+	if input.Previous == nil {
+		return nil
+	}
+	active, err := readWorkerGenerationRecord(filepath.Join(paths.environmentHome, "workers", "active.json"))
+	if err != nil || !active.Active {
+		return errors.New("durable active Worker record is unreadable or inactive")
+	}
+	previousActive := workerRecordMatchesStatus(active, *input.Previous)
+	candidateActive := workerRecordMatchesInput(active, input)
+	switch kind {
+	case planner.ActivateWorkerIntake, planner.VerifyWorkerActive:
+		if !previousActive && !candidateActive {
+			return errors.New("durable active Worker record matches neither generation in the approved handoff")
+		}
+	case planner.RetainWorkerPrevious:
+		if !candidateActive {
+			return errors.New("durable active Worker record does not identify the approved candidate")
+		}
+	default:
+		if !previousActive {
+			return errors.New("durable active Worker record does not identify the planned previous generation")
+		}
+	}
+	return nil
+}
+
+func workerRecordMatchesInput(record installedWorkerGeneration, input planner.AsyncWorkerInput) bool {
+	return record.Input.GenerationID == input.GenerationID && record.Input.Revision == input.Revision && record.Input.ArtifactDigest == input.ArtifactDigest && record.Input.SystemdUnit == input.SystemdUnit && record.Input.QueueLogicalID == input.QueueLogicalID
+}
+
+func workerRecordMatchesStatus(record installedWorkerGeneration, status host.WorkerGenerationStatus) bool {
+	return record.Input.GenerationID == status.ID && record.Input.Revision == status.Revision && record.Input.ArtifactDigest == status.ArtifactDigest && record.Input.SystemdUnit == status.SystemdUnit
+}
+
+func plannedWorkerInput(planned planner.Operation) planner.AsyncWorkerInput {
+	if planned.Input.Async.WorkerHandoff != nil {
+		return planned.Input.Async.WorkerHandoff.Worker
+	}
+	return *planned.Input.Async.Worker
 }
 
 func validateAsyncScheduleInput(input planner.AsyncScheduleInput, record bootstrapRecord) error {
@@ -165,7 +275,7 @@ func asyncGenerationReference(id, revision, digest string, record bootstrapRecor
 	return planner.GenerationReference{ID: id, Revision: revision, ArtifactDigest: digest, Account: record.Account, ReleaseDirectory: filepath.Join(paths.environmentHome, "releases", id)}
 }
 
-func observeAsyncWorkloadOperation(ctx context.Context, planned planner.Operation, record bootstrapRecord, paths executionPaths) (host.OperationObservation, error) {
+func observeAsyncWorkloadOperation(ctx context.Context, planID string, planned planner.Operation, record bootstrapRecord, paths executionPaths) (host.OperationObservation, error) {
 	if err := validateAsyncWorkloadOperation(planned, record, paths); err != nil {
 		return host.OperationObservation{}, err
 	}
@@ -187,7 +297,11 @@ func observeAsyncWorkloadOperation(ctx context.Context, planned planner.Operatio
 	case planner.InstallWorkerGeneration:
 		observed := observeWorkerGeneration(ctx, *planned.Input.Async.Worker, record, paths)
 		evidence = observed
-		state = asyncObservationState(observed.Status, "installed")
+		if observed.Status == "installed" || observed.Status == "active-gated" || observed.Status == "active-open" {
+			state = "satisfied"
+		} else {
+			state = asyncObservationState(observed.Status, "installed")
+		}
 	case planner.StartWorkerCandidate:
 		observed := observeWorkerGeneration(ctx, *planned.Input.Async.Worker, record, paths)
 		evidence = observed
@@ -204,8 +318,19 @@ func observeAsyncWorkloadOperation(ctx context.Context, planned planner.Operatio
 		} else if observed.Status != "active-gated" {
 			state = asyncObservationState(observed.Status, "active-gated")
 		}
+	case planner.FenceWorkerIntake, planner.DrainWorkerPrevious, planner.RetainWorkerPrevious:
+		observed := observeWorkerHandoff(ctx, planID, planned, record, paths)
+		evidence = observed
+		if workerHandoffSatisfied(planned.Kind, observed) {
+			state = "satisfied"
+		} else if observed.Status == "unknown" || observed.Status == "failed" {
+			state = "unknown"
+		}
 	case planner.ActivateWorkerIntake, planner.VerifyWorkerActive:
-		observed := observeWorkerGeneration(ctx, *planned.Input.Async.Worker, record, paths)
+		observed := observeWorkerGeneration(ctx, plannedWorkerInput(planned), record, paths)
+		if planned.Input.Async.WorkerHandoff != nil {
+			observed.QueueGenerationID = planned.Input.Async.WorkerHandoff.QueueGenerationID
+		}
 		evidence = observed
 		if workerOperationSatisfied(planned.Kind, observed) {
 			state = "satisfied"
@@ -230,6 +355,19 @@ func observeAsyncWorkloadOperation(ctx context.Context, planned planner.Operatio
 		return host.OperationObservation{}, err
 	}
 	return host.OperationObservation{State: state, Evidence: encoded}, nil
+}
+
+func workerHandoffSatisfied(kind planner.OperationKind, observed host.AsyncWorkerHandoffObservation) bool {
+	switch kind {
+	case planner.FenceWorkerIntake:
+		return observed.Status == "previous-fenced" && observed.Previous.Gate == "closed" && observed.Candidate.Gate == "closed"
+	case planner.DrainWorkerPrevious:
+		return (observed.Status == "previous-drained" || observed.Status == "previous-released") && !observed.Previous.UnitActive && observed.Previous.InFlight == 0
+	case planner.RetainWorkerPrevious:
+		return observed.Status == "previous-retained" && observed.Previous.Restartable && observed.RetainUntil != nil
+	default:
+		return false
+	}
 }
 
 func workerOperationSatisfied(kind planner.OperationKind, observed host.AsyncWorkerOperationObservation) bool {
@@ -273,10 +411,24 @@ func applyAsyncWorkloadOperation(ctx context.Context, planned planner.Operation,
 		observed, actionErr = startWorkerCandidate(ctx, *planned.Input.Async.Worker, record, paths)
 	case planner.VerifyWorkerCandidate:
 		observed, actionErr = verifyWorkerCandidate(ctx, *planned.Input.Async.Worker, record, paths, true)
+	case planner.FenceWorkerIntake:
+		observed, actionErr = fencePreviousWorkerIntake(ctx, planned, claim, record, paths)
+	case planner.DrainWorkerPrevious:
+		observed, actionErr = drainPreviousWorker(ctx, planned, claim, record, paths)
 	case planner.ActivateWorkerIntake:
-		observed, actionErr = activateWorkerIntake(ctx, *planned.Input.Async.Worker, record, paths)
+		if planned.Input.Async.WorkerHandoff != nil {
+			observed, actionErr = activateWorkerHandoff(ctx, *planned.Input.Async.WorkerHandoff, claim.PlanID, record, paths)
+		} else {
+			observed, actionErr = activateWorkerIntake(ctx, *planned.Input.Async.Worker, record, paths)
+		}
 	case planner.VerifyWorkerActive:
-		observed, actionErr = verifyWorkerCandidate(ctx, *planned.Input.Async.Worker, record, paths, false)
+		if planned.Input.Async.WorkerHandoff != nil {
+			observed, actionErr = verifyWorkerHandoffActive(ctx, *planned.Input.Async.WorkerHandoff, claim.PlanID, record, paths)
+		} else {
+			observed, actionErr = verifyWorkerCandidate(ctx, *planned.Input.Async.Worker, record, paths, false)
+		}
+	case planner.RetainWorkerPrevious:
+		observed, actionErr = retainPreviousWorker(ctx, planned, claim, record, paths)
 	case planner.InstallScheduleRuntime:
 		observed, actionErr = installScheduleRuntime(*planned.Input.Async.Runtime, paths)
 	case planner.HandoffSchedule:
@@ -347,6 +499,9 @@ func verifyTaskGeneration(ctx context.Context, input planner.AsyncTaskInput, rec
 }
 
 func installWorkerGeneration(ctx context.Context, input planner.AsyncWorkerInput, record bootstrapRecord, paths executionPaths, attempt string) (host.AsyncWorkerOperationObservation, error) {
+	if observed := observeWorkerGeneration(ctx, input, record, paths); observed.Status == "installed" || observed.Status == "active-gated" || observed.Status == "active-open" {
+		return observed, nil
+	}
 	reference := asyncGenerationReference(input.GenerationID, input.Revision, input.ArtifactDigest, record, paths)
 	generation, err := installGeneration(paths, planner.GenerationInput{GenerationReference: reference}, attempt)
 	if err != nil {
@@ -374,7 +529,7 @@ func installWorkerGeneration(ctx context.Context, input planner.AsyncWorkerInput
 	}
 	_, actionErr := paths.systemd.Run(ctx, "daemon-reload")
 	observed := observeWorkerGeneration(ctx, input, record, paths)
-	if actionErr != nil || observed.Status != "installed" {
+	if actionErr != nil || observed.Status != "installed" && observed.Status != "active-gated" {
 		return observed, errors.New("installed Worker generation failed exact verification")
 	}
 	return observed, nil
@@ -425,12 +580,426 @@ func activateWorkerIntake(ctx context.Context, input planner.AsyncWorkerInput, r
 	return waitForWorker(ctx, input, record, paths, false)
 }
 
+func activateWorkerHandoff(ctx context.Context, input planner.AsyncWorkerHandoffInput, planID string, record bootstrapRecord, paths executionPaths) (host.AsyncWorkerOperationObservation, error) {
+	if err := requirePreviousWorkerDrained(ctx, input, planID, record, paths); err != nil {
+		observed := observeWorkerGeneration(ctx, input.Worker, record, paths)
+		observed.Status, observed.Reason = "failed", err.Error()
+		return observed, err
+	}
+	observed, err := activateWorkerIntake(ctx, input.Worker, record, paths)
+	observed.QueueGenerationID = input.QueueGenerationID
+	return observed, err
+}
+
+func verifyWorkerHandoffActive(ctx context.Context, input planner.AsyncWorkerHandoffInput, planID string, record bootstrapRecord, paths executionPaths) (host.AsyncWorkerOperationObservation, error) {
+	if err := requirePreviousWorkerDrained(ctx, input, planID, record, paths); err != nil {
+		observed := observeWorkerGeneration(ctx, input.Worker, record, paths)
+		observed.Status, observed.Reason = "failed", err.Error()
+		return observed, err
+	}
+	observed, err := verifyWorkerCandidate(ctx, input.Worker, record, paths, false)
+	observed.QueueGenerationID = input.QueueGenerationID
+	return observed, err
+}
+
+func fencePreviousWorkerIntake(ctx context.Context, planned planner.Operation, claim authority.Claim, record bootstrapRecord, paths executionPaths) (host.AsyncWorkerHandoffObservation, error) {
+	input := *planned.Input.Async.WorkerHandoff
+	observed := observeWorkerHandoff(ctx, claim.PlanID, planned, record, paths)
+	if observed.Status == "previous-fenced" {
+		return observed, nil
+	}
+	candidate := observeWorkerGeneration(ctx, input.Worker, record, paths)
+	if !candidate.Verified || candidate.Status != "active-gated" || candidate.Worker.Gate != "closed" {
+		observed.Status, observed.Reason = "failed", "Worker candidate is not exactly verified with intake closed"
+		observed.RecoveryAction = "leave the previous Worker open and correct or replace the candidate before retrying"
+		return observed, errors.New(observed.Reason)
+	}
+	if err := requireExactActiveWorker(input.Worker, paths); err != nil {
+		observed.Status, observed.Reason = "failed", err.Error()
+		observed.RecoveryAction = "inspect the active Worker identity before retrying the approved handoff"
+		return observed, err
+	}
+	if err := replaceGateFile(workerGatePath(paths, input.Worker.Previous.ID), "closed\n"); err != nil {
+		observed.Status, observed.Reason = "failed", err.Error()
+		observed.RecoveryAction = "keep candidate intake closed and inspect the previous Worker gate"
+		return observed, err
+	}
+	deadline := time.Now().Add(paths.healthTimeout)
+	for {
+		state, stateErr := readWorkerState(workerStatePath(paths, input.Worker.Previous.ID))
+		gate, gateErr := os.ReadFile(workerGatePath(paths, input.Worker.Previous.ID))
+		if stateErr == nil && gateErr == nil && string(gate) == "closed\n" && state.Connected && state.Gated && !state.Consuming {
+			observed = observeWorkerHandoff(ctx, claim.PlanID, planned, record, paths)
+			if observed.Status == "previous-fenced" {
+				return observed, nil
+			}
+		}
+		if time.Now().After(deadline) || ctx.Err() != nil {
+			observed.Status = "failed"
+			observed.Reason = "previous Worker did not durably stop intake within the verification bound"
+			observed.RecoveryAction = "keep candidate intake closed; inspect the previous Worker gate and consumer cancellation"
+			return observed, errors.New(observed.Reason)
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+}
+
+func drainPreviousWorker(ctx context.Context, planned planner.Operation, claim authority.Claim, record bootstrapRecord, paths executionPaths) (host.AsyncWorkerHandoffObservation, error) {
+	input := *planned.Input.Async.WorkerHandoff
+	observed := observeWorkerHandoff(ctx, claim.PlanID, planned, record, paths)
+	if workerHandoffSatisfied(planner.DrainWorkerPrevious, observed) && observed.PlanID == claim.PlanID {
+		return observed, nil
+	}
+	digest, _ := planner.OperationDigest(planned)
+	maximum, _ := time.ParseDuration(input.Worker.Drain.MaxDuration)
+	drainPath := workerDrainRecordPath(paths, input.Worker.Previous.ID)
+	var drain drainedWorkerGeneration
+	readErr := readExactJSON(drainPath, &drain)
+	if readErr != nil {
+		if _, statErr := os.Lstat(drainPath); statErr == nil || !errors.Is(statErr, os.ErrNotExist) {
+			observed.Status, observed.Reason = "failed", "durable previous Worker drain record exists but is unreadable or unsafe"
+			observed.RecoveryAction = "keep candidate intake closed and inspect the conflicting durable drain record"
+			return observed, errors.New(observed.Reason)
+		}
+		state, fenceErr := requirePreviousWorkerFenced(ctx, input, paths)
+		if fenceErr != nil {
+			observed.Status, observed.Reason = "failed", fenceErr.Error()
+			observed.RecoveryAction = "keep candidate intake closed and complete the previous Worker fence before draining"
+			return observed, fenceErr
+		}
+		now := time.Now().UTC()
+		deadline := now.Add(maximum)
+		drain = drainedWorkerGeneration{
+			SchemaVersion: "provision.dev/worker-drain/v1alpha2", PlanID: claim.PlanID, OperationDigest: digest,
+			CandidateID: input.Worker.GenerationID, PreviousID: input.Worker.Previous.ID, QueueGenerationID: input.QueueGenerationID,
+			StartedAt: now, CompletionDeadline: deadline.Add(-planner.WorkerDrainReleaseBudget(maximum)), Deadline: deadline, InFlightMessageID: state.InFlightMessageID,
+		}
+		if err := writeJSONAtomic(drainPath, drain, 0444); err != nil {
+			observed.Status, observed.Reason = "failed", "record durable previous Worker drain deadline: "+err.Error()
+			observed.RecoveryAction = "keep candidate intake closed and retry the exact approved drain"
+			return observed, errors.New(observed.Reason)
+		}
+	} else if err := validateDrainRecord(drain, input, claim.PlanID, digest, maximum); err != nil {
+		observed.Status, observed.Reason = "failed", err.Error()
+		observed.RecoveryAction = "keep candidate intake closed and inspect the conflicting durable drain record"
+		return observed, err
+	}
+	if drain.CompletedAt != nil {
+		return observeWorkerHandoff(ctx, claim.PlanID, planned, record, paths), nil
+	}
+	if drain.ReleaseStartedAt == nil {
+		for {
+			active, _ := paths.systemd.Run(ctx, "is-active", input.Worker.Previous.SystemdUnit)
+			state, stateErr := readWorkerState(workerStatePath(paths, input.Worker.Previous.ID))
+			if stateErr != nil {
+				observed.Status, observed.Reason = "failed", "previous Worker runtime state became unreadable during drain"
+				observed.RecoveryAction = "keep candidate intake closed and inspect the previous Worker runtime state"
+				return observed, errors.New(observed.Reason)
+			}
+			if strings.TrimSpace(string(active)) != "active" || state.InFlightMessageID == "" {
+				break
+			}
+			if drain.InFlightMessageID == "" {
+				drain.InFlightMessageID = state.InFlightMessageID
+				if err := writeJSONAtomic(drainPath, drain, 0444); err != nil {
+					return observed, fmt.Errorf("record exact in-flight Worker message identity: %w", err)
+				}
+			}
+			if !time.Now().Before(drain.CompletionDeadline) {
+				releaseStartedAt := time.Now().UTC()
+				if releaseStartedAt.After(drain.Deadline) {
+					observed.Status, observed.Reason = "failed", "previous Worker release could not start before the durable drain deadline"
+					observed.RecoveryAction = "keep candidate intake closed and inspect the previous Worker shutdown path"
+					return observed, errors.New(observed.Reason)
+				}
+				drain.ReleaseStartedAt = &releaseStartedAt
+				if err := writeJSONAtomic(drainPath, drain, 0444); err != nil {
+					return observed, fmt.Errorf("record bounded previous Worker release start: %w", err)
+				}
+				break
+			}
+			select {
+			case <-ctx.Done():
+				observed.Status = "failed"
+				observed.Reason = "previous Worker drain was interrupted after its durable deadline was recorded: " + ctx.Err().Error()
+				observed.RecoveryAction = "keep candidate intake closed and retry the exact approved drain; the original deadline will be reused"
+				return observed, errors.New(observed.Reason)
+			case <-time.After(100 * time.Millisecond):
+			}
+		}
+	}
+	stopCtx, cancelStop := context.WithDeadline(ctx, drain.Deadline)
+	stopOutput, stopErr := paths.systemd.Run(stopCtx, "stop", input.Worker.Previous.SystemdUnit)
+	cancelStop()
+	if stopErr != nil {
+		observed.Status, observed.Reason = "failed", fmt.Sprintf("stop fenced previous Worker before durable drain deadline: %v: %s", stopErr, bytes.TrimSpace(stopOutput))
+		observed.RecoveryAction = "keep candidate intake closed and inspect the exact previous Worker shutdown before retrying"
+		return observed, errors.New(observed.Reason)
+	}
+	for {
+		now := time.Now().UTC()
+		active, _ := paths.systemd.Run(ctx, "is-active", input.Worker.Previous.SystemdUnit)
+		state, stateErr := readWorkerState(workerStatePath(paths, input.Worker.Previous.ID))
+		if strings.TrimSpace(string(active)) != "active" && stateErr == nil && state.InFlightMessageID == "" && state.Gated && !state.Consuming && !now.After(drain.Deadline) {
+			break
+		}
+		if !now.Before(drain.Deadline) || ctx.Err() != nil {
+			observed.Status, observed.Reason = "failed", "previous Worker did not stop and settle its in-flight delivery before the durable drain deadline"
+			observed.RecoveryAction = "keep candidate intake closed and inspect the exact previous Worker unit, broker delivery, and settlement evidence"
+			return observed, errors.New(observed.Reason)
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	if drain.InFlightMessageID != "" {
+		acknowledged := workerMessageEvent(workerEvidencePath(paths), drain.InFlightMessageID, input.Worker.Previous.Revision, input.Worker.Previous.ArtifactDigest, "acknowledged")
+		requeued := workerMessageEvent(workerEvidencePath(paths), drain.InFlightMessageID, input.Worker.Previous.Revision, input.Worker.Previous.ArtifactDigest, "requeued")
+		if acknowledged == requeued {
+			observed.Status, observed.Reason = "failed", "stopped previous Worker does not have exactly one durable acknowledgement or requeue outcome for its in-flight message"
+			observed.RecoveryAction = "keep candidate intake closed and inspect RabbitMQ plus the previous Worker settlement evidence"
+			return observed, errors.New(observed.Reason)
+		}
+		if requeued {
+			drain.BoundElapsed = true
+			drain.ReleasedMessageID = drain.InFlightMessageID
+		}
+	}
+	completedAt := time.Now().UTC()
+	if completedAt.After(drain.Deadline) {
+		observed.Status, observed.Reason = "failed", "previous Worker settlement completed after the durable drain deadline"
+		observed.RecoveryAction = "keep candidate intake closed and inspect the previous Worker shutdown and broker settlement latency"
+		return observed, errors.New(observed.Reason)
+	}
+	drain.CompletedAt = &completedAt
+	if err := writeJSONAtomic(drainPath, drain, 0444); err != nil {
+		observed.Status, observed.Reason = "failed", "record completed previous Worker drain: "+err.Error()
+		observed.RecoveryAction = "keep candidate intake closed and retry exact drain observation"
+		return observed, errors.New(observed.Reason)
+	}
+	return observeWorkerHandoff(ctx, claim.PlanID, planned, record, paths), nil
+}
+
+func validateDrainRecord(drain drainedWorkerGeneration, input planner.AsyncWorkerHandoffInput, planID, digest string, maximum time.Duration) error {
+	if drain.SchemaVersion != "provision.dev/worker-drain/v1alpha2" || drain.PlanID != planID || drain.OperationDigest != digest || drain.CandidateID != input.Worker.GenerationID || drain.PreviousID != input.Worker.Previous.ID || drain.QueueGenerationID != input.QueueGenerationID || drain.StartedAt.IsZero() || !drain.Deadline.Equal(drain.StartedAt.Add(maximum)) || !drain.CompletionDeadline.Equal(drain.Deadline.Add(-planner.WorkerDrainReleaseBudget(maximum))) {
+		return errors.New("durable previous Worker drain record differs from the exact approved operation")
+	}
+	if drain.ReleaseStartedAt != nil && (drain.ReleaseStartedAt.Before(drain.CompletionDeadline) || drain.ReleaseStartedAt.After(drain.Deadline)) {
+		return errors.New("durable previous Worker release start is outside its reserved deadline budget")
+	}
+	if drain.CompletedAt != nil && (drain.CompletedAt.Before(drain.StartedAt) || drain.CompletedAt.After(drain.Deadline) || drain.ReleaseStartedAt != nil && drain.CompletedAt.Before(*drain.ReleaseStartedAt)) {
+		return errors.New("durable previous Worker drain completion is outside its recorded bound")
+	}
+	if drain.CompletedAt == nil && (drain.BoundElapsed || drain.ReleasedMessageID != "") {
+		return errors.New("in-progress previous Worker drain record claims a completed release")
+	}
+	if drain.CompletedAt != nil {
+		released := drain.BoundElapsed && drain.ReleaseStartedAt != nil && drain.InFlightMessageID != "" && drain.ReleasedMessageID == drain.InFlightMessageID
+		drained := !drain.BoundElapsed && drain.ReleasedMessageID == ""
+		if !released && !drained {
+			return errors.New("completed previous Worker drain record has inconsistent settlement evidence")
+		}
+	}
+	return nil
+}
+
+func requirePreviousWorkerFenced(ctx context.Context, input planner.AsyncWorkerHandoffInput, paths executionPaths) (exampleWorkerState, error) {
+	if err := requireExactActiveWorker(input.Worker, paths); err != nil {
+		return exampleWorkerState{}, err
+	}
+	active, _ := paths.systemd.Run(ctx, "is-active", input.Worker.Previous.SystemdUnit)
+	gate, gateErr := os.ReadFile(workerGatePath(paths, input.Worker.Previous.ID))
+	state, stateErr := readWorkerState(workerStatePath(paths, input.Worker.Previous.ID))
+	if strings.TrimSpace(string(active)) != "active" || gateErr != nil || string(gate) != "closed\n" || stateErr != nil || !state.Connected || !state.Gated || state.Consuming {
+		return exampleWorkerState{}, errors.New("previous Worker intake fence is not durably observed")
+	}
+	return state, nil
+}
+
+func retainPreviousWorker(ctx context.Context, planned planner.Operation, claim authority.Claim, record bootstrapRecord, paths executionPaths) (host.AsyncWorkerHandoffObservation, error) {
+	input := *planned.Input.Async.WorkerHandoff
+	observed := observeWorkerHandoff(ctx, claim.PlanID, planned, record, paths)
+	if workerHandoffSatisfied(planner.RetainWorkerPrevious, observed) && observed.PlanID == claim.PlanID {
+		return observed, nil
+	}
+	if err := requirePreviousWorkerDrained(ctx, input, claim.PlanID, record, paths); err != nil {
+		observed.Status, observed.Reason = "failed", err.Error()
+		observed.RecoveryAction = "retain both generations and inspect the completed Worker handoff before retrying"
+		return observed, err
+	}
+	active := observeWorkerGeneration(ctx, input.Worker, record, paths)
+	if active.Status != "active-open" || !active.Verified || !active.Worker.Active {
+		observed.Status, observed.Reason = "failed", "candidate Worker is not the exact verified active generation"
+		observed.RecoveryAction = "retain both generations and verify the active Worker record before retrying"
+		return observed, errors.New(observed.Reason)
+	}
+	duration, _ := input.RollbackWindow.Duration()
+	now := time.Now().UTC()
+	digest, _ := planner.OperationDigest(planned)
+	retention := retainedWorkerGeneration{
+		SchemaVersion: "provision.dev/worker-retention/v1alpha1", PlanID: claim.PlanID, OperationDigest: digest,
+		DrainOperationDigest: input.DrainOperationDigest,
+		CandidateID:          input.Worker.GenerationID, PreviousID: input.Worker.Previous.ID, RollbackWindow: input.RollbackWindow,
+		RetainedAt: now, RetainUntil: now.Add(duration),
+	}
+	if err := writeJSONAtomic(workerRetentionRecordPath(paths), retention, 0444); err != nil {
+		observed.Status, observed.Reason = "failed", "record previous Worker rollback window: "+err.Error()
+		observed.RecoveryAction = "retain both immutable generations and retry exact retention observation"
+		return observed, errors.New(observed.Reason)
+	}
+	return observeWorkerHandoff(ctx, claim.PlanID, planned, record, paths), nil
+}
+
+func observeWorkerHandoff(ctx context.Context, planID string, planned planner.Operation, record bootstrapRecord, paths executionPaths) host.AsyncWorkerHandoffObservation {
+	input := *planned.Input.Async.WorkerHandoff
+	digest, _ := planner.OperationDigest(planned)
+	result := host.AsyncWorkerHandoffObservation{Status: "pending", OperationDigest: digest, QueueGenerationID: input.QueueGenerationID}
+	candidate := observeWorkerGeneration(ctx, input.Worker, record, paths)
+	result.Candidate = candidate.Worker
+	previousInstalled, err := readWorkerGenerationRecord(workerGenerationRecordPath(paths, input.Worker.Previous.ID))
+	if err != nil {
+		result.Status, result.Reason = "unknown", "previous Worker generation record is unreadable"
+		return result
+	}
+	previous := observeWorkerGeneration(ctx, previousInstalled.Input, record, paths)
+	result.Previous = previous.Worker
+	state, stateErr := readWorkerState(workerStatePath(paths, input.Worker.Previous.ID))
+	if stateErr == nil {
+		result.InFlightMessageID = state.InFlightMessageID
+	}
+	queue, queueFindings := inspectRecordedQueue(ctx, record.Environment, record.Account, paths)
+	if queue == nil || len(queueFindings) != 0 || queue.GenerationID != input.QueueGenerationID {
+		result.Status, result.Reason = "unknown", "Queue generation differs from the approved Worker handoff"
+		return result
+	}
+	if candidate.Status != "active-gated" && candidate.Status != "active-open" || !candidate.Verified {
+		result.Status, result.Reason = "unknown", "Worker candidate is not an exact verified observation"
+		return result
+	}
+	switch planned.Kind {
+	case planner.FenceWorkerIntake:
+		if err := requireExactActiveWorker(input.Worker, paths); err != nil {
+			result.Status, result.Reason = "unknown", err.Error()
+			return result
+		}
+		if previous.Status == "active-gated" && previous.Worker.UnitActive && stateErr == nil && state.Connected && state.Gated && !state.Consuming {
+			result.Status = "previous-fenced"
+		}
+	case planner.DrainWorkerPrevious:
+		var drained drainedWorkerGeneration
+		if readExactJSON(workerDrainRecordPath(paths, input.Worker.Previous.ID), &drained) != nil {
+			return result
+		}
+		maximum, durationErr := time.ParseDuration(input.Worker.Drain.MaxDuration)
+		if durationErr != nil || validateDrainRecord(drained, input, planID, digest, maximum) != nil || drained.CompletedAt == nil || previous.Worker.UnitActive || previous.Worker.InFlight != 0 || previous.Worker.Gate != "closed" {
+			result.Status, result.Reason = "unknown", "durable previous Worker drain record does not match observed generations"
+			return result
+		}
+		result.PlanID = drained.PlanID
+		result.InFlightMessageID = drained.InFlightMessageID
+		result.ReleasedMessageID = drained.ReleasedMessageID
+		result.BoundElapsed = drained.BoundElapsed
+		result.DrainStartedAt = &drained.StartedAt
+		result.CompletionDeadline = &drained.CompletionDeadline
+		result.DrainDeadline = &drained.Deadline
+		result.ReleaseStartedAt = drained.ReleaseStartedAt
+		result.DrainCompletedAt = drained.CompletedAt
+		if drained.ReleasedMessageID != "" {
+			result.Status = "previous-released"
+		} else {
+			result.Status = "previous-drained"
+		}
+	case planner.RetainWorkerPrevious:
+		var retained retainedWorkerGeneration
+		if readExactJSON(workerRetentionRecordPath(paths), &retained) != nil {
+			return result
+		}
+		if validateRetentionRecord(retained, input, planID, digest) != nil || !workerGenerationRestartable(previousInstalled, record, paths) {
+			result.Status, result.Reason = "unknown", "previous Worker retention record or restartable generation differs from the approved handoff"
+			return result
+		}
+		result.Status = "previous-retained"
+		result.PlanID = retained.PlanID
+		result.DrainOperationDigest = retained.DrainOperationDigest
+		result.RollbackWindow = retained.RollbackWindow
+		result.RetainedAt = &retained.RetainedAt
+		result.RetainUntil = &retained.RetainUntil
+		result.Previous.Restartable = true
+		result.Previous.RetainUntil = &retained.RetainUntil
+	}
+	return result
+}
+
+func validateRetentionRecord(retained retainedWorkerGeneration, input planner.AsyncWorkerHandoffInput, planID, digest string) error {
+	duration, err := input.RollbackWindow.Duration()
+	if err != nil || retained.SchemaVersion != "provision.dev/worker-retention/v1alpha1" || retained.PlanID != planID || retained.OperationDigest != digest || retained.DrainOperationDigest != input.DrainOperationDigest || retained.CandidateID != input.Worker.GenerationID || retained.PreviousID != input.Worker.Previous.ID || retained.RollbackWindow != input.RollbackWindow || retained.RetainedAt.IsZero() || !retained.RetainUntil.Equal(retained.RetainedAt.Add(duration)) {
+		return errors.New("durable previous Worker retention record differs from the exact approved operation")
+	}
+	return nil
+}
+
+func requireExactActiveWorker(input planner.AsyncWorkerInput, paths executionPaths) error {
+	if input.Previous == nil {
+		return errors.New("Worker handoff has no planned previous generation")
+	}
+	active, err := readWorkerGenerationRecord(filepath.Join(paths.environmentHome, "workers", "active.json"))
+	if err != nil || !active.Active || active.Input.GenerationID != input.Previous.ID || active.Input.Revision != input.Previous.Revision || active.Input.ArtifactDigest != input.Previous.ArtifactDigest || active.Input.SystemdUnit != input.Previous.SystemdUnit {
+		return errors.New("durable active Worker record does not identify the planned previous generation")
+	}
+	return nil
+}
+
+func requirePreviousWorkerDrained(ctx context.Context, input planner.AsyncWorkerHandoffInput, planID string, record bootstrapRecord, paths executionPaths) error {
+	if input.Worker.Previous == nil {
+		return nil
+	}
+	previousInstalled, err := readWorkerGenerationRecord(workerGenerationRecordPath(paths, input.Worker.Previous.ID))
+	if err != nil || !workerGenerationRestartable(previousInstalled, record, paths) {
+		return errors.New("previous Worker immutable generation is not restartable")
+	}
+	active, _ := paths.systemd.Run(ctx, "is-active", input.Worker.Previous.SystemdUnit)
+	gate, gateErr := os.ReadFile(workerGatePath(paths, input.Worker.Previous.ID))
+	state, stateErr := readWorkerState(workerStatePath(paths, input.Worker.Previous.ID))
+	if strings.TrimSpace(string(active)) == "active" || gateErr != nil || string(gate) != "closed\n" || stateErr != nil || state.InFlightMessageID != "" || !state.Gated || state.Consuming {
+		return errors.New("previous Worker is not durably fenced, stopped, and free of in-flight deliveries")
+	}
+	queue, queueFindings := inspectRecordedQueue(ctx, record.Environment, record.Account, paths)
+	if queue == nil || len(queueFindings) != 0 || queue.GenerationID != input.QueueGenerationID {
+		return errors.New("live Queue generation differs from the approved Worker handoff")
+	}
+	var drained drainedWorkerGeneration
+	if readExactJSON(workerDrainRecordPath(paths, input.Worker.Previous.ID), &drained) != nil || drained.CompletedAt == nil || drained.PlanID != planID || drained.OperationDigest != input.DrainOperationDigest || drained.CandidateID != input.Worker.GenerationID || drained.PreviousID != input.Worker.Previous.ID || drained.QueueGenerationID != input.QueueGenerationID {
+		return errors.New("previous Worker has no exact durable drain or release record")
+	}
+	return nil
+}
+
+func workerGenerationRestartable(installed installedWorkerGeneration, record bootstrapRecord, paths executionPaths) bool {
+	reference := asyncGenerationReference(installed.Input.GenerationID, installed.Input.Revision, installed.Input.ArtifactDigest, record, paths)
+	generation := observeGeneration(planner.GenerationInput{GenerationReference: reference})
+	return installed.SchemaVersion == asyncGenerationSchema && installed.Verified && installed.Active && generation.Status == host.CandidateInstalled && generation.Executable == installed.Executable && exactRootFile(filepath.Join(paths.systemdUnits, installed.Input.SystemdUnit), []byte(renderWorkerUnit(installed.Input, record, paths, installed.Executable)), 0644) && exactRootFile(workerGatePath(paths, installed.Input.GenerationID), []byte("closed\n"), 0644)
+}
+
+func workerMessageEvent(path, messageID, revision, digest, eventName string) bool {
+	file, err := os.Open(path)
+	if err != nil {
+		return false
+	}
+	defer file.Close()
+	scanner := bufio.NewScanner(file)
+	for scanner.Scan() {
+		var event struct{ Event, MessageID, WorkerApplicationRevision, WorkerArtifactDigest string }
+		if json.Unmarshal(scanner.Bytes(), &event) == nil && event.Event == eventName && event.MessageID == messageID && event.WorkerApplicationRevision == revision && event.WorkerArtifactDigest == digest {
+			return true
+		}
+	}
+	return false
+}
+
 func waitForWorker(ctx context.Context, input planner.AsyncWorkerInput, record bootstrapRecord, paths executionPaths, gated bool) (host.AsyncWorkerOperationObservation, error) {
 	deadline := time.Now().Add(paths.healthTimeout)
 	for {
 		observed := observeWorkerGeneration(ctx, input, record, paths)
-		gatedReady := gated && observed.Worker.Gate == "closed" && observed.Checks.Liveness && observed.Checks.QueueConnectivity && observed.Checks.RevisionIdentity && observed.Checks.IntakeDisabled
-		activeReady := !gated && observed.Worker.Gate == "open" && observed.Checks.Liveness && observed.Checks.QueueConnectivity && observed.Checks.RevisionIdentity
+		gatedReady := gated && observed.Status == "active-gated" && observed.Worker.Gate == "closed" && observed.Checks.Liveness && observed.Checks.QueueConnectivity && observed.Checks.RevisionIdentity && observed.Checks.IntakeDisabled
+		activeReady := !gated && observed.Status == "active-open" && observed.Worker.Gate == "open" && observed.Checks.Liveness && observed.Checks.QueueConnectivity && observed.Checks.RevisionIdentity
 		if gatedReady || activeReady {
 			return observed, nil
 		}
@@ -801,14 +1370,33 @@ func inspectAsyncDeployment(ctx context.Context, environment, account string, pa
 	} else if activeRecordShouldExist(workerActivePath, filepath.Join(paths.environmentHome, "workers")) {
 		findings = append(findings, "installed Worker generation has no readable active Worker record")
 	}
+	previousWorkerID := ""
+	var retained retainedWorkerGeneration
+	if err := readExactJSON(workerRetentionRecordPath(paths), &retained); err == nil {
+		previousInstalled, previousErr := readWorkerGenerationRecord(workerGenerationRecordPath(paths, retained.PreviousID))
+		if previousErr != nil || retained.SchemaVersion != "provision.dev/worker-retention/v1alpha1" || retained.CandidateID != activeWorkerID || !workerGenerationRestartable(previousInstalled, record, paths) {
+			findings = append(findings, "retained previous Worker generation is not an exact restartable observation")
+		} else {
+			status := workerStatus(previousInstalled.Input, record, paths)
+			gate, _ := os.ReadFile(status.GatePath)
+			status.Gate = strings.TrimSpace(string(gate))
+			status.Health = "retained"
+			status.Restartable = true
+			status.RetainUntil = &retained.RetainUntil
+			deployment.Previous = &status
+			previousWorkerID = retained.PreviousID
+		}
+	} else if _, statErr := os.Lstat(workerRetentionRecordPath(paths)); statErr == nil || !errors.Is(statErr, os.ErrNotExist) {
+		findings = append(findings, "previous Worker retention record is unreadable")
+	}
 	workerEntries, workerEntriesErr := os.ReadDir(filepath.Join(paths.environmentHome, "workers"))
 	if workerEntriesErr == nil {
 		for _, entry := range workerEntries {
-			if entry.IsDir() || entry.Name() == "active.json" || !strings.HasSuffix(entry.Name(), ".json") {
+			if entry.IsDir() || entry.Name() == "active.json" || entry.Name() == "previous.json" || strings.HasSuffix(entry.Name(), ".drain.json") || !strings.HasSuffix(entry.Name(), ".json") {
 				continue
 			}
 			candidate, readErr := readWorkerGenerationRecord(filepath.Join(paths.environmentHome, "workers", entry.Name()))
-			if readErr != nil || candidate.Input.GenerationID == activeWorkerID {
+			if readErr != nil || candidate.Input.GenerationID == activeWorkerID || candidate.Input.GenerationID == previousWorkerID {
 				continue
 			}
 			if deployment.Candidate != nil {
@@ -1069,6 +1657,12 @@ func taskGenerationRecordPath(paths executionPaths, generation string) string {
 }
 func workerGenerationRecordPath(paths executionPaths, generation string) string {
 	return filepath.Join(paths.environmentHome, "workers", generation+".json")
+}
+func workerDrainRecordPath(paths executionPaths, generation string) string {
+	return filepath.Join(paths.environmentHome, "workers", generation+".drain.json")
+}
+func workerRetentionRecordPath(paths executionPaths) string {
+	return filepath.Join(paths.environmentHome, "workers", "previous.json")
 }
 func workerGatePath(paths executionPaths, generation string) string {
 	return filepath.Join(paths.environmentHome, "async", "worker", generation+".gate")

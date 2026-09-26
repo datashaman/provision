@@ -25,7 +25,7 @@ type handlerFake struct {
 	verifyErr    error
 }
 
-func (h *handlerFake) Observe(context.Context, planner.Operation) (HandlerObservation, error) {
+func (h *handlerFake) Observe(context.Context, string, planner.Operation) (HandlerObservation, error) {
 	if h.observeErr != nil {
 		return HandlerObservation{State: ObservationUnknown}, h.observeErr
 	}
@@ -71,7 +71,7 @@ type initialCancellationHandler struct {
 	satisfied bool
 }
 
-func (h *initialCancellationHandler) Observe(context.Context, planner.Operation) (HandlerObservation, error) {
+func (h *initialCancellationHandler) Observe(context.Context, string, planner.Operation) (HandlerObservation, error) {
 	h.cancel()
 	if h.satisfied {
 		return HandlerObservation{State: ObservationSatisfied, Evidence: json.RawMessage(`{"status":"already-present"}`)}, nil
@@ -88,7 +88,7 @@ func (*initialCancellationHandler) Recovery(planned planner.Operation) planner.R
 	return planned.Recovery
 }
 
-func (h *blockingHandler) Observe(context.Context, planner.Operation) (HandlerObservation, error) {
+func (h *blockingHandler) Observe(context.Context, string, planner.Operation) (HandlerObservation, error) {
 	h.observations++
 	return HandlerObservation{State: ObservationPending, Evidence: json.RawMessage(`{"status":"absent"}`)}, nil
 }
@@ -103,7 +103,7 @@ func (*blockingHandler) Recovery(planned planner.Operation) planner.RecoveryMode
 	return planned.Recovery
 }
 
-func (h *cancelingHandler) Observe(context.Context, planner.Operation) (HandlerObservation, error) {
+func (h *cancelingHandler) Observe(context.Context, string, planner.Operation) (HandlerObservation, error) {
 	h.observations++
 	if h.satisfyAfterCancellation && h.observations > 1 {
 		return HandlerObservation{State: ObservationSatisfied, Evidence: json.RawMessage(`{"status":"already-present"}`)}, nil

@@ -62,23 +62,55 @@ The checked-in black-box harness is
 Its qualified live run is recorded in the
 [first scheduled-message evidence](evidence/2026-09-26-first-scheduled-message.md).
 
-For a Worker-only candidate, the Planner keeps the existing Queue, Task, and
-Schedule identities and emits only Queue verification, Artifact staging,
-immutable candidate installation, gated start, and candidate verification. It
-does not authorize the still-unimplemented intake fence, old-Worker drain,
-candidate activation, active verification, or retention operations. The
-restricted executor requires the root-owned gate file and Worker runtime state
-to agree before it reports intake closed, and it reports process identity,
-Queue connection, Revision identity, complete per-message Worker event history,
-and safe systemd diagnostics. If verification fails, the candidate remains
-closed and separately actionable while the existing Worker continues handling
-normal messages. The checked-in
+For a Worker-only replacement, the Planner keeps the existing Queue, Task, and
+Schedule identities and emits one explicit chain: Queue verification, Artifact
+staging, immutable candidate installation, gated start, candidate verification,
+old-Worker intake fence, bounded in-flight drain or release, candidate
+activation, active verification, and previous-generation retention. Every
+operation depends on the preceding transition; the approved input pins both
+Worker generations, the unchanged Queue generation, the drain bound, and the
+rollback window. Post-drain activation, verification, and retention also carry
+the exact approved drain-operation digest.
+
+The restricted executor requires the root-owned gate file and Worker runtime
+state to agree before it reports intake closed. Closing the old gate stops new
+claims but permits its one already accepted delivery to finish. The declared
+maximum includes a deterministic release reserve: normal completion is allowed
+until the recorded completion deadline, then the executor starts the bounded
+unit stop so any unfinished delivery is negatively acknowledged and requeued by
+the final drain deadline. The durable drain record names the same stable message
+identity and records release start and completion. Candidate intake cannot open
+until the exact old unit is fenced,
+stopped, free of in-flight work, and backed by that drain record. After active
+verification, the old immutable artifact, generation record, unit, and closed
+gate remain restartable through the recorded rollback deadline.
+
+The drain record is written before the executor waits. It binds the Plan,
+operation, two Worker generations, Queue generation, stable in-flight message
+identity, start, completion deadline, final deadline, optional release start,
+and completion. A successful result proves settlement no later than the final
+deadline and requires exactly one durable acknowledgement or requeue outcome.
+A resumed attempt reuses both deadlines; if an interruption prevents proof that
+settlement stayed inside them, the operation does not become success. Stale
+Plans, changed Queues, missing closed gates, and historical-but-no-longer-active
+Worker records fail closed.
+
+If candidate verification fails, the candidate remains closed and separately
+actionable while the existing Worker continues handling normal messages. The
+checked-in
 [`scripts/test-rejected-worker-candidate-host.sh`](../scripts/test-rejected-worker-candidate-host.sh)
 harness and its [live evidence](evidence/2026-09-26-rejected-worker-candidate.md)
 qualify that rejection path.
 
-This tracer does not yet implement a successful Worker intake handoff, old
-Worker drain and retention, Schedule handoff between revisions,
-retry/redelivery policy, overlap behavior, missed-run catch-up, crash-boundary
-recovery, or Queue-generation replacement. Those remain explicit later
+The successful path is exercised twice by
+[`scripts/test-worker-intake-handoff-host.sh`](../scripts/test-worker-intake-handoff-host.sh):
+once with the old Worker completing its held delivery inside the bound, and once
+with the deadline releasing the same message identity for the candidate. Its
+live evidence is recorded in the
+[Worker intake handoff evidence](evidence/2026-09-26-worker-intake-handoff.md).
+
+This tracer does not yet implement Schedule handoff between revisions, general
+retry/dead-letter policy acceptance, overlap behavior, missed-run catch-up,
+end-to-end crash-boundary recovery during Worker replacement, rollback execution, retention
+expiry cleanup, or Queue-generation replacement. Those remain explicit later
 transitions rather than implied guarantees.

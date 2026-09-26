@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"provision/internal/authority"
+	"provision/internal/config"
 	"provision/internal/host"
 	"provision/internal/operation"
 	"provision/internal/planner"
@@ -274,6 +275,137 @@ func TestVerifyRetentionResultBindsDeadlinePolicyAndExactGenerations(t *testing.
 	result.Observation = mustJSON(t, observed)
 	if err := verifyHostResult(envelope, result); err == nil {
 		t.Fatal("retention result claiming cleanup accepted")
+	}
+}
+
+func TestVerifyWorkerHandoffResultsBindBothGenerationsAndReleasedMessage(t *testing.T) {
+	candidate := planner.AsyncWorkerInput{
+		GenerationID: "provision-example-async-v2-bbbbbbbbbbbb", Revision: "provision-example-async-v2",
+		ArtifactDigest: "sha256:" + strings.Repeat("b", 64), SystemdUnit: "provision-lab-consumer-bbbbbbbbbbbb.service",
+		Drain: config.WorkerDrain{Mode: "bounded-in-flight", MaxDuration: "30s"},
+		Previous: &host.WorkerGenerationStatus{
+			ID: "provision-example-async-v1-aaaaaaaaaaaa", Revision: "provision-example-async-v1",
+			ArtifactDigest: "sha256:" + strings.Repeat("a", 64), SystemdUnit: "provision-lab-consumer-aaaaaaaaaaaa.service",
+		},
+	}
+	handoff := planner.AsyncWorkerHandoffInput{Worker: candidate, QueueGenerationID: "queue-generation-a", RollbackWindow: rollbackwindow.Window("30m0s")}
+	planned := planner.Operation{ID: "op-09", Kind: planner.DrainWorkerPrevious, Input: planner.OperationInput{Async: &planner.AsyncOperationInput{WorkerHandoff: &handoff}}}
+	digest, err := planner.OperationDigest(planned)
+	if err != nil {
+		t.Fatal(err)
+	}
+	planID := "sha256:" + strings.Repeat("c", 64)
+	envelope := operation.Envelope{Authorization: authority.Proof{Claim: authority.Claim{PlanID: planID}}, Operation: planned}
+	startedAt := time.Date(2026, 9, 26, 8, 0, 0, 0, time.UTC)
+	completionDeadline := startedAt.Add(20 * time.Second)
+	deadline := startedAt.Add(30 * time.Second)
+	releaseStartedAt := completionDeadline
+	completedAt := completionDeadline.Add(time.Second)
+	observed := host.AsyncWorkerHandoffObservation{
+		Status: "previous-released", PlanID: planID, OperationDigest: digest, QueueGenerationID: handoff.QueueGenerationID,
+		InFlightMessageID: "msg-stable", ReleasedMessageID: "msg-stable", BoundElapsed: true, DrainStartedAt: &startedAt, CompletionDeadline: &completionDeadline, DrainDeadline: &deadline, ReleaseStartedAt: &releaseStartedAt, DrainCompletedAt: &completedAt,
+		Candidate: host.WorkerGenerationStatus{ID: candidate.GenerationID, ArtifactDigest: candidate.ArtifactDigest, Gate: "closed", UnitActive: true},
+		Previous:  host.WorkerGenerationStatus{ID: candidate.Previous.ID, ArtifactDigest: candidate.Previous.ArtifactDigest, Gate: "closed"},
+	}
+	result := operation.Result{Outcome: operation.OutcomeSucceeded, Observation: mustJSON(t, observed)}
+	if err := verifyAsyncWorkerHandoffResult(envelope, result); err != nil {
+		t.Fatalf("valid bounded-release result rejected: %v", err)
+	}
+	lateCompletion := deadline.Add(time.Nanosecond)
+	observed.DrainCompletedAt = &lateCompletion
+	result.Observation = mustJSON(t, observed)
+	if err := verifyAsyncWorkerHandoffResult(envelope, result); err == nil {
+		t.Fatal("Worker settlement completed after the declared deadline accepted")
+	}
+	observed.DrainCompletedAt = &completedAt
+	observed.ReleasedMessageID = ""
+	result.Observation = mustJSON(t, observed)
+	if err := verifyAsyncWorkerHandoffResult(envelope, result); err == nil {
+		t.Fatal("released Worker delivery without a stable message identity accepted")
+	}
+	observed.ReleasedMessageID = "msg-stable"
+	observed.BoundElapsed = false
+	result.Observation = mustJSON(t, observed)
+	if err := verifyAsyncWorkerHandoffResult(envelope, result); err == nil {
+		t.Fatal("released Worker delivery without elapsed bound accepted")
+	}
+	observed.BoundElapsed = true
+	observed.ReleasedMessageID = "msg-different"
+	result.Observation = mustJSON(t, observed)
+	if err := verifyAsyncWorkerHandoffResult(envelope, result); err == nil {
+		t.Fatal("released Worker delivery changed its stable message identity")
+	}
+	observed.ReleasedMessageID = "msg-stable"
+	observed.QueueGenerationID = "queue-generation-b"
+	result.Observation = mustJSON(t, observed)
+	if err := verifyAsyncWorkerHandoffResult(envelope, result); err == nil || !strings.Contains(err.Error(), "does not match the Plan") {
+		t.Fatalf("handoff result for a different Queue generation accepted: %v", err)
+	}
+}
+
+func TestVerifyWorkerActiveRequiresVerifiedDurableActiveRecord(t *testing.T) {
+	worker := planner.AsyncWorkerInput{
+		GenerationID: "provision-example-async-v2-bbbbbbbbbbbb", Revision: "provision-example-async-v2",
+		ArtifactDigest: "sha256:" + strings.Repeat("b", 64), SystemdUnit: "provision-lab-consumer-bbbbbbbbbbbb.service",
+	}
+	planned := planner.Operation{ID: "op-11", Kind: planner.VerifyWorkerActive, Input: planner.OperationInput{Async: &planner.AsyncOperationInput{Worker: &worker}}}
+	envelope := operation.Envelope{Operation: planned}
+	observed := host.AsyncWorkerOperationObservation{
+		Status: "active-open",
+		Worker: host.WorkerGenerationStatus{
+			ID: worker.GenerationID, Revision: worker.Revision, ArtifactDigest: worker.ArtifactDigest, SystemdUnit: worker.SystemdUnit,
+			Gate: "open", UnitActive: true, QueueConnected: true,
+		},
+	}
+	result := operation.Result{Outcome: operation.OutcomeSucceeded, Observation: mustJSON(t, observed)}
+	if err := verifyAsyncWorkerResult(envelope, result); err == nil {
+		t.Fatal("active Worker verification accepted without verified durable active identity")
+	}
+	observed.Verified = true
+	observed.Worker.Active = true
+	result.Observation = mustJSON(t, observed)
+	if err := verifyAsyncWorkerResult(envelope, result); err != nil {
+		t.Fatalf("verified durable active Worker rejected: %v", err)
+	}
+}
+
+func TestVerifyWorkerRetentionBindsRollbackWindowAndDrainOperation(t *testing.T) {
+	candidate := planner.AsyncWorkerInput{
+		GenerationID: "provision-example-async-v2-bbbbbbbbbbbb", Revision: "provision-example-async-v2",
+		ArtifactDigest: "sha256:" + strings.Repeat("b", 64), SystemdUnit: "provision-lab-consumer-bbbbbbbbbbbb.service",
+		Drain:    config.WorkerDrain{Mode: "bounded-in-flight", MaxDuration: "30s"},
+		Previous: &host.WorkerGenerationStatus{ID: "provision-example-async-v1-aaaaaaaaaaaa", ArtifactDigest: "sha256:" + strings.Repeat("a", 64)},
+	}
+	planID := "sha256:" + strings.Repeat("c", 64)
+	drainDigest := "sha256:" + strings.Repeat("d", 64)
+	handoff := planner.AsyncWorkerHandoffInput{Worker: candidate, QueueGenerationID: "queue-generation-a", RollbackWindow: "30m0s", DrainOperationDigest: drainDigest}
+	planned := planner.Operation{ID: "op-15", Kind: planner.RetainWorkerPrevious, Input: planner.OperationInput{Async: &planner.AsyncOperationInput{WorkerHandoff: &handoff}}}
+	digest, _ := planner.OperationDigest(planned)
+	envelope := operation.Envelope{Authorization: authority.Proof{Claim: authority.Claim{PlanID: planID}}, Operation: planned}
+	retainedAt := time.Date(2026, 9, 26, 8, 0, 0, 0, time.UTC)
+	retainUntil := retainedAt.Add(30 * time.Minute)
+	observed := host.AsyncWorkerHandoffObservation{
+		Status: "previous-retained", PlanID: planID, OperationDigest: digest, DrainOperationDigest: drainDigest,
+		QueueGenerationID: handoff.QueueGenerationID, RollbackWindow: handoff.RollbackWindow,
+		Candidate:  host.WorkerGenerationStatus{ID: candidate.GenerationID, ArtifactDigest: candidate.ArtifactDigest},
+		Previous:   host.WorkerGenerationStatus{ID: candidate.Previous.ID, ArtifactDigest: candidate.Previous.ArtifactDigest, Restartable: true},
+		RetainedAt: &retainedAt, RetainUntil: &retainUntil,
+	}
+	result := operation.Result{Outcome: operation.OutcomeSucceeded, Observation: mustJSON(t, observed)}
+	if err := verifyAsyncWorkerHandoffResult(envelope, result); err != nil {
+		t.Fatalf("exact Worker retention rejected: %v", err)
+	}
+	observed.DrainOperationDigest = "sha256:" + strings.Repeat("e", 64)
+	result.Observation = mustJSON(t, observed)
+	if err := verifyAsyncWorkerHandoffResult(envelope, result); err == nil {
+		t.Fatal("Worker retention for another drain operation accepted")
+	}
+	observed.DrainOperationDigest = drainDigest
+	short := retainedAt.Add(10 * time.Minute)
+	observed.RetainUntil = &short
+	result.Observation = mustJSON(t, observed)
+	if err := verifyAsyncWorkerHandoffResult(envelope, result); err == nil {
+		t.Fatal("Worker retention with a shortened rollback window accepted")
 	}
 }
 

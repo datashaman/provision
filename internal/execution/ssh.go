@@ -34,12 +34,13 @@ func NewHostHandler(target planner.Target, environment string) (Handler, error) 
 	return SSHHostHandler{target: target, environment: environment}, nil
 }
 
-func (h SSHHostHandler) Observe(ctx context.Context, planned planner.Operation) (HandlerObservation, error) {
+func (h SSHHostHandler) Observe(ctx context.Context, planID string, planned planner.Operation) (HandlerObservation, error) {
 	if planned.Kind != planner.StageArtifact {
 		command := exec.CommandContext(ctx, "ssh", host.StrictSSHArguments(host.Target{Address: h.target.Address, User: h.target.User},
 			"sudo", "-n", host.ExecutorPath, "observe-operation",
 			"--environment", h.environment,
 			"--operator", h.target.User,
+			"--plan", planID,
 		)...)
 		return executeHostObservation(command, planned, "remote Host Target observation")
 	}

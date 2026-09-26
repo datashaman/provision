@@ -2,6 +2,7 @@ package hostasync
 
 import (
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -61,9 +62,23 @@ func TestReplacementAllowsOnlyAChangedWorkerCandidateAgainstExactActiveDependenc
 		t.Fatalf("Task replacement did not fail closed: %q", reason)
 	}
 	evaluation := Evaluate(observation, config.TargetSelection{Target: config.Target{Local: true}})
-	for _, guarantee := range evaluation.Guarantees {
-		if guarantee == "bounded-in-flight-worker-drain" || guarantee == "fenced-schedule-handoff" || guarantee == "previous-worker-generation-retention" {
-			t.Fatalf("unimplemented guarantee advertised: %s", guarantee)
+	for _, guarantee := range []string{"gated-worker-candidate", "bounded-in-flight-worker-drain", "previous-worker-generation-retention"} {
+		if !slices.Contains(evaluation.Guarantees, guarantee) {
+			t.Fatalf("implemented guarantee omitted: %s", guarantee)
+		}
+	}
+	if slices.Contains(evaluation.Guarantees, "fenced-schedule-handoff") {
+		t.Fatal("unimplemented Schedule replacement guarantee advertised")
+	}
+}
+
+func TestEvaluateDoesNotAdvertiseWorkerHandoffWithoutExactExecutorOperations(t *testing.T) {
+	observation := qualifiedAsyncObservation()
+	observation.AllowedOperations = []string{"prepareQueue", "installWorkerGeneration", "startWorkerCandidate", "verifyWorkerCandidate"}
+	evaluation := Evaluate(observation, config.TargetSelection{Target: config.Target{Local: true}})
+	for _, guarantee := range []string{"bounded-in-flight-worker-drain", "previous-worker-generation-retention"} {
+		if slices.Contains(evaluation.Guarantees, guarantee) {
+			t.Fatalf("unobserved executor capability advertised: %s", guarantee)
 		}
 	}
 }
@@ -73,7 +88,10 @@ func qualifiedAsyncObservation() host.BootstrapStatus {
 		SchemaVersion: "provision.dev/host-inspection/v1alpha1", Environment: "lab", OS: "ubuntu", OSVersion: "26.04", Architecture: "x86_64",
 		SystemdVersion: "systemd 259", CgroupV2: true, JournaldActive: true, GenerationStorageReady: true,
 		ExecutorDigest: "sha256:" + strings.Repeat("e", 64), AuthorityKeyID: "sha256:" + strings.Repeat("a", 64),
-		AllowedOperations: []string{"prepareQueue"}, Ready: true,
+		AllowedOperations: []string{
+			"prepareQueue", "installWorkerGeneration", "startWorkerCandidate", "verifyWorkerCandidate",
+			"fenceWorkerIntake", "drainWorkerPrevious", "activateWorkerIntake", "verifyWorkerActive", "retainWorkerPrevious",
+		}, Ready: true,
 		Async: &host.AsyncStatus{SchemaVersion: "provision.dev/host-async-inspection/v1alpha1", ObservationComplete: true, Capabilities: host.AsyncCapabilities{
 			PodmanVersion: "5.7.0+ds2-3build1", Quadlet: true, RootlessEnvironmentAccount: true, SystemdCredentials: true,
 			SubordinateIDs: true, LingeringUserManager: true, RabbitMQQualificationDigest: QualificationDigest,

@@ -95,13 +95,20 @@ type AsyncDeploymentStatus struct {
 }
 
 type QueueMessageStatus struct {
-	ID                          string `json:"id"`
-	ProducerApplicationRevision string `json:"producerApplicationRevision"`
-	TaskArtifactDigest          string `json:"taskArtifactDigest"`
-	TaskInvocationID            string `json:"taskInvocationId"`
-	Disposition                 string `json:"disposition"`
-	WorkerApplicationRevision   string `json:"workerApplicationRevision,omitempty"`
-	WorkerArtifactDigest        string `json:"workerArtifactDigest,omitempty"`
+	ID                          string                    `json:"id"`
+	ProducerApplicationRevision string                    `json:"producerApplicationRevision"`
+	TaskArtifactDigest          string                    `json:"taskArtifactDigest"`
+	TaskInvocationID            string                    `json:"taskInvocationId"`
+	Disposition                 string                    `json:"disposition"`
+	WorkerApplicationRevision   string                    `json:"workerApplicationRevision,omitempty"`
+	WorkerArtifactDigest        string                    `json:"workerArtifactDigest,omitempty"`
+	WorkerEvents                []QueueMessageWorkerEvent `json:"workerEvents,omitempty"`
+}
+
+type QueueMessageWorkerEvent struct {
+	Event                     string `json:"event"`
+	WorkerApplicationRevision string `json:"workerApplicationRevision"`
+	WorkerArtifactDigest      string `json:"workerArtifactDigest"`
 }
 
 type QueueStatus struct {

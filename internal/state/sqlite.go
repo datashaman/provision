@@ -429,7 +429,7 @@ func (b *sqliteBackend) BeginOperation(ctx context.Context, request BeginOperati
 		// loop below enforces either shape from the approved Plan.
 	case planner.InstallGeneration, planner.StartCandidate, planner.VerifyCandidate, planner.SwitchEndpoint, planner.VerifyActive, planner.DrainPrevious, planner.RetainPrevious,
 		planner.InstallTaskGeneration, planner.VerifyTaskGeneration,
-		planner.InstallWorkerGeneration, planner.StartWorkerCandidate, planner.VerifyWorkerCandidate, planner.FenceWorkerIntake, planner.DrainWorkerPrevious, planner.ActivateWorkerIntake, planner.VerifyWorkerActive, planner.RetainWorkerPrevious,
+		planner.InstallWorkerGeneration, planner.StartWorkerCandidate, planner.VerifyWorkerCandidate, planner.ActivateWorkerIntake, planner.VerifyWorkerActive,
 		planner.InstallScheduleRuntime, planner.HandoffSchedule, planner.VerifySchedule:
 		if len(operation.DependsOn) == 0 {
 			return OperationAttempt{}, errors.New("candidate operation requires a successful dependency")

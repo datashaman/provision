@@ -206,7 +206,7 @@ func TestSQLiteBackendEnablesIndependentQueuePreparation(t *testing.T) {
 	}
 }
 
-func TestSQLiteBackendBlocksWorkerIntakeAfterCandidateVerificationFailure(t *testing.T) {
+func TestSQLiteBackendRejectsWorkerIntakeOutsideCandidateOnlyPlan(t *testing.T) {
 	path := t.TempDir() + "/state.db"
 	backend, err := OpenSQLite(path)
 	if err != nil {
@@ -219,9 +219,6 @@ func TestSQLiteBackendBlocksWorkerIntakeAfterCandidateVerificationFailure(t *tes
 		{ID: "op-01", Kind: planner.StageArtifact},
 		{ID: "op-06", Kind: planner.StartWorkerCandidate, DependsOn: []string{"op-01"}},
 		{ID: "op-07", Kind: planner.VerifyWorkerCandidate, DependsOn: []string{"op-06"}},
-		{ID: "op-08", Kind: planner.FenceWorkerIntake, DependsOn: []string{"op-07"}},
-		{ID: "op-09", Kind: planner.DrainWorkerPrevious, DependsOn: []string{"op-08"}},
-		{ID: "op-10", Kind: planner.ActivateWorkerIntake, DependsOn: []string{"op-09"}},
 	}
 	plan.ID = ""
 	encoded, err := json.Marshal(plan)
@@ -250,10 +247,8 @@ func TestSQLiteBackendBlocksWorkerIntakeAfterCandidateVerificationFailure(t *tes
 	complete("op-01", ExecutionSucceeded, time.Minute)
 	complete("op-06", ExecutionSucceeded, 2*time.Minute)
 	complete("op-07", ExecutionFailed, 3*time.Minute)
-	for _, id := range []string{"op-08", "op-09", "op-10"} {
-		if _, err := backend.BeginOperation(context.Background(), BeginOperationRequest{PlanID: plan.ID, OperationID: id, Holder: "holder", StartedAt: now.Add(4 * time.Minute), LeaseDuration: time.Minute}); err == nil || !strings.Contains(err.Error(), "operation dependency") {
-			t.Fatalf("%s became executable after failed candidate verification: %v", id, err)
-		}
+	if _, err := backend.BeginOperation(context.Background(), BeginOperationRequest{PlanID: plan.ID, OperationID: "op-08", Holder: "holder", StartedAt: now.Add(4 * time.Minute), LeaseDuration: time.Minute}); err == nil || !strings.Contains(err.Error(), "not present in the approved Plan") {
+		t.Fatalf("Worker intake operation outside candidate-only Plan became executable: %v", err)
 	}
 }
 

@@ -291,21 +291,33 @@ func runPlanApprove(args []string) error {
 	if !preview.Executable || preview.Plan == nil {
 		return fmt.Errorf("current Plan is not executable: %s", strings.Join(preview.Reasons, "; "))
 	}
-	if preview.Plan.ID != *planID {
-		return fmt.Errorf("Plan is stale: requested %s, current %s", *planID, preview.Plan.ID)
-	}
-	authority, err := approval.AuthenticateLocalActor(*actor, approval.Scope{
-		Application: preview.Plan.Application,
-		Environment: preview.Plan.Environment,
-	})
-	if err != nil {
-		return err
-	}
 	backend, err := state.OpenExistingSQLiteForUpdate(*statePath)
 	if err != nil {
 		return err
 	}
 	defer backend.Close()
+	stored, err := backend.LoadPlanSnapshot(ctx, *planID)
+	if err != nil {
+		return err
+	}
+	requestedFingerprint, err := planner.ApprovalFingerprint(stored.Plan)
+	if err != nil {
+		return err
+	}
+	currentFingerprint, err := planner.ApprovalFingerprint(*preview.Plan)
+	if err != nil {
+		return err
+	}
+	if requestedFingerprint != currentFingerprint {
+		return fmt.Errorf("Plan is stale: requested %s, current %s", *planID, preview.Plan.ID)
+	}
+	authority, err := approval.AuthenticateLocalActor(*actor, approval.Scope{
+		Application: stored.Plan.Application,
+		Environment: stored.Plan.Environment,
+	})
+	if err != nil {
+		return err
+	}
 	now := time.Now().UTC()
 	status, err := approval.Approve(ctx, backend, *planID, authority, now, now.Add(*expiresAfter))
 	if err != nil {

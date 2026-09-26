@@ -11,7 +11,6 @@ import (
 	"os/exec"
 	"os/user"
 	"path/filepath"
-	"slices"
 	"strings"
 	"testing"
 
@@ -631,14 +630,7 @@ func TestAsyncPlanPreviewIsDeterministicCompleteAndReadOnly(t *testing.T) {
 	if existingErr != nil {
 		t.Fatalf("Worker-only replacement Plan failed: %v\n%s", existingErr, existing)
 	}
-	var replacement struct {
-		ID         string `json:"id"`
-		Operations []struct {
-			ID        string   `json:"id"`
-			Kind      string   `json:"kind"`
-			DependsOn []string `json:"dependsOn"`
-		} `json:"operations"`
-	}
+	var replacement planner.Plan
 	if err := json.Unmarshal(existing, &replacement); err != nil {
 		t.Fatal(err)
 	}
@@ -649,29 +641,41 @@ func TestAsyncPlanPreviewIsDeterministicCompleteAndReadOnly(t *testing.T) {
 	if changedLedgerErr != nil {
 		t.Fatalf("runtime telemetry change prevented Worker-only planning: %v\n%s", changedLedgerErr, changedLedger)
 	}
-	var changedLedgerPlan struct {
-		ID string `json:"id"`
-	}
+	var changedLedgerPlan planner.Plan
 	if err := json.Unmarshal(changedLedger, &changedLedgerPlan); err != nil {
 		t.Fatal(err)
 	}
-	if changedLedgerPlan.ID != replacement.ID {
-		t.Fatalf("Schedule ledger telemetry made the Worker-only Plan stale: %s != %s", changedLedgerPlan.ID, replacement.ID)
+	if changedLedgerPlan.ID == replacement.ID {
+		t.Fatal("exact capability evidence did not retain changed Schedule ledger telemetry")
 	}
-	wantReplacement := []string{"prepareQueue", "stageArtifact", "installWorkerGeneration", "startWorkerCandidate", "verifyWorkerCandidate", "fenceWorkerIntake", "drainWorkerPrevious", "activateWorkerIntake", "verifyWorkerActive", "retainWorkerPrevious"}
+	if replacement.Capability.Observed.Async.Deployment.Schedule.LedgerDigest == changedLedgerPlan.Capability.Observed.Async.Deployment.Schedule.LedgerDigest {
+		t.Fatal("exact observed Schedule ledger digest was rewritten or omitted")
+	}
+	if replacement.Capability.DecisionObserved == nil || replacement.Capability.DecisionObserved.Async.Deployment.Schedule.LedgerDigest != "" || changedLedgerPlan.Capability.DecisionObserved == nil || changedLedgerPlan.Capability.DecisionObserved.Async.Deployment.Schedule.LedgerDigest != "" {
+		t.Fatal("adapter decision observation did not explicitly exclude volatile ledger content")
+	}
+	replacementFingerprint, err := planner.ApprovalFingerprint(replacement)
+	if err != nil {
+		t.Fatal(err)
+	}
+	changedLedgerFingerprint, err := planner.ApprovalFingerprint(changedLedgerPlan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if changedLedgerFingerprint != replacementFingerprint {
+		t.Fatalf("Schedule ledger telemetry made the Worker-only approval stale: %s != %s", changedLedgerFingerprint, replacementFingerprint)
+	}
+	wantReplacement := []string{"prepareQueue", "stageArtifact", "installWorkerGeneration", "startWorkerCandidate", "verifyWorkerCandidate"}
 	if len(replacement.Operations) != len(wantReplacement) {
 		t.Fatalf("Worker-only operation count = %d, want %d:\n%s", len(replacement.Operations), len(wantReplacement), existing)
 	}
 	for index, want := range wantReplacement {
-		if replacement.Operations[index].Kind != want {
+		if string(replacement.Operations[index].Kind) != want {
 			t.Fatalf("Worker-only operation %d = %q, want %q", index, replacement.Operations[index].Kind, want)
 		}
 	}
-	if !slices.Contains(replacement.Operations[5].DependsOn, "op-07") {
-		t.Fatalf("intake fencing does not depend on candidate verification: %s", existing)
-	}
-	if strings.Contains(string(existing), `"kind": "installTaskGeneration"`) || strings.Contains(string(existing), `"kind": "handoffSchedule"`) {
-		t.Fatalf("Worker-only Plan attempted to replace Task or Schedule: %s", existing)
+	if strings.Contains(string(existing), `"kind": "installTaskGeneration"`) || strings.Contains(string(existing), `"kind": "handoffSchedule"`) || strings.Contains(string(existing), `"kind": "fenceWorkerIntake"`) || strings.Contains(string(existing), `"kind": "activateWorkerIntake"`) {
+		t.Fatalf("candidate-only Plan attempted an unimplemented Task, Schedule, or Worker handoff: %s", existing)
 	}
 
 	commands, err := os.ReadFile(sshLog)

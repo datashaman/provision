@@ -113,15 +113,13 @@ candidate_unit="$(python3 - "$work_dir/plan.json" <<'PY'
 import json, sys
 plan = json.load(open(sys.argv[1], encoding="utf-8"))
 kinds = [operation["kind"] for operation in plan["operations"]]
-expected = ["prepareQueue", "stageArtifact", "installWorkerGeneration", "startWorkerCandidate", "verifyWorkerCandidate", "fenceWorkerIntake", "drainWorkerPrevious", "activateWorkerIntake", "verifyWorkerActive", "retainWorkerPrevious"]
+expected = ["prepareQueue", "stageArtifact", "installWorkerGeneration", "startWorkerCandidate", "verifyWorkerCandidate"]
 if kinds != expected:
     raise SystemExit(f"unexpected Worker-only Plan operations: {kinds!r}")
 if any(operation["kind"] in {"installTaskGeneration", "handoffSchedule"} for operation in plan["operations"]):
     raise SystemExit("Worker-only Plan contains a Task or Schedule transition")
-verify = next(operation for operation in plan["operations"] if operation["kind"] == "verifyWorkerCandidate")
-fence = next(operation for operation in plan["operations"] if operation["kind"] == "fenceWorkerIntake")
-if verify["id"] not in fence["dependsOn"]:
-    raise SystemExit("Worker intake fencing is not gated by candidate verification")
+if any(operation["kind"] in {"fenceWorkerIntake", "drainWorkerPrevious", "activateWorkerIntake", "verifyWorkerActive", "retainWorkerPrevious"} for operation in plan["operations"]):
+    raise SystemExit("candidate-only Plan contains an unimplemented Worker handoff mutation")
 start = next(operation for operation in plan["operations"] if operation["kind"] == "startWorkerCandidate")
 print(start["input"]["async"]["worker"]["systemdUnit"])
 PY
@@ -160,8 +158,10 @@ current = json.load(open(sys.argv[2], encoding="utf-8"))["async"]["deployment"]
 candidate = current.get("candidateWorker")
 before_ids = {message["id"] for message in before.get("messages", [])}
 new_messages = [message for message in current.get("messages", []) if message["id"] not in before_ids]
+worker_events = [event for message in new_messages for event in message.get("workerEvents", [])]
 ok = (
     any(message["disposition"] == "acknowledged" and message.get("workerArtifactDigest") == before["activeWorker"]["artifactDigest"] for message in new_messages) and
+    all(event.get("workerArtifactDigest") == before["activeWorker"]["artifactDigest"] for event in worker_events) and
     all(message.get("workerArtifactDigest") != candidate["artifactDigest"] for message in new_messages if candidate) and
     current["activeWorker"]["id"] == before["activeWorker"]["id"] and
     current["activeWorker"]["gate"] == "open" and
@@ -190,8 +190,8 @@ for operation in op-08 op-09 op-10 op-11 op-15; do
     echo "downstream Worker operation $operation became executable after failed verification" >&2
     exit 1
   fi
-  grep -Fq 'operation dependency' "$work_dir/$operation-blocked.stderr" || {
-    echo "downstream Worker operation $operation was not rejected by its dependency gate" >&2
+  grep -Fq 'operation is not present in the approved Plan' "$work_dir/$operation-blocked.stderr" || {
+    echo "unapproved Worker handoff operation $operation was not rejected by exact-Plan authorization" >&2
     exit 1
   }
 done
@@ -229,6 +229,9 @@ before_ids = {message["id"] for message in before.get("messages", [])}
 new_messages = [message for message in during.get("messages", []) if message["id"] not in before_ids]
 if not any(message["disposition"] == "acknowledged" and message.get("workerArtifactDigest") == before["activeWorker"]["artifactDigest"] for message in new_messages):
     raise SystemExit("no message was acknowledged by the active Worker during the gated candidate attempt")
+worker_events = [event for message in new_messages for event in message.get("workerEvents", [])]
+if any(event.get("workerArtifactDigest") != before["activeWorker"]["artifactDigest"] for event in worker_events):
+    raise SystemExit("a normal Queue message has processing history outside the active Worker")
 if any(message.get("workerArtifactDigest") == candidate["artifactDigest"] for message in new_messages):
     raise SystemExit("the gated candidate settled a normal Queue message")
 PY

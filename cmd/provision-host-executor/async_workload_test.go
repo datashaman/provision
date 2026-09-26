@@ -156,7 +156,9 @@ func TestQueueMessageInspectionJoinsConfirmedMessagesOnlyToDurableSettlement(t *
 	candidateDigest := "sha256:" + strings.Repeat("c", 64)
 	taskEvidence := "{\"event\":\"message_confirmed\",\"messageId\":\"msg-1\",\"applicationRevision\":\"revision-a\",\"taskArtifactDigest\":\"" + taskDigest + "\",\"invocationId\":\"inv-1\"}\n" +
 		"{\"event\":\"message_confirmed\",\"messageId\":\"msg-2\",\"applicationRevision\":\"revision-a\",\"taskArtifactDigest\":\"" + taskDigest + "\",\"invocationId\":\"inv-2\"}\n"
-	workerEvidence := "{\"event\":\"acknowledgement_decided\",\"messageId\":\"msg-1\",\"workerApplicationRevision\":\"revision-a\",\"workerArtifactDigest\":\"" + activeDigest + "\"}\n" +
+	workerEvidence := "{\"event\":\"requeue_decided\",\"messageId\":\"msg-1\",\"workerApplicationRevision\":\"revision-b\",\"workerArtifactDigest\":\"" + candidateDigest + "\"}\n" +
+		"{\"event\":\"requeued\",\"messageId\":\"msg-1\",\"workerApplicationRevision\":\"revision-b\",\"workerArtifactDigest\":\"" + candidateDigest + "\"}\n" +
+		"{\"event\":\"acknowledgement_decided\",\"messageId\":\"msg-1\",\"workerApplicationRevision\":\"revision-a\",\"workerArtifactDigest\":\"" + activeDigest + "\"}\n" +
 		"{\"event\":\"connected_gated\",\"workerApplicationRevision\":\"revision-b\",\"workerArtifactDigest\":\"" + candidateDigest + "\"}\n" +
 		"{\"event\":\"acknowledged\",\"messageId\":\"msg-1\",\"workerApplicationRevision\":\"revision-a\",\"workerArtifactDigest\":\"" + activeDigest + "\"}\n"
 	if err := os.WriteFile(taskEvidencePath(paths), []byte(taskEvidence), 0600); err != nil {
@@ -169,8 +171,24 @@ func TestQueueMessageInspectionJoinsConfirmedMessagesOnlyToDurableSettlement(t *
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(messages) != 2 || messages[0].Disposition != "acknowledged" || messages[0].WorkerArtifactDigest != activeDigest || messages[1].Disposition != "accepted-unsettled" || messages[1].WorkerArtifactDigest != "" {
+	if len(messages) != 2 || messages[0].Disposition != "acknowledged" || messages[0].WorkerArtifactDigest != activeDigest || len(messages[0].WorkerEvents) != 4 || messages[0].WorkerEvents[0].WorkerArtifactDigest != candidateDigest || messages[1].Disposition != "accepted-unsettled" || messages[1].WorkerArtifactDigest != "" {
 		t.Fatalf("message accounting = %+v", messages)
+	}
+}
+
+func TestWorkerAdmissionRequiresRootGateAndRuntimeStateToAgree(t *testing.T) {
+	gated := exampleWorkerState{Gated: true, Consuming: false}
+	gate, status, disabled := workerAdmissionObservation([]byte("closed\n"), gated)
+	if gate != "closed" || status != "active-gated" || !disabled {
+		t.Fatalf("closed admission = %q, %q, %t", gate, status, disabled)
+	}
+	gate, status, disabled = workerAdmissionObservation([]byte("open\n"), gated)
+	if gate != "open" || status != "unknown" || disabled {
+		t.Fatalf("opened root gate with stale gated runtime state passed verification: %q, %q, %t", gate, status, disabled)
+	}
+	gate, status, disabled = workerAdmissionObservation([]byte("closed\n"), exampleWorkerState{Gated: false, Consuming: true})
+	if gate != "closed" || status != "unknown" || disabled {
+		t.Fatalf("closed root gate with stale consuming runtime state passed verification: %q, %q, %t", gate, status, disabled)
 	}
 }
 

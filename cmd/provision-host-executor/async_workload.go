@@ -571,12 +571,11 @@ func observeWorkerGeneration(ctx context.Context, input planner.AsyncWorkerInput
 	if state.InFlightMessageID != "" {
 		status.InFlight = 1
 	}
-	if state.Gated || !state.Consuming {
-		status.Gate, result.Status = "closed", "active-gated"
-		result.Checks.IntakeDisabled = state.Gated && !state.Consuming
-	} else {
-		status.Gate, result.Status = "open", "active-open"
+	gate, gateErr := os.ReadFile(status.GatePath)
+	if gateErr != nil {
+		gate = nil
 	}
+	status.Gate, result.Status, result.Checks.IntakeDisabled = workerAdmissionObservation(gate, state)
 	if result.Status == "active-gated" && result.Checks.Liveness && result.Checks.QueueConnectivity && result.Checks.RevisionIdentity && result.Checks.IntakeDisabled {
 		status.Health = "candidate-gated"
 	} else if result.Status == "active-open" {
@@ -588,6 +587,23 @@ func observeWorkerGeneration(ctx context.Context, input planner.AsyncWorkerInput
 	}
 	result.Worker = status
 	return result
+}
+
+func workerAdmissionObservation(gate []byte, state exampleWorkerState) (string, string, bool) {
+	switch string(gate) {
+	case "closed\n":
+		if state.Gated && !state.Consuming {
+			return "closed", "active-gated", true
+		}
+		return "closed", "unknown", false
+	case "open\n":
+		if !state.Gated && state.Consuming {
+			return "open", "active-open", false
+		}
+		return "open", "unknown", false
+	default:
+		return "unknown", "unknown", false
+	}
 }
 
 func exactActiveWorkerRecord(paths executionPaths, recorded installedWorkerGeneration) bool {
@@ -906,11 +922,21 @@ func inspectQueueMessages(paths executionPaths) ([]host.QueueMessageStatus, erro
 			return nil, errors.New("Worker settlement evidence is invalid")
 		}
 		index, accepted := indexes[event.MessageID]
-		if !accepted || event.Event != "acknowledged" && event.Event != "requeued" && event.Event != "rejected" {
+		if !accepted {
 			continue
 		}
 		if event.WorkerApplicationRevision == "" || !digestPattern.MatchString(event.WorkerArtifactDigest) {
 			return nil, errors.New("Worker settlement evidence is incomplete")
+		}
+		workerEvent := host.QueueMessageWorkerEvent{Event: event.Event, WorkerApplicationRevision: event.WorkerApplicationRevision, WorkerArtifactDigest: event.WorkerArtifactDigest}
+		switch event.Event {
+		case "acknowledgement_decided", "requeue_decided", "rejection_decided", "acknowledged", "requeued", "rejected":
+			messages[index].WorkerEvents = append(messages[index].WorkerEvents, workerEvent)
+		default:
+			continue
+		}
+		if event.Event != "acknowledged" && event.Event != "requeued" && event.Event != "rejected" {
+			continue
 		}
 		messages[index].Disposition = event.Event
 		messages[index].WorkerApplicationRevision = event.WorkerApplicationRevision

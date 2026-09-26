@@ -4,6 +4,7 @@ package main
 
 import (
 	"bufio"
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -152,7 +153,7 @@ func inspect(environment, operator string) host.BootstrapStatus {
 	_, err := os.Stat("/sys/fs/cgroup/cgroup.controllers")
 	result.CgroupV2 = err == nil
 	environmentHome := "/var/lib/provision/environments/" + environment
-	result.GenerationStorageReady = candidateStorageReady(account, environmentHome)
+	result.GenerationStorageReady = candidateStorageReady(account, environmentHome, "/var/lib/provision/runtime/"+environment)
 	if !result.GenerationStorageReady {
 		result.Findings = append(result.Findings, "dedicated Environment account is missing or changed")
 	}
@@ -240,7 +241,11 @@ func inspect(environment, operator string) host.BootstrapStatus {
 func inspectAsync(environment, account string) *host.AsyncStatus {
 	service := "provision-" + environment + "-rabbitmq"
 	dataPath := "/var/lib/provision/environments/" + environment + "/services/rabbitmq/data"
-	podmanVersion := strings.TrimPrefix(command("podman", "--version"), "podman version ")
+	// The runtime reports only its upstream semantic version (for example,
+	// 5.7.0), while the qualification contract pins the exact Ubuntu package
+	// revision. Observe the package identity so planning compares like with
+	// like against the recorded qualification evidence.
+	podmanVersion := installedPodmanPackageVersion()
 	uid := command("id", "-u", account)
 	quadletPath := ""
 	if uid != "" {
@@ -250,7 +255,7 @@ func inspectAsync(environment, account string) *host.AsyncStatus {
 	subordinateIDs := fileContainsPrefix("/etc/subuid", account+":") && fileContainsPrefix("/etc/subgid", account+":")
 	lingering := rootOwned("/var/lib/systemd/linger/"+account, 0644) && command("systemctl", "is-active", "user@"+uid+".service") == "active"
 	quadletOwned := quadletPath != "" && rootOwned(quadletPath, 0644)
-	dataOwned := ownedBy(dataPath, accountUID, 0700)
+	dataOwned := environmentDataOwned(dataPath, account, accountUID, accountGID(account))
 	credentialPath := "/var/lib/provision/runtime/" + environment + "/.config/credstore.encrypted/rabbitmq-config"
 	credentialObserved := ownedBy(credentialPath, accountUID, 0600)
 	appletDigest := regularFileDigest("/usr/local/libexec/provision-runtime-schedule")
@@ -258,21 +263,28 @@ func inspectAsync(environment, account string) *host.AsyncStatus {
 	if appletDigest != "" {
 		ledgerSchema = "provision.dev/schedule-ledger/v1alpha1"
 	}
+	queue, findings := inspectRecordedQueue(context.Background(), environment, account, systemExecutionPaths(environment))
 	return &host.AsyncStatus{
-		SchemaVersion: "provision.dev/host-async-inspection/v1alpha1", ObservationComplete: false,
-		Findings: []string{"asynchronous deployment observation is not implemented by this executor version"},
+		SchemaVersion: "provision.dev/host-async-inspection/v1alpha1", ObservationComplete: true,
+		Findings: findings,
 		Capabilities: host.AsyncCapabilities{
 			PodmanVersion: podmanVersion, Quadlet: commandSucceeded("test", "-x", "/usr/lib/systemd/system-generators/podman-system-generator"),
-			RootlessEnvironmentAccount: uid != "", SystemdCredentials: commandSucceeded("systemd-creds", "--version"),
+			RootlessEnvironmentAccount: hasAccount(account, "/var/lib/provision/runtime/"+environment), SystemdCredentials: commandSucceeded("systemd-creds", "--version"),
 			SubordinateIDs: subordinateIDs, LingeringUserManager: lingering, QuadletDefinitionRootOwned: quadletOwned,
 			DataPathEnvironmentOwned: dataOwned, EncryptedCredentialObserved: credentialObserved,
-			WorkerAdmissionGate: false,
+			WorkerAdmissionGate:         false,
+			RabbitMQQualificationDigest: qualifiedEvidence, RabbitMQVersion: qualifiedRabbitMQ,
+			RabbitMQImageIndex: qualifiedIndex, RabbitMQImageManifest: qualifiedManifest,
 			RabbitMQServiceUnit: service + ".service", RabbitMQContainer: service, RabbitMQAccount: account,
 			RabbitMQDataPath: dataPath, RabbitMQQuadletPath: quadletPath,
 			ScheduleAppletDigest: appletDigest, ScheduleLedgerSchema: ledgerSchema,
 		},
-		Deployment: host.AsyncDeploymentStatus{},
+		Deployment: host.AsyncDeploymentStatus{Queue: queue},
 	}
+}
+
+func installedPodmanPackageVersion() string {
+	return command("dpkg-query", "-W", "-f=${Version}", "podman")
 }
 
 func fileContainsPrefix(path, prefix string) bool {
@@ -463,8 +475,8 @@ func validEnvironmentAccount(fields []string, home string) bool {
 	return uidErr == nil && gidErr == nil && uid > 0 && uid < 1000 && gid > 0 && fields[5] == home && fields[6] == "/usr/sbin/nologin"
 }
 
-func candidateStorageReady(account, environmentHome string) bool {
-	return hasAccount(account, environmentHome) && rootOwned(environmentHome, 0755) && rootOwned(filepath.Join(environmentHome, "releases"), 0755)
+func candidateStorageReady(account, environmentHome, runtimeHome string) bool {
+	return hasAccount(account, runtimeHome) && rootOwned(environmentHome, 0755) && rootOwned(filepath.Join(environmentHome, "releases"), 0755)
 }
 
 func rootOwned(path string, mode os.FileMode) bool {

@@ -15,7 +15,7 @@ import (
 const ExecutorPath = "/usr/local/libexec/provision-host-executor"
 
 func AllowedOperations() []string {
-	return []string{"inspect", "stageArtifact", "installGeneration", "startCandidate", "verifyCandidate", "switchEndpoint", "verifyActive", "drainPrevious", "retainPrevious"}
+	return []string{"inspect", "stageArtifact", "installGeneration", "startCandidate", "verifyCandidate", "switchEndpoint", "verifyActive", "drainPrevious", "retainPrevious", "prepareQueue"}
 }
 
 var environmentPattern = regexp.MustCompile(`^[a-z][a-z0-9-]{0,19}$`)
@@ -90,18 +90,34 @@ type AsyncDeploymentStatus struct {
 }
 
 type QueueStatus struct {
-	ID            string `json:"id"`
-	Exists        bool   `json:"exists"`
-	Ready         bool   `json:"ready"`
-	QueueType     string `json:"queueType"`
-	Members       int    `json:"members"`
-	Durable       bool   `json:"durable"`
-	ImageManifest string `json:"imageManifest"`
-	ServiceUnit   string `json:"serviceUnit"`
-	Container     string `json:"container"`
-	Account       string `json:"account"`
-	DataPath      string `json:"dataPath"`
-	QuadletPath   string `json:"quadletPath"`
+	ID                  string   `json:"id"`
+	GenerationID        string   `json:"generationId,omitempty"`
+	Exists              bool     `json:"exists"`
+	Ready               bool     `json:"ready"`
+	QueueType           string   `json:"queueType"`
+	Members             int      `json:"members"`
+	Durable             bool     `json:"durable"`
+	ImageManifest       string   `json:"imageManifest"`
+	ServiceUnit         string   `json:"serviceUnit"`
+	Container           string   `json:"container"`
+	Account             string   `json:"account"`
+	DataPath            string   `json:"dataPath"`
+	QuadletPath         string   `json:"quadletPath"`
+	RabbitMQVersion     string   `json:"rabbitmqVersion,omitempty"`
+	Health              string   `json:"health,omitempty"`
+	Reason              string   `json:"reason,omitempty"`
+	RecoveryAction      string   `json:"recoveryAction,omitempty"`
+	RetryQueue          string   `json:"retryQueue,omitempty"`
+	DeadLetterQueue     string   `json:"deadLetterQueue,omitempty"`
+	MessageTTL          string   `json:"messageTtl,omitempty"`
+	DeliveryLimit       int      `json:"deliveryLimit,omitempty"`
+	Accepted            int      `json:"accepted,omitempty"`
+	Available           int      `json:"available,omitempty"`
+	Acknowledged        int      `json:"acknowledged,omitempty"`
+	DeadLettered        int      `json:"deadLettered,omitempty"`
+	ProbeMessageID      string   `json:"probeMessageId,omitempty"`
+	SupportedGuarantees []string `json:"supportedGuarantees,omitempty"`
+	OwnedResources      []string `json:"ownedResources,omitempty"`
 }
 
 type WorkerGenerationStatus struct {

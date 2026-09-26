@@ -17,6 +17,9 @@ type Envelope struct {
 	SchemaVersion string            `json:"schemaVersion"`
 	Authorization authority.Proof   `json:"authorization"`
 	Operation     planner.Operation `json:"operation"`
+	// SensitiveValues are resolved only for this attempt and are never part of
+	// the signed Plan, authorization record, journal, result, or status.
+	SensitiveValues map[string]string `json:"sensitiveValues,omitempty"`
 }
 
 type Outcome string

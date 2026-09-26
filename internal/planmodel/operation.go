@@ -94,6 +94,7 @@ type AsyncOperationInput struct {
 type AsyncQueueInput struct {
 	Component           string               `json:"component"`
 	LogicalID           string               `json:"logicalId"`
+	GenerationID        string               `json:"generationId"`
 	Implementation      string               `json:"implementation"`
 	Lifecycle           string               `json:"lifecycle"`
 	Rollout             string               `json:"rollout"`
@@ -101,11 +102,13 @@ type AsyncQueueInput struct {
 	RabbitMQVersion     string               `json:"rabbitmqVersion"`
 	ImageIndex          string               `json:"imageIndex"`
 	ImageManifest       string               `json:"imageManifest"`
+	ImageReference      string               `json:"imageReference"`
 	ServiceUnit         string               `json:"serviceUnit"`
 	Container           string               `json:"container"`
 	Account             string               `json:"account"`
 	DataPath            string               `json:"dataPath"`
 	QuadletPath         string               `json:"quadletPath"`
+	AMQPPort            int                  `json:"amqpPort"`
 	QueueType           string               `json:"queueType"`
 	Members             int                  `json:"members"`
 	Contract            config.QueueContract `json:"contract"`

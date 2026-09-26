@@ -28,12 +28,8 @@ func Evaluate(observation host.BootstrapStatus, target config.TargetSelection) E
 			"digest-pinned-rabbitmq-quorum-queue",
 			"publisher-confirmed-at-least-once-delivery",
 			"manual-consumer-acknowledgement",
-			"gated-worker-candidate",
-			"bounded-in-flight-worker-drain",
-			"generation-specific-task",
-			"stable-schedule-timer",
-			"fenced-schedule-handoff",
-			"previous-worker-generation-retention",
+			"bounded-redelivery-with-dead-lettering",
+			"24-hour-message-retention",
 		},
 		SupportEvidence: []string{
 			"restricted-bootstrap-ready",
@@ -41,9 +37,6 @@ func Evaluate(observation host.BootstrapStatus, target config.TargetSelection) E
 			"qualified-rabbitmq-packaging",
 			"rootless-quadlet-ready",
 			"systemd-credentials-ready",
-			"worker-admission-control-proven",
-			"pinned-schedule-applet",
-			"versioned-occurrence-ledger",
 			"journald-active",
 			"restricted-executor-identity-matched",
 		},
@@ -68,6 +61,16 @@ func Evaluate(observation host.BootstrapStatus, target config.TargetSelection) E
 	if observation.ExecutorDigest == "" || observation.AuthorityKeyID == "" {
 		issues = append(issues, "restricted host executor or authority identity is not observed")
 	}
+	foundPrepareQueue := false
+	for _, operation := range observation.AllowedOperations {
+		if operation == "prepareQueue" {
+			foundPrepareQueue = true
+			break
+		}
+	}
+	if !foundPrepareQueue {
+		issues = append(issues, "host executor does not allow typed prepareQueue operations")
+	}
 	if !target.Target.Local && observation.SSHHostKeyFingerprint == "" {
 		issues = append(issues, "SSH host key identity is not observed")
 	}
@@ -90,16 +93,9 @@ func Evaluate(observation host.BootstrapStatus, target config.TargetSelection) E
 	if !capability.SystemdCredentials {
 		issues = append(issues, "encrypted systemd credential delivery is not observed")
 	}
-	detailedPackaging := capability.SubordinateIDs &&
-		capability.LingeringUserManager &&
-		capability.QuadletDefinitionRootOwned &&
-		capability.DataPathEnvironmentOwned &&
-		capability.EncryptedCredentialObserved
+	detailedPackaging := capability.SubordinateIDs && capability.LingeringUserManager
 	if !detailedPackaging {
-		issues = append(issues, "rootless Queue account, subordinate IDs, lingering manager, owned paths, or encrypted credential evidence is incomplete")
-	}
-	if !capability.WorkerAdmissionGate {
-		issues = append(issues, "required Worker blue-green is unsupported without proven admission control")
+		issues = append(issues, "rootless Queue account, subordinate IDs, or lingering manager evidence is incomplete")
 	}
 	if capability.RabbitMQQualificationDigest != QualificationDigest ||
 		capability.RabbitMQVersion != "4.3.6" ||
@@ -116,18 +112,26 @@ func Evaluate(observation host.BootstrapStatus, target config.TargetSelection) E
 		capability.RabbitMQQuadletPath == "" {
 		issues = append(issues, "RabbitMQ service identity or owned paths do not match the Environment")
 	}
-	if !strings.HasPrefix(capability.ScheduleAppletDigest, "sha256:") || len(capability.ScheduleAppletDigest) != 71 {
-		issues = append(issues, "pinned Schedule runtime applet identity is not observed")
-	}
-	if capability.ScheduleLedgerSchema != "provision.dev/schedule-ledger/v1alpha1" {
-		issues = append(issues, "Schedule occurrence-ledger schema is unsupported")
+	if capability.WorkerAdmissionGate && strings.HasPrefix(capability.ScheduleAppletDigest, "sha256:") && len(capability.ScheduleAppletDigest) == 71 && capability.ScheduleLedgerSchema == "provision.dev/schedule-ledger/v1alpha1" {
+		evaluation.Guarantees = append(evaluation.Guarantees,
+			"gated-worker-candidate", "bounded-in-flight-worker-drain", "generation-specific-task",
+			"stable-schedule-timer", "fenced-schedule-handoff", "previous-worker-generation-retention")
+		evaluation.SupportEvidence = append(evaluation.SupportEvidence,
+			"worker-admission-control-proven", "pinned-schedule-applet", "versioned-occurrence-ledger")
 	}
 
 	if queue := deployment.Queue; queue != nil && queue.Exists {
 		if !queue.Ready ||
+			queue.GenerationID == "" ||
 			queue.QueueType != "quorum" ||
 			queue.Members != 1 ||
 			!queue.Durable ||
+			queue.RabbitMQVersion != "4.3.6" ||
+			queue.Health != "healthy" ||
+			queue.RetryQueue == "" || queue.DeadLetterQueue == "" ||
+			queue.MessageTTL != "24h0m0s" || queue.DeliveryLimit != 3 ||
+			queue.Accepted != queue.Available+queue.Acknowledged+queue.DeadLettered ||
+			queue.Accepted < 1 || len(queue.SupportedGuarantees) == 0 || len(queue.OwnedResources) == 0 ||
 			queue.ImageManifest != ImageManifest ||
 			queue.ServiceUnit != capability.RabbitMQServiceUnit ||
 			queue.Container != capability.RabbitMQContainer ||

@@ -8,9 +8,9 @@ components:
       delivery: at-least-once
       acknowledgement: manual
       publisherConfirm: required
-      retry: unqualified
-      deadLetter: unqualified
-      retention: unqualified
+      retry: bounded-redelivery-3
+      deadLetter: required
+      retention: 24h0m0s
       ordering: unqualified
       deduplication: unqualified
   consumer:

@@ -40,6 +40,7 @@ type Engine struct {
 	Backend         state.Backend
 	Signer          authority.Signer
 	Handler         Handler
+	ResolvedSecrets map[string]string
 	Now             func() time.Time
 	renewalInterval time.Duration
 }
@@ -129,6 +130,10 @@ func (e Engine) execute(ctx context.Context, request Request, resumeOfAttemptID 
 	if err != nil {
 		return operation.Result{}, err
 	}
+	sensitiveValues, err := resolvedValuesForOperation(snapshot.Plan, request.OperationID, e.ResolvedSecrets)
+	if err != nil {
+		return operation.Result{}, err
+	}
 	if snapshot.Plan.Capability.Observed.AuthorityKeyID == "" || snapshot.Plan.Capability.Observed.AuthorityKeyID != e.Signer.ID() {
 		return operation.Result{}, errors.New("signing key does not match the authority observed in the Plan")
 	}
@@ -170,7 +175,7 @@ func (e Engine) execute(ctx context.Context, request Request, resumeOfAttemptID 
 	if err != nil {
 		return operation.Result{}, e.recordUncertain(ctx, attempt, err, HandlerObservation{State: ObservationUnknown})
 	}
-	envelope := operation.Envelope{SchemaVersion: operation.EnvelopeSchemaVersion, Authorization: proof, Operation: attempt.Operation}
+	envelope := operation.Envelope{SchemaVersion: operation.EnvelopeSchemaVersion, Authorization: proof, Operation: attempt.Operation, SensitiveValues: sensitiveValues}
 	before, err := e.Handler.Observe(ctx, attempt.Operation)
 	if err != nil {
 		journalContext, cancelJournal := failureContext(ctx)
@@ -238,6 +243,27 @@ func (e Engine) execute(ctx context.Context, request Request, resumeOfAttemptID 
 		return result, errors.New("host operation requires explicit recovery because its outcome is uncertain")
 	}
 	return result, nil
+}
+
+func resolvedValuesForOperation(plan planner.Plan, operationID string, available map[string]string) (map[string]string, error) {
+	for _, planned := range plan.Operations {
+		if planned.ID != operationID {
+			continue
+		}
+		if planned.Kind != planner.PrepareQueue {
+			return nil, nil
+		}
+		if planned.Input.Async == nil || planned.Input.Async.Queue == nil || planned.Input.Async.Queue.CredentialReference == "" {
+			return nil, errors.New("prepareQueue has no Queue credential Secret Reference")
+		}
+		reference := planned.Input.Async.Queue.CredentialReference
+		value, ok := available[reference]
+		if !ok || value == "" {
+			return nil, fmt.Errorf("resolved value is required for Queue Secret Reference %s", reference)
+		}
+		return map[string]string{reference: value}, nil
+	}
+	return nil, errors.New("operation is not present in the Plan")
 }
 
 func failureContext(parent context.Context) (context.Context, context.CancelFunc) {
@@ -351,6 +377,8 @@ func recoveryAction(planned planner.Operation) string {
 		return "inspect the stable Endpoint and active/previous Generations before choosing retry or rollback"
 	case planner.RetainBothGenerations:
 		return "retain both Generations and inspect policy state before cleanup"
+	case planner.RetainQueue:
+		return "retain Queue data and observe the exact managed Queue generation before retrying"
 	default:
 		return "inspect the recorded evidence and Host Target before choosing the next operation"
 	}

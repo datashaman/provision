@@ -89,11 +89,17 @@ func runDeploymentExecute(args []string) error {
 	statePath := flags.String("state", "", "SQLite State Backend path")
 	signingKey := flags.String("signing-key", "", "local authority private key path")
 	leaseDuration := flags.Duration("lease-duration", 2*time.Minute, "fenced execution lease lifetime")
+	var secretFiles repeatedFlag
+	flags.Var(&secretFiles, "secret-file", "resolve a Secret Reference from REFERENCE=PATH for this execution")
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
 	if flags.NArg() != 0 || *planID == "" || *operationID == "" || *statePath == "" || *signingKey == "" || *leaseDuration <= 0 {
-		return errors.New("usage: provision deployment execute --plan DIGEST --operation ID --state PATH --signing-key PATH [--lease-duration 2m]")
+		return errors.New("usage: provision deployment execute --plan DIGEST --operation ID --state PATH --signing-key PATH [--secret-file REFERENCE=PATH] [--lease-duration 2m]")
+	}
+	resolvedSecrets, err := loadSecretFiles(secretFiles)
+	if err != nil {
+		return err
 	}
 	signer, err := authority.LoadSigner(*signingKey)
 	if err != nil {
@@ -108,7 +114,7 @@ func runDeploymentExecute(args []string) error {
 	if err != nil {
 		return err
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Minute)
 	defer cancel()
 	snapshot, err := backend.LoadPlanSnapshot(ctx, *planID)
 	if err != nil {
@@ -118,7 +124,7 @@ func runDeploymentExecute(args []string) error {
 	if err != nil {
 		return err
 	}
-	engine := execution.Engine{Backend: backend, Signer: signer, Handler: handler, Now: time.Now}
+	engine := execution.Engine{Backend: backend, Signer: signer, Handler: handler, ResolvedSecrets: resolvedSecrets, Now: time.Now}
 	result, err := engine.Execute(ctx, execution.Request{
 		PlanID: *planID, OperationID: *operationID, Holder: holder, LeaseDuration: *leaseDuration,
 	})
@@ -139,11 +145,17 @@ func runDeploymentResume(args []string) error {
 	statePath := flags.String("state", "", "SQLite State Backend path")
 	signingKey := flags.String("signing-key", "", "local authority private key path")
 	leaseDuration := flags.Duration("lease-duration", 2*time.Minute, "fenced execution lease lifetime")
+	var secretFiles repeatedFlag
+	flags.Var(&secretFiles, "secret-file", "resolve a Secret Reference from REFERENCE=PATH for this execution")
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
 	if flags.NArg() != 0 || *planID == "" || *statePath == "" || *signingKey == "" || *leaseDuration <= 0 {
-		return errors.New("usage: provision deployment resume --plan DIGEST --state PATH --signing-key PATH [--lease-duration 2m]")
+		return errors.New("usage: provision deployment resume --plan DIGEST --state PATH --signing-key PATH [--secret-file REFERENCE=PATH] [--lease-duration 2m]")
+	}
+	resolvedSecrets, err := loadSecretFiles(secretFiles)
+	if err != nil {
+		return err
 	}
 	signer, err := authority.LoadSigner(*signingKey)
 	if err != nil {
@@ -158,7 +170,7 @@ func runDeploymentResume(args []string) error {
 	if err != nil {
 		return err
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Minute)
 	defer cancel()
 	snapshot, err := backend.LoadPlanSnapshot(ctx, *planID)
 	if err != nil {
@@ -168,7 +180,7 @@ func runDeploymentResume(args []string) error {
 	if err != nil {
 		return err
 	}
-	engine := execution.Engine{Backend: backend, Signer: signer, Handler: handler, Now: time.Now}
+	engine := execution.Engine{Backend: backend, Signer: signer, Handler: handler, ResolvedSecrets: resolvedSecrets, Now: time.Now}
 	result, err := engine.Resume(ctx, execution.ResumeRequest{
 		PlanID: *planID, Holder: holder, LeaseDuration: *leaseDuration,
 	})
@@ -465,6 +477,33 @@ func (f *repeatedFlag) String() string { return strings.Join(*f, ",") }
 func (f *repeatedFlag) Set(value string) error {
 	*f = append(*f, value)
 	return nil
+}
+
+func loadSecretFiles(values []string) (map[string]string, error) {
+	resolved := make(map[string]string, len(values))
+	for _, value := range values {
+		reference, path, ok := strings.Cut(value, "=")
+		if !ok || !strings.HasPrefix(reference, "secret://") || path == "" {
+			return nil, errors.New("--secret-file must use SECRET_REFERENCE=PATH")
+		}
+		if _, duplicate := resolved[reference]; duplicate {
+			return nil, fmt.Errorf("duplicate --secret-file for %s", reference)
+		}
+		info, err := os.Lstat(path)
+		if err != nil || !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 || info.Mode().Perm()&0077 != 0 || info.Size() < 1 || info.Size() > 8192 {
+			return nil, fmt.Errorf("Secret Reference %s requires a private regular file", reference)
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return nil, fmt.Errorf("read resolved value for %s", reference)
+		}
+		secret := strings.TrimSpace(string(data))
+		if secret == "" {
+			return nil, fmt.Errorf("resolved value for %s is empty", reference)
+		}
+		resolved[reference] = secret
+	}
+	return resolved, nil
 }
 
 func configName(value string) bool {

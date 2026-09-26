@@ -271,7 +271,7 @@ func buildAsync(compiled config.Compiled, observation host.BootstrapStatus) (Pre
 			Capability: "approve", Reason: "environment deployment policy requires approval of this exact Plan",
 		}},
 		SensitiveValueReferences: adapterPlan.SensitiveValueReferences,
-		Operations:               composeAsyncOperations(adapterPlan.Transitions),
+		Operations:               composeAsyncOperations(adapterPlan),
 	}
 	plan.ID, err = digest(plan)
 	if err != nil {
@@ -281,7 +281,11 @@ func buildAsync(compiled config.Compiled, observation host.BootstrapStatus) (Pre
 	return preview, nil
 }
 
-func composeAsyncOperations(transitions hostasync.TransitionSet) []Operation {
+func composeAsyncOperations(adapterPlan hostasync.PlanningOutput) []Operation {
+	transitions := adapterPlan.Transitions
+	if adapterPlan.QueueOnly {
+		return []Operation{transitions.QueuePreparation}
+	}
 	workerArtifact := withDependencies(transitions.WorkerArtifact, transitions.QueuePreparation.ID)
 	taskArtifact := withDependencies(transitions.TaskArtifact, transitions.QueuePreparation.ID)
 	taskOperations := withExternalDependencies(transitions.Task.Operations, transitions.Task.EntryID, taskArtifact.ID)

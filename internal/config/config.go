@@ -554,7 +554,7 @@ func (c Compiled) validateAsync() error {
 	queue := c.Application.Components[queueName].Queue
 	wantQueue := QueueContract{
 		Delivery: "at-least-once", Acknowledgement: "manual", PublisherConfirm: "required",
-		Retry: "unqualified", DeadLetter: "unqualified", Retention: "unqualified",
+		Retry: "bounded-redelivery-3", DeadLetter: "required", Retention: "24h0m0s",
 		Ordering: "unqualified", Deduplication: "unqualified",
 	}
 	if queue != wantQueue {

@@ -172,6 +172,40 @@ func TestSQLiteBackendRequiresSuccessfulOperationDependencies(t *testing.T) {
 	}
 }
 
+func TestSQLiteBackendEnablesIndependentQueuePreparation(t *testing.T) {
+	path := t.TempDir() + "/state.db"
+	backend, err := OpenSQLite(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer backend.Close()
+
+	plan := contractPlan(t, "application-a", "lab", "revision-a")
+	plan.Operations = []planner.Operation{{
+		ID: "op-01", Kind: planner.PrepareQueue,
+		Input: planner.OperationInput{Async: &planner.AsyncOperationInput{Queue: &planner.AsyncQueueInput{
+			LogicalID: "provision-lab-messages", GenerationID: "provision-lab-messages-rabbitmq-4-3-6-34fc91a9de04",
+		}}},
+	}}
+	plan.ID = ""
+	encoded, err := json.Marshal(plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	digest := sha256.Sum256(encoded)
+	plan.ID = "sha256:" + hex.EncodeToString(digest[:])
+	now := time.Date(2026, 9, 25, 12, 0, 0, 0, time.UTC)
+	if err := backend.StoreCurrentPlan(context.Background(), plan, now); err != nil {
+		t.Fatal(err)
+	}
+	if err := backend.RecordApproval(context.Background(), plan.ID, ApprovalRecord{Actor: "tester", Decision: DecisionApproved, DecidedAt: now, ExpiresAt: now.Add(time.Hour)}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := backend.BeginOperation(context.Background(), BeginOperationRequest{PlanID: plan.ID, OperationID: "op-01", Holder: "holder", StartedAt: now.Add(time.Minute), LeaseDuration: time.Minute}); err != nil {
+		t.Fatalf("independent Queue preparation was not enabled: %v", err)
+	}
+}
+
 func runBackendContract(t *testing.T, factory backendContractFactory) {
 	t.Helper()
 	ctx := context.Background()

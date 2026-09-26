@@ -12,6 +12,7 @@ import (
 type PlanningOutput struct {
 	Transitions              TransitionSet
 	SensitiveValueReferences []string
+	QueueOnly                bool
 }
 
 type TransitionSet struct {
@@ -64,9 +65,12 @@ func Plan(compiled config.Compiled, observation host.BootstrapStatus) PlanningOu
 
 	queueInput := &planmodel.AsyncQueueInput{
 		Component: queueName, LogicalID: "provision-" + compiled.Environment.Name + "-" + queueName,
+		GenerationID:   "provision-" + compiled.Environment.Name + "-" + queueName + "-rabbitmq-4-3-6-" + strings.TrimPrefix(ImageManifest, "sha256:")[:12],
 		Implementation: queueImplementation.Kind, Lifecycle: queueImplementation.Lifecycle, Rollout: queueImplementation.Rollout,
 		CredentialReference: queueImplementation.Credential, RabbitMQVersion: async.Capabilities.RabbitMQVersion,
-		ImageIndex: async.Capabilities.RabbitMQImageIndex, ImageManifest: async.Capabilities.RabbitMQImageManifest, QueueType: "quorum", Members: 1,
+		ImageIndex: async.Capabilities.RabbitMQImageIndex, ImageManifest: async.Capabilities.RabbitMQImageManifest,
+		ImageReference: "docker.io/library/rabbitmq@" + async.Capabilities.RabbitMQImageManifest,
+		QueueType:      "quorum", Members: 1, AMQPPort: 25672,
 		ServiceUnit: async.Capabilities.RabbitMQServiceUnit, Container: async.Capabilities.RabbitMQContainer,
 		Account: async.Capabilities.RabbitMQAccount, DataPath: async.Capabilities.RabbitMQDataPath, QuadletPath: async.Capabilities.RabbitMQQuadletPath,
 		Contract: queueComponent.Queue, Observed: async.Deployment.Queue,
@@ -152,6 +156,7 @@ func Plan(compiled config.Compiled, observation host.BootstrapStatus) PlanningOu
 	return PlanningOutput{
 		Transitions:              transitions,
 		SensitiveValueReferences: []string{queueImplementation.Credential},
+		QueueOnly:                !async.Capabilities.WorkerAdmissionGate || async.Capabilities.ScheduleAppletDigest == "" || async.Capabilities.ScheduleLedgerSchema == "",
 	}
 }
 

@@ -151,7 +151,12 @@ func runObserveOperation(args []string) error {
 	if err != nil {
 		return err
 	}
-	observed, err := observeCandidateOperation(context.Background(), planned, record, paths)
+	var observed host.OperationObservation
+	if planned.Kind == planner.PrepareQueue {
+		observed, err = observeQueueOperation(context.Background(), planned, record, paths)
+	} else {
+		observed, err = observeCandidateOperation(context.Background(), planned, record, paths)
+	}
 	if err != nil {
 		return err
 	}
@@ -194,7 +199,7 @@ func loadExecutionAuthority(paths executionPaths, environment, operator string) 
 	if json.Unmarshal(data, &record) != nil || record.SchemaVersion != "provision.dev/bootstrap/v2" || record.Environment != environment || record.Operator != operator || record.Account != "provision-"+environment || record.ExecutorDigest != executorDigest {
 		return bootstrapRecord{}, nil, errors.New("bootstrap authority record does not match this executor and identity")
 	}
-	if !candidateStorageReady(record.Account, paths.environmentHome) || !rootOwned(paths.systemdUnits, 0755) {
+	if !candidateStorageReady(record.Account, paths.environmentHome, "/var/lib/provision/runtime/"+record.Environment) || !rootOwned(paths.systemdUnits, 0755) {
 		return bootstrapRecord{}, nil, errors.New("candidate execution directories or Environment account are unsafe")
 	}
 	publicKey, keyID, err := authority.LoadVerifier(paths.publicKey)
@@ -235,7 +240,16 @@ func executeAuthorized(ctx context.Context, envelope operation.Envelope, record 
 	if err != nil || digest != claim.OperationDigest {
 		return operation.Result{}, errors.New("authorized operation digest does not match its payload")
 	}
-	if envelope.Operation.Kind == planner.StageArtifact {
+	if envelope.Operation.Kind == planner.PrepareQueue {
+		if err := validateQueueOperation(envelope.Operation, record, paths); err != nil {
+			return operation.Result{}, err
+		}
+		if _, err := validateQueueSensitiveValues(envelope.SensitiveValues, *envelope.Operation.Input.Async.Queue); err != nil {
+			return operation.Result{}, err
+		}
+	} else if len(envelope.SensitiveValues) != 0 {
+		return operation.Result{}, errors.New("resolved Secret References are not accepted by this operation kind")
+	} else if envelope.Operation.Kind == planner.StageArtifact {
 		if err := validateStageArtifact(envelope.Operation); err != nil {
 			return operation.Result{}, err
 		}
@@ -260,6 +274,8 @@ func executeAuthorized(ctx context.Context, envelope operation.Envelope, record 
 					actionErr = err
 				}
 			}
+		} else if envelope.Operation.Kind == planner.PrepareQueue {
+			encoded, actionErr = applyQueueOperation(ctx, envelope.Operation, record, paths, envelope.SensitiveValues)
 		} else if envelope.Operation.Kind == planner.SwitchEndpoint {
 			encoded, actionErr = applySwitchEndpoint(ctx, envelope.Operation, claim, record, paths, now)
 		} else if envelope.Operation.Kind == planner.VerifyActive {
@@ -303,6 +319,19 @@ func executeAuthorized(ctx context.Context, envelope operation.Envelope, record 
 			encoded, encodeErr = json.Marshal(host.ArtifactObservation{
 				Status: host.ArtifactFailed, Path: path, Digest: artifact.Digest, Reason: actionErr.Error(),
 			})
+			if encodeErr != nil {
+				return operation.Result{}, encodeErr
+			}
+		} else if envelope.Operation.Kind == planner.PrepareQueue {
+			observed := queueStatusIdentity(*envelope.Operation.Input.Async.Queue)
+			if len(encoded) != 0 {
+				_ = json.Unmarshal(encoded, &observed)
+			}
+			observed.Health = "failed"
+			observed.Reason = actionErr.Error()
+			observed.RecoveryAction = "observe the exact managed Queue generation before retrying"
+			var encodeErr error
+			encoded, encodeErr = json.Marshal(observed)
 			if encodeErr != nil {
 				return operation.Result{}, encodeErr
 			}

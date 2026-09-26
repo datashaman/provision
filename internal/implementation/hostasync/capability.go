@@ -184,9 +184,41 @@ func InitialSchedulePolicyReason(schedule config.ScheduleContract) string {
 	return ""
 }
 
-func InitialReplacementReason(deployment host.AsyncDeploymentStatus) string {
-	if deployment.ActiveWorker != nil || deployment.ActiveTask != nil || deployment.Schedule != nil {
-		return "initial asynchronous tracer does not support replacing an active Worker, Task, or Schedule generation"
+func ReplacementReason(compiled config.Compiled, async host.AsyncStatus) string {
+	deployment := async.Deployment
+	if deployment.ActiveWorker == nil && deployment.ActiveTask == nil && deployment.Schedule == nil {
+		return ""
+	}
+	if deployment.ActiveWorker == nil || deployment.ActiveTask == nil || deployment.Schedule == nil {
+		return "asynchronous replacement requires exact active Worker, Task, and Schedule observations"
+	}
+	roles := roleNames(compiled)
+	workerArtifact := compiled.Revision.Artifacts[roles["worker"]]
+	taskArtifact := compiled.Revision.Artifacts[roles["task"]]
+	taskComponent := compiled.Application.Components[roles["task"]]
+	scheduleComponent := compiled.Application.Components[roles["schedule"]]
+	scheduleImplementation := compiled.Environment.Implementations[roles["schedule"]]
+
+	if workerArtifact.Digest == deployment.ActiveWorker.ArtifactDigest {
+		return "Worker replacement requires a different immutable Worker Artifact"
+	}
+	if taskArtifact.Digest != deployment.ActiveTask.ArtifactDigest ||
+		deployment.ActiveTask.Queue != "provision-"+compiled.Environment.Name+"-"+roles["queue"] ||
+		deployment.ActiveTask.Timeout != taskComponent.Task.Timeout {
+		return "current tracer supports only Worker replacement; the active Task contract or Artifact differs"
+	}
+	expectedTaskUnit := fmt.Sprintf("provision-%s-%s-%s@.service", compiled.Environment.Name, roles["task"], strings.TrimPrefix(taskArtifact.Digest, "sha256:")[:12])
+	if deployment.ActiveTask.SystemdUnit != expectedTaskUnit {
+		return "current tracer supports only Worker replacement; the active Task generation identity differs"
+	}
+	schedule := deployment.Schedule
+	contract := scheduleComponent.Schedule
+	expectedTimer := fmt.Sprintf("provision-%s-%s.timer", compiled.Environment.Name, roles["schedule"])
+	if !schedule.Active || schedule.TimerUnit != expectedTimer || schedule.TaskGenerationID != deployment.ActiveTask.ID ||
+		!strings.HasPrefix(schedule.AppletDigest, "sha256:") || schedule.LedgerSchema != scheduleImplementation.Schedule.LedgerSchema ||
+		schedule.Expression != contract.Expression || schedule.Timezone != contract.Timezone || schedule.DaylightSaving != contract.DaylightSaving ||
+		schedule.Overlap != contract.Overlap || schedule.Retry != contract.Retry || schedule.MissedRun != contract.MissedRun || schedule.Failure != contract.Failure {
+		return "current tracer supports only Worker replacement; the active Schedule contract or Task binding differs"
 	}
 	return ""
 }

@@ -13,6 +13,7 @@ type PlanningOutput struct {
 	Transitions              TransitionSet
 	SensitiveValueReferences []string
 	QueueOnly                bool
+	WorkerOnly               bool
 }
 
 type TransitionSet struct {
@@ -167,6 +168,7 @@ func Plan(compiled config.Compiled, observation host.BootstrapStatus) PlanningOu
 		Transitions:              transitions,
 		SensitiveValueReferences: []string{queueImplementation.Credential},
 		QueueOnly:                false,
+		WorkerOnly:               workerInput.Previous != nil,
 	}
 }
 

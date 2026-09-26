@@ -1,0 +1,4 @@
+schemaVersion: provision.dev/v1alpha1
+application: application.yaml
+environment: environment.yaml
+revision: revision-worker-v2.yaml

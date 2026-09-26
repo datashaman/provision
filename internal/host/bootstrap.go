@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"provision/internal/config"
 	"provision/internal/rollbackwindow"
 )
 
@@ -84,11 +85,23 @@ type AsyncCapabilities struct {
 type AsyncDeploymentStatus struct {
 	Queue        *QueueStatus               `json:"queue,omitempty"`
 	ActiveWorker *WorkerGenerationStatus    `json:"activeWorker,omitempty"`
+	Candidate    *WorkerGenerationStatus    `json:"candidateWorker,omitempty"`
 	Previous     *WorkerGenerationStatus    `json:"previousWorker,omitempty"`
 	ActiveTask   *TaskGenerationStatus      `json:"activeTask,omitempty"`
 	Schedule     *ScheduleStatus            `json:"schedule,omitempty"`
 	Occurrences  []ScheduleOccurrenceStatus `json:"occurrences,omitempty"`
 	Invocations  []TaskInvocationStatus     `json:"taskInvocations,omitempty"`
+	Messages     []QueueMessageStatus       `json:"messages,omitempty"`
+}
+
+type QueueMessageStatus struct {
+	ID                          string `json:"id"`
+	ProducerApplicationRevision string `json:"producerApplicationRevision"`
+	TaskArtifactDigest          string `json:"taskArtifactDigest"`
+	TaskInvocationID            string `json:"taskInvocationId"`
+	Disposition                 string `json:"disposition"`
+	WorkerApplicationRevision   string `json:"workerApplicationRevision,omitempty"`
+	WorkerArtifactDigest        string `json:"workerArtifactDigest,omitempty"`
 }
 
 type QueueStatus struct {
@@ -147,6 +160,9 @@ type WorkerGenerationStatus struct {
 	StatePath      string `json:"statePath,omitempty"`
 	GatePath       string `json:"gatePath,omitempty"`
 	EvidencePath   string `json:"evidencePath,omitempty"`
+	Health         string `json:"health,omitempty"`
+	Reason         string `json:"reason,omitempty"`
+	RecoveryAction string `json:"recoveryAction,omitempty"`
 }
 
 type TaskGenerationStatus struct {
@@ -156,20 +172,33 @@ type TaskGenerationStatus struct {
 	SystemdUnit         string `json:"systemdUnit"`
 	Queue               string `json:"queue"`
 	ConfigurationDigest string `json:"configurationDigest"`
+	Timeout             string `json:"timeout"`
 	EvidencePath        string `json:"evidencePath,omitempty"`
 }
 
 type ScheduleStatus struct {
-	Component        string `json:"component"`
-	TimerUnit        string `json:"timerUnit"`
-	TaskGenerationID string `json:"taskGenerationId"`
-	AppletDigest     string `json:"appletDigest"`
-	LedgerSchema     string `json:"ledgerSchema"`
-	LedgerDigest     string `json:"ledgerDigest"`
-	FencingToken     int64  `json:"fencingToken"`
-	Timezone         string `json:"timezone"`
-	Expression       string `json:"expression"`
-	Active           bool   `json:"active"`
+	Component        string                   `json:"component"`
+	TimerUnit        string                   `json:"timerUnit"`
+	TaskGenerationID string                   `json:"taskGenerationId"`
+	AppletDigest     string                   `json:"appletDigest"`
+	LedgerSchema     string                   `json:"ledgerSchema"`
+	LedgerDigest     string                   `json:"ledgerDigest"`
+	FencingToken     int64                    `json:"fencingToken"`
+	Timezone         string                   `json:"timezone"`
+	Expression       string                   `json:"expression"`
+	DaylightSaving   string                   `json:"daylightSaving"`
+	Overlap          string                   `json:"overlap"`
+	Retry            config.ScheduleRetry     `json:"retry"`
+	MissedRun        config.ScheduleMissedRun `json:"missedRun"`
+	Failure          string                   `json:"failure"`
+	Active           bool                     `json:"active"`
+}
+
+type WorkerVerificationChecks struct {
+	Liveness          bool `json:"liveness"`
+	QueueConnectivity bool `json:"queueConnectivity"`
+	RevisionIdentity  bool `json:"revisionIdentity"`
+	IntakeDisabled    bool `json:"intakeDisabled"`
 }
 
 type ScheduleOccurrenceStatus struct {
@@ -213,11 +242,12 @@ type AsyncTaskOperationObservation struct {
 }
 
 type AsyncWorkerOperationObservation struct {
-	Status         string                 `json:"status"`
-	Worker         WorkerGenerationStatus `json:"worker"`
-	Verified       bool                   `json:"verified"`
-	UnitDiagnostic *SystemdUnitDiagnostic `json:"unitDiagnostic,omitempty"`
-	Reason         string                 `json:"reason,omitempty"`
+	Status         string                   `json:"status"`
+	Worker         WorkerGenerationStatus   `json:"worker"`
+	Verified       bool                     `json:"verified"`
+	Checks         WorkerVerificationChecks `json:"checks"`
+	UnitDiagnostic *SystemdUnitDiagnostic   `json:"unitDiagnostic,omitempty"`
+	Reason         string                   `json:"reason,omitempty"`
 }
 
 type SystemdUnitDiagnostic struct {

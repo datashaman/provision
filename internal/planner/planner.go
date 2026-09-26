@@ -243,7 +243,7 @@ func buildAsync(compiled config.Compiled, observation host.BootstrapStatus) (Pre
 	}
 	reasons := append([]string(nil), evaluation.Reasons...)
 	if !compiled.IsQueueOnly() && observation.Async != nil {
-		if reason := hostasync.InitialReplacementReason(observation.Async.Deployment); reason != "" {
+		if reason := hostasync.ReplacementReason(compiled, *observation.Async); reason != "" {
 			reasons = append(reasons, reason)
 		}
 		capability := observation.Async.Capabilities
@@ -306,9 +306,18 @@ func composeAsyncOperations(adapterPlan hostasync.PlanningOutput) []Operation {
 		return []Operation{transitions.QueuePreparation}
 	}
 	workerArtifact := withDependencies(transitions.WorkerArtifact, transitions.QueuePreparation.ID)
+	workerOperations := withExternalDependencies(transitions.Worker.Operations, transitions.Worker.EntryID, workerArtifact.ID, transitions.QueuePreparation.ID)
+	if adapterPlan.WorkerOnly {
+		operations := []Operation{transitions.QueuePreparation, workerArtifact}
+		operations = append(operations, workerOperations...)
+		if transitions.PreviousWorkerStore != nil {
+			retention := withDependencies(*transitions.PreviousWorkerStore, transitions.Worker.ReadyID)
+			operations = append(operations, retention)
+		}
+		return operations
+	}
 	taskArtifact := withDependencies(transitions.TaskArtifact, transitions.QueuePreparation.ID)
 	taskOperations := withExternalDependencies(transitions.Task.Operations, transitions.Task.EntryID, taskArtifact.ID)
-	workerOperations := withExternalDependencies(transitions.Worker.Operations, transitions.Worker.EntryID, workerArtifact.ID, transitions.QueuePreparation.ID)
 	scheduleOperations := withExternalDependencies(transitions.Schedule.Operations, transitions.Schedule.RuntimeID, transitions.Task.ReadyID)
 	scheduleOperations = withExternalDependencies(scheduleOperations, transitions.Schedule.ActivationID, transitions.Worker.ReadyID, transitions.Task.ReadyID)
 

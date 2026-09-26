@@ -1,0 +1,11 @@
+schemaVersion: provision.dev/v1alpha1
+kind: Revision
+name: provision-example-async-v2
+application: provision-example-async
+artifacts:
+  consumer:
+    source: https://github.com/datashaman/provision-example-async/releases/download/v0.2.0/provision-example-async-worker-linux-amd64.tar.gz
+    digest: sha256:14caeac0dbdaff68a2644798b0a1b2549f82342bedbf79d9b8da4625e2080d95
+  publish:
+    source: https://github.com/datashaman/provision-example-async/releases/download/v0.1.1/provision-example-async-task-linux-amd64.tar.gz
+    digest: sha256:ce1dc7e13900742b3139beb521e9bcd30005470370462b9aa01383f078c999e5

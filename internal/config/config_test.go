@@ -60,7 +60,7 @@ func TestLoadAsyncExampleDeterministically(t *testing.T) {
 	if got := first.Environment.Implementations["consumer"].Worker.Drain.MaxDuration; got != "30s" {
 		t.Fatalf("Worker drain maxDuration = %q, want 30s", got)
 	}
-	if len(first.Revision.Artifacts) != 2 || first.Revision.Artifacts["consumer"].Digest != "sha256:4b6e79444cd9032facb5e027cafb7dca328d5f33eb334ccc3e83e70a30ce6e4a" || first.Revision.Artifacts["publish"].Digest != "sha256:ce1dc7e13900742b3139beb521e9bcd30005470370462b9aa01383f078c999e5" {
+	if len(first.Revision.Artifacts) != 2 || first.Revision.Artifacts["consumer"].Digest != "sha256:2fcb2cec1d3d899e53737b9c25579ec1b2a271b93945a604bb43d337d207df40" || first.Revision.Artifacts["publish"].Digest != "sha256:ce1dc7e13900742b3139beb521e9bcd30005470370462b9aa01383f078c999e5" {
 		t.Fatalf("Revision does not bind the released async artifacts: %+v", first.Revision.Artifacts)
 	}
 }

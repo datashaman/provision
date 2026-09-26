@@ -13,7 +13,7 @@ Worker and Task artifacts. Validate both downloaded archives by naming the
 component each file satisfies:
 
 ```sh
-gh release download v0.1.0 \
+gh release download v0.1.1 \
   --repo datashaman/provision-example-async \
   --pattern 'provision-example-async-*-linux-amd64.tar.gz' \
   --dir /tmp/provision-example-async

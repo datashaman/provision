@@ -550,7 +550,7 @@ func TestAsyncPlanPreviewIsDeterministicCompleteAndReadOnly(t *testing.T) {
 			t.Fatalf("async operation %d = %q, want %q", index, plan.Operations[index].Kind, want)
 		}
 	}
-	if plan.ArtifactDigests["consumer"] != "sha256:4b6e79444cd9032facb5e027cafb7dca328d5f33eb334ccc3e83e70a30ce6e4a" || plan.ArtifactDigests["publish"] != "sha256:ce1dc7e13900742b3139beb521e9bcd30005470370462b9aa01383f078c999e5" {
+	if plan.ArtifactDigests["consumer"] != "sha256:2fcb2cec1d3d899e53737b9c25579ec1b2a271b93945a604bb43d337d207df40" || plan.ArtifactDigests["publish"] != "sha256:ce1dc7e13900742b3139beb521e9bcd30005470370462b9aa01383f078c999e5" {
 		t.Fatalf("Plan omitted released Artifact identities: %+v", plan.ArtifactDigests)
 	}
 	if len(plan.SensitiveValueReferences) != 1 || plan.SensitiveValueReferences[0] != "secret://lab/rabbitmq-url" {
@@ -609,8 +609,8 @@ func TestAsyncPlanPreviewIsDeterministicCompleteAndReadOnly(t *testing.T) {
 		t.Fatal(err)
 	}
 	revision = []byte(strings.Replace(string(revision),
-		"sha256:4b6e79444cd9032facb5e027cafb7dca328d5f33eb334ccc3e83e70a30ce6e4a",
-		"sha256:5b6e79444cd9032facb5e027cafb7dca328d5f33eb334ccc3e83e70a30ce6e4a", 1))
+		"sha256:2fcb2cec1d3d899e53737b9c25579ec1b2a271b93945a604bb43d337d207df40",
+		"sha256:3fcb2cec1d3d899e53737b9c25579ec1b2a271b93945a604bb43d337d207df40", 1))
 	if err := os.WriteFile(revisionPath, revision, 0600); err != nil {
 		t.Fatal(err)
 	}
@@ -1180,7 +1180,7 @@ func TestConfigValidateVerifiesEveryAsyncArtifactByComponent(t *testing.T) {
 		t.Fatal(err)
 	}
 	revision = []byte(strings.ReplaceAll(string(revision),
-		"sha256:4b6e79444cd9032facb5e027cafb7dca328d5f33eb334ccc3e83e70a30ce6e4a",
+		"sha256:2fcb2cec1d3d899e53737b9c25579ec1b2a271b93945a604bb43d337d207df40",
 		"sha256:"+hex.EncodeToString(workerSum[:])))
 	revision = []byte(strings.ReplaceAll(string(revision),
 		"sha256:ce1dc7e13900742b3139beb521e9bcd30005470370462b9aa01383f078c999e5",

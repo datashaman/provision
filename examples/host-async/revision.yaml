@@ -4,8 +4,8 @@ name: provision-example-async-v1
 application: provision-example-async
 artifacts:
   consumer:
-    source: https://github.com/datashaman/provision-example-async/releases/download/v0.1.0/provision-example-async-worker-linux-amd64.tar.gz
-    digest: sha256:4b6e79444cd9032facb5e027cafb7dca328d5f33eb334ccc3e83e70a30ce6e4a
+    source: https://github.com/datashaman/provision-example-async/releases/download/v0.1.1/provision-example-async-worker-linux-amd64.tar.gz
+    digest: sha256:2fcb2cec1d3d899e53737b9c25579ec1b2a271b93945a604bb43d337d207df40
   publish:
-    source: https://github.com/datashaman/provision-example-async/releases/download/v0.1.0/provision-example-async-task-linux-amd64.tar.gz
+    source: https://github.com/datashaman/provision-example-async/releases/download/v0.1.1/provision-example-async-task-linux-amd64.tar.gz
     digest: sha256:ce1dc7e13900742b3139beb521e9bcd30005470370462b9aa01383f078c999e5

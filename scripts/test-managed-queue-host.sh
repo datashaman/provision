@@ -112,15 +112,15 @@ fault_marker="$work_dir/response-lost"
 set +e
 PATH="$fault_bin:$PATH" PROVISION_REAL_SSH="$real_ssh" PROVISION_FAULT_MARKER="$fault_marker" "$provision" deployment execute \
   --plan "$first_plan" --operation op-01 --state "$state" --signing-key "$signing_key" \
-  --secret-file "$secret_reference=$secret_file" --lease-duration 5s \
+  --secret-file "$secret_reference=$secret_file" --lease-duration 30s \
   > "$work_dir/lost-response.txt" 2>&1
 lost_result=$?
 set -e
 [[ $lost_result -ne 0 && -f "$fault_marker" ]] || { echo "prepareQueue response was not deliberately lost" >&2; exit 1; }
-sleep 6
+sleep 31
 "$provision" deployment resume \
   --plan "$first_plan" --state "$state" --signing-key "$signing_key" \
-  --secret-file "$secret_reference=$secret_file" --lease-duration 5s \
+  --secret-file "$secret_reference=$secret_file" --lease-duration 30s \
   > "$work_dir/execution.json"
 "$provision" deployment status --plan "$first_plan" --state "$state" > "$work_dir/status.json"
 assert_resume_provenance "$work_dir/status.json"

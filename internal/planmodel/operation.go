@@ -125,6 +125,7 @@ type AsyncArtifactInput struct {
 type AsyncWorkerInput struct {
 	Component      string                       `json:"component"`
 	Queue          string                       `json:"queue"`
+	QueueLogicalID string                       `json:"queueLogicalId"`
 	GenerationID   string                       `json:"generationId"`
 	Revision       string                       `json:"revision"`
 	ArtifactDigest string                       `json:"artifactDigest"`
@@ -136,32 +137,38 @@ type AsyncWorkerInput struct {
 }
 
 type AsyncTaskInput struct {
-	Component      string                     `json:"component"`
-	GenerationID   string                     `json:"generationId"`
-	Revision       string                     `json:"revision"`
-	ArtifactDigest string                     `json:"artifactDigest"`
-	SystemdUnit    string                     `json:"systemdUnit"`
-	Timeout        string                     `json:"timeout"`
-	Rollout        string                     `json:"rollout"`
-	Previous       *host.TaskGenerationStatus `json:"previous,omitempty"`
+	Component           string                     `json:"component"`
+	Queue               string                     `json:"queue"`
+	QueueLogicalID      string                     `json:"queueLogicalId"`
+	GenerationID        string                     `json:"generationId"`
+	Revision            string                     `json:"revision"`
+	ConfigurationDigest string                     `json:"configurationDigest"`
+	ArtifactDigest      string                     `json:"artifactDigest"`
+	SystemdUnit         string                     `json:"systemdUnit"`
+	Timeout             string                     `json:"timeout"`
+	Rollout             string                     `json:"rollout"`
+	Previous            *host.TaskGenerationStatus `json:"previous,omitempty"`
 }
 
 type AsyncScheduleInput struct {
-	Component        string                   `json:"component"`
-	Task             string                   `json:"task"`
-	TaskGenerationID string                   `json:"taskGenerationId"`
-	TimerUnit        string                   `json:"timerUnit"`
-	Expression       string                   `json:"expression"`
-	Timezone         string                   `json:"timezone"`
-	DaylightSaving   string                   `json:"daylightSaving"`
-	Overlap          string                   `json:"overlap"`
-	Retry            config.ScheduleRetry     `json:"retry"`
-	MissedRun        config.ScheduleMissedRun `json:"missedRun"`
-	Failure          string                   `json:"failure"`
-	Rollout          string                   `json:"rollout"`
-	AppletDigest     string                   `json:"appletDigest"`
-	LedgerSchema     string                   `json:"ledgerSchema"`
-	Previous         *host.ScheduleStatus     `json:"previous,omitempty"`
+	Component           string                   `json:"component"`
+	Task                string                   `json:"task"`
+	TaskGenerationID    string                   `json:"taskGenerationId"`
+	TaskUnit            string                   `json:"taskUnit"`
+	ApplicationRevision string                   `json:"applicationRevision"`
+	ConfigurationDigest string                   `json:"configurationDigest"`
+	TimerUnit           string                   `json:"timerUnit"`
+	Expression          string                   `json:"expression"`
+	Timezone            string                   `json:"timezone"`
+	DaylightSaving      string                   `json:"daylightSaving"`
+	Overlap             string                   `json:"overlap"`
+	Retry               config.ScheduleRetry     `json:"retry"`
+	MissedRun           config.ScheduleMissedRun `json:"missedRun"`
+	Failure             string                   `json:"failure"`
+	Rollout             string                   `json:"rollout"`
+	AppletDigest        string                   `json:"appletDigest"`
+	LedgerSchema        string                   `json:"ledgerSchema"`
+	Previous            *host.ScheduleStatus     `json:"previous,omitempty"`
 }
 
 type AsyncRuntimeInput struct {

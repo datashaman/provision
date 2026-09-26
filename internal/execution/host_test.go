@@ -13,6 +13,14 @@ import (
 	"provision/internal/rollbackwindow"
 )
 
+func TestPlannedArtifactInputAcceptsTypedAsyncArtifact(t *testing.T) {
+	planned := planner.Operation{Kind: planner.StageArtifact, Input: planner.OperationInput{Async: &planner.AsyncOperationInput{Artifact: &planner.AsyncArtifactInput{Component: "consumer", Role: "worker", Source: "https://example.invalid/worker.tar.gz", Digest: "sha256:" + strings.Repeat("a", 64)}}}}
+	artifact, err := plannedArtifactInput(planned)
+	if err != nil || artifact.Source != "https://example.invalid/worker.tar.gz" || artifact.Digest != "sha256:"+strings.Repeat("a", 64) {
+		t.Fatalf("typed asynchronous Artifact was not normalized: %#v, %v", artifact, err)
+	}
+}
+
 func TestVerifyEndpointResultBindsActiveAndPreviousGenerations(t *testing.T) {
 	reference := planner.GenerationReference{
 		ID: "provision-example-http-v2-bbbbbbbbbbbb", Revision: "provision-example-http-v2",

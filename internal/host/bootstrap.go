@@ -15,7 +15,7 @@ import (
 const ExecutorPath = "/usr/local/libexec/provision-host-executor"
 
 func AllowedOperations() []string {
-	return []string{"inspect", "stageArtifact", "installGeneration", "startCandidate", "verifyCandidate", "switchEndpoint", "verifyActive", "drainPrevious", "retainPrevious", "prepareQueue"}
+	return []string{"inspect", "stageArtifact", "installGeneration", "startCandidate", "verifyCandidate", "switchEndpoint", "verifyActive", "drainPrevious", "retainPrevious", "prepareQueue", "installTaskGeneration", "verifyTaskGeneration", "installWorkerGeneration", "startWorkerCandidate", "verifyWorkerCandidate", "activateWorkerIntake", "verifyWorkerActive", "installScheduleRuntime", "handoffSchedule", "verifySchedule"}
 }
 
 var environmentPattern = regexp.MustCompile(`^[a-z][a-z0-9-]{0,19}$`)
@@ -82,11 +82,13 @@ type AsyncCapabilities struct {
 }
 
 type AsyncDeploymentStatus struct {
-	Queue        *QueueStatus            `json:"queue,omitempty"`
-	ActiveWorker *WorkerGenerationStatus `json:"activeWorker,omitempty"`
-	Previous     *WorkerGenerationStatus `json:"previousWorker,omitempty"`
-	ActiveTask   *TaskGenerationStatus   `json:"activeTask,omitempty"`
-	Schedule     *ScheduleStatus         `json:"schedule,omitempty"`
+	Queue        *QueueStatus               `json:"queue,omitempty"`
+	ActiveWorker *WorkerGenerationStatus    `json:"activeWorker,omitempty"`
+	Previous     *WorkerGenerationStatus    `json:"previousWorker,omitempty"`
+	ActiveTask   *TaskGenerationStatus      `json:"activeTask,omitempty"`
+	Schedule     *ScheduleStatus            `json:"schedule,omitempty"`
+	Occurrences  []ScheduleOccurrenceStatus `json:"occurrences,omitempty"`
+	Invocations  []TaskInvocationStatus     `json:"taskInvocations,omitempty"`
 }
 
 type QueueStatus struct {
@@ -137,26 +139,114 @@ type WorkerGenerationStatus struct {
 	Revision       string `json:"revision"`
 	ArtifactDigest string `json:"artifactDigest"`
 	SystemdUnit    string `json:"systemdUnit"`
+	Active         bool   `json:"active"`
 	Gate           string `json:"gate"`
 	UnitActive     bool   `json:"unitActive"`
 	QueueConnected bool   `json:"queueConnected"`
 	InFlight       int    `json:"inFlight"`
+	StatePath      string `json:"statePath,omitempty"`
+	GatePath       string `json:"gatePath,omitempty"`
+	EvidencePath   string `json:"evidencePath,omitempty"`
 }
 
 type TaskGenerationStatus struct {
-	ID             string `json:"id"`
-	Revision       string `json:"revision"`
-	ArtifactDigest string `json:"artifactDigest"`
-	SystemdUnit    string `json:"systemdUnit"`
+	ID                  string `json:"id"`
+	Revision            string `json:"revision"`
+	ArtifactDigest      string `json:"artifactDigest"`
+	SystemdUnit         string `json:"systemdUnit"`
+	Queue               string `json:"queue"`
+	ConfigurationDigest string `json:"configurationDigest"`
+	EvidencePath        string `json:"evidencePath,omitempty"`
 }
 
 type ScheduleStatus struct {
+	Component        string `json:"component"`
 	TimerUnit        string `json:"timerUnit"`
 	TaskGenerationID string `json:"taskGenerationId"`
 	AppletDigest     string `json:"appletDigest"`
 	LedgerSchema     string `json:"ledgerSchema"`
 	LedgerDigest     string `json:"ledgerDigest"`
 	FencingToken     int64  `json:"fencingToken"`
+	Timezone         string `json:"timezone"`
+	Expression       string `json:"expression"`
+	Active           bool   `json:"active"`
+}
+
+type ScheduleOccurrenceStatus struct {
+	ID               string    `json:"id"`
+	Schedule         string    `json:"schedule"`
+	DueAt            time.Time `json:"dueAt"`
+	RecordedAt       time.Time `json:"recordedAt"`
+	TaskGenerationID string    `json:"taskGenerationId"`
+	FencingToken     int64     `json:"fencingToken"`
+	TaskInvocationID string    `json:"taskInvocationId"`
+	Disposition      string    `json:"disposition"`
+}
+
+type TaskAttemptStatus struct {
+	Number       int        `json:"number"`
+	SystemdUnit  string     `json:"systemdUnit"`
+	StartedAt    time.Time  `json:"startedAt"`
+	CompletedAt  *time.Time `json:"completedAt,omitempty"`
+	Outcome      string     `json:"outcome"`
+	EvidencePath string     `json:"evidencePath,omitempty"`
+}
+
+type TaskInvocationStatus struct {
+	ID                  string              `json:"id"`
+	Task                string              `json:"task"`
+	TaskGenerationID    string              `json:"taskGenerationId"`
+	ApplicationRevision string              `json:"applicationRevision"`
+	ConfigurationDigest string              `json:"configurationDigest"`
+	Trigger             string              `json:"trigger"`
+	CreatedAt           time.Time           `json:"createdAt"`
+	Outcome             string              `json:"outcome"`
+	Attempts            []TaskAttemptStatus `json:"attempts"`
+}
+
+type AsyncTaskOperationObservation struct {
+	Status     string               `json:"status"`
+	Task       TaskGenerationStatus `json:"task"`
+	Executable string               `json:"executable,omitempty"`
+	Verified   bool                 `json:"verified"`
+	Reason     string               `json:"reason,omitempty"`
+}
+
+type AsyncWorkerOperationObservation struct {
+	Status         string                 `json:"status"`
+	Worker         WorkerGenerationStatus `json:"worker"`
+	Verified       bool                   `json:"verified"`
+	UnitDiagnostic *SystemdUnitDiagnostic `json:"unitDiagnostic,omitempty"`
+	Reason         string                 `json:"reason,omitempty"`
+}
+
+type SystemdUnitDiagnostic struct {
+	LoadState      string `json:"loadState,omitempty"`
+	ActiveState    string `json:"activeState,omitempty"`
+	SubState       string `json:"subState,omitempty"`
+	Result         string `json:"result,omitempty"`
+	ExecMainCode   int    `json:"execMainCode,omitempty"`
+	ExecMainStatus int    `json:"execMainStatus,omitempty"`
+	FailureStage   string `json:"failureStage,omitempty"`
+	RestartCount   int    `json:"restartCount,omitempty"`
+}
+
+type AsyncRuntimeObservation struct {
+	Status       string `json:"status"`
+	Path         string `json:"path"`
+	AppletDigest string `json:"appletDigest"`
+	LedgerSchema string `json:"ledgerSchema"`
+	Reason       string `json:"reason,omitempty"`
+}
+
+type AsyncScheduleOperationObservation struct {
+	Status       string                    `json:"status"`
+	Schedule     ScheduleStatus            `json:"schedule"`
+	Occurrence   *ScheduleOccurrenceStatus `json:"occurrence,omitempty"`
+	Invocation   *TaskInvocationStatus     `json:"taskInvocation,omitempty"`
+	MessageID    string                    `json:"messageId,omitempty"`
+	Acknowledged bool                      `json:"acknowledged"`
+	Reason       string                    `json:"reason,omitempty"`
 }
 
 type DeploymentStatus struct {

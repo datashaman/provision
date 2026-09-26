@@ -43,17 +43,18 @@ func (h SSHHostHandler) Observe(ctx context.Context, planned planner.Operation) 
 		)...)
 		return executeHostObservation(command, planned, "remote Host Target observation")
 	}
-	if planned.Input.Artifact == nil {
-		return HandlerObservation{}, errors.New("SSH Host Handler received invalid Artifact preparation")
+	artifact, err := plannedArtifactInput(planned)
+	if err != nil {
+		return HandlerObservation{}, err
 	}
-	if _, err := host.ArtifactCachePath(host.ArtifactCacheRoot, planned.Input.Artifact.Digest); err != nil {
+	if _, err := host.ArtifactCachePath(host.ArtifactCacheRoot, artifact.Digest); err != nil {
 		return HandlerObservation{}, err
 	}
 	command := exec.CommandContext(ctx, "ssh", host.StrictSSHArguments(host.Target{Address: h.target.Address, User: h.target.User},
 		"sudo", "-n", host.ExecutorPath, "observe-artifact",
 		"--environment", h.environment,
 		"--operator", h.target.User,
-		"--digest", planned.Input.Artifact.Digest,
+		"--digest", artifact.Digest,
 	)...)
 	output, err := command.CombinedOutput()
 	if err != nil {

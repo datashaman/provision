@@ -23,15 +23,16 @@ func (h LocalHostHandler) Observe(ctx context.Context, planned planner.Operation
 		command := exec.CommandContext(ctx, "sudo", "-n", host.ExecutorPath, "observe-operation", "--environment", h.environment, "--operator", h.target.User)
 		return executeHostObservation(command, planned, "restricted host observation")
 	}
-	if planned.Input.Artifact == nil {
-		return HandlerObservation{}, errors.New("local Host Handler received invalid Artifact preparation")
+	artifact, err := plannedArtifactInput(planned)
+	if err != nil {
+		return HandlerObservation{}, err
 	}
 	select {
 	case <-ctx.Done():
 		return HandlerObservation{}, ctx.Err()
 	default:
 	}
-	observed, err := host.ObserveArtifactCache(host.ArtifactCacheRoot, planned.Input.Artifact.Digest)
+	observed, err := host.ObserveArtifactCache(host.ArtifactCacheRoot, artifact.Digest)
 	if err != nil {
 		return HandlerObservation{}, err
 	}

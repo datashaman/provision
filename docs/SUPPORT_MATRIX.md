@@ -39,6 +39,18 @@ dead-letter delivery, TTL expiry, ordering, and deduplication remain
 unqualified runtime behavior. Alarm, feature, and health fields are observed
 state rather than broader guarantees.
 
+## First scheduled-message Host path
+
+| Provision build | Host OS and runtime | Application generations | Result |
+| --- | --- | --- | --- |
+| macOS `arm64` binary `sha256:51b933ac55c4c86de10eb78f6bf6e983e83bf5ec22de71bcd0999745d6237e20`; Linux `x86_64` executor and schedule applet `sha256:bf891bd83aa47eeab8cbc3916b88a546e6ab8eeb5c0b09acb1671f51c4ad8ed8` | Ubuntu Server 26.04 VM, `x86_64`; systemd `259 (259.5-0ubuntu3.4)`; Podman `5.7.0+ds2-3build1`; RabbitMQ `4.3.6` at the qualified manifest | `provision-example-async` v0.1.0 Worker `sha256:4b6e79444cd9032facb5e027cafb7dca328d5f33eb334ccc3e83e70a30ce6e4a` and Task `sha256:ce1dc7e13900742b3139beb521e9bcd30005470370462b9aa01383f078c999e5` | The approved thirteen-operation Plan installed and verified the immutable Task and gated Worker, opened Worker intake, installed the pinned nonresident Schedule runtime, activated the stable timer, recorded one occurrence before invocation, obtained publisher confirmation, and observed Worker processing and manual acknowledgement for the same message ID. Status reported each role separately. See the [live evidence](evidence/2026-09-26-first-scheduled-message.md). |
+
+This row qualifies only the initial one-Worker, one-Task, one-Schedule path on
+the listed single Host. It does not qualify Worker replacement, Schedule
+handoff between revisions, retries or redelivery, overlap or missed-run
+behavior, crash-boundary recovery, Queue replacement, or multi-host
+availability.
+
 ## Guarantees exercised
 
 - An unverified candidate cannot receive stable traffic.
@@ -55,10 +67,13 @@ state rather than broader guarantees.
 - Over SSH, losing a completed operation's response does not become success or cause blind replay. A new Provision process and a new one-shot remote executor reconcile the journal against fresh host evidence.
 - Over SSH, a changed or unknown host key fails before the executor is invoked.
 - An in-flight SSH disconnect and killed Artifact-stage executor produce an uncertain journal outcome. Resume removes only temporary files proven to belong to an earlier signed attempt from the same Environment before safely restaging.
+- The initial Worker cannot consume until its immutable generation, process identity, Queue connection, Revision identity, and closed admission state are verified; status requires a durable exact active-generation record after intake opens.
+- A stable timer invokes the digest-pinned nonresident Schedule runtime, which records the occurrence and stable Task Invocation before starting the exact generation-specific Task instance.
+- The Task's publisher-confirmed message and the Worker's processing and manual acknowledgement evidence join on the same stable message identity.
 
 ## Limits
 
-- The HTTP rows cover a single native `x86_64` HTTP component on one systemd-managed host, exercised both directly on the host and remotely from an `arm64` macOS controller over SSH. The RabbitMQ row separately qualifies only the exact rootless Podman/Quadlet packaging and Queue semantics stated above. No row qualifies EC2, ECS, Lambda, workers, schedules, databases, key-value stores, or realtime services.
+- The HTTP rows cover a single native `x86_64` HTTP component on one systemd-managed host, exercised both directly on the host and remotely from an `arm64` macOS controller over SSH. The RabbitMQ rows qualify only the exact rootless Podman/Quadlet packaging and Queue semantics stated above. The scheduled-message row qualifies only its exact initial systemd Worker, Task, and Schedule path. No row qualifies EC2, ECS, Lambda, databases, key-value stores, realtime services, asynchronous generation replacement, or multi-host asynchronous availability.
 - The Endpoint guarantee covers ordinary HTTP requests. It does not promise WebSocket or other long-lived stream draining.
 - Caddy configuration reload preserves the prior route on a rejected load. An external Caddy outage can still make the Endpoint unavailable until Caddy is restored.
 - Remote mode adds a management-transport dependency, not a workload-availability dependency. If the controller cannot authenticate the host or cannot obtain enough fresh evidence after a lost connection, the operation remains interrupted or uncertain until an operator restores access and resumes it; stable traffic continues according to the last host state.

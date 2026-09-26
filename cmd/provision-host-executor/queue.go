@@ -139,11 +139,14 @@ func applyQueueOperation(ctx context.Context, planned planner.Operation, record 
 		return encoded, errors.New("existing Queue resources do not match the approved generation")
 	}
 	username, password, err := parseQueueSecret(secret, input.AMQPPort)
-	secret = ""
 	if err != nil {
+		secret = ""
 		return nil, err
 	}
+	brokerURL := secret
+	secret = ""
 	defer func() { password = "" }()
+	defer func() { brokerURL = "" }()
 	uid := accountUID(record.Account)
 	gid := accountGID(record.Account)
 	if uid <= 0 || gid <= 0 {
@@ -152,12 +155,13 @@ func applyQueueOperation(ctx context.Context, planned planner.Operation, record 
 	serviceRoot := filepath.Dir(input.DataPath)
 	runtimeHome := "/var/lib/provision/runtime/" + record.Environment
 	credentialDir := filepath.Join(runtimeHome, ".config", "credstore.encrypted")
+	systemCredentialDir := filepath.Dir(queueURLCredentialPath(record.Environment))
 	for _, directory := range []struct {
 		path string
 		mode os.FileMode
 		uid  int
 		gid  int
-	}{{serviceRoot, 0755, 0, 0}, {credentialDir, 0700, uid, gid}, {filepath.Dir(input.QuadletPath), 0755, 0, 0}} {
+	}{{serviceRoot, 0755, 0, 0}, {credentialDir, 0700, uid, gid}, {systemCredentialDir, 0700, 0, 0}, {filepath.Dir(input.QuadletPath), 0755, 0, 0}} {
 		if err := ensureDirectory(directory.path, directory.mode, directory.uid, directory.gid); err != nil {
 			return nil, err
 		}
@@ -167,9 +171,13 @@ func applyQueueOperation(ctx context.Context, planned planner.Operation, record 
 	}
 	credentialPath := filepath.Join(credentialDir, queueCredentialName)
 	credentialConfig := fmt.Sprintf("listeners.tcp.default = 5672\ndefault_user = %s\ndefault_pass = %s\ndefault_queue_type = quorum\n", username, password)
-	if err := installEncryptedCredential(ctx, credentialPath, queueCredentialName, uid, gid, credentialConfig); err != nil {
+	if err := installUserEncryptedCredential(ctx, credentialPath, queueCredentialName, uid, gid, credentialConfig); err != nil {
 		return nil, err
 	}
+	if err := installSystemEncryptedCredential(ctx, queueURLCredentialPath(record.Environment), "rabbitmq-url", brokerURL+"\n"); err != nil {
+		return nil, err
+	}
+	brokerURL = ""
 	entrypointPath := filepath.Join(serviceRoot, "credential-entrypoint")
 	if err := installExactFile(entrypointPath, []byte(queueCredentialEntrypoint()), 0755, 0, 0); err != nil {
 		return nil, err
@@ -249,17 +257,33 @@ func parseQueueSecret(value string, port int) (string, string, error) {
 	return username, password, nil
 }
 
-func installEncryptedCredential(ctx context.Context, destination, name string, uid, gid int, plaintext string) error {
+func installUserEncryptedCredential(ctx context.Context, destination, name string, uid, gid int, plaintext string) error {
+	return installEncryptedCredential(ctx, destination, name, &uid, uid, gid, plaintext)
+}
+
+func installSystemEncryptedCredential(ctx context.Context, destination, name, plaintext string) error {
+	return installEncryptedCredential(ctx, destination, name, nil, 0, 0, plaintext)
+}
+
+func encryptedCredentialArguments(name, destination string, uid *int) []string {
+	arguments := []string{"encrypt"}
+	if uid != nil {
+		arguments = append(arguments, "--uid="+strconv.Itoa(*uid))
+	}
+	return append(arguments, "--name="+name, "-", destination)
+}
+
+func installEncryptedCredential(ctx context.Context, destination, name string, scopeUID *int, ownerUID, ownerGID int, plaintext string) error {
 	temporary := destination + ".tmp"
 	_ = os.Remove(temporary)
-	command := exec.CommandContext(ctx, "systemd-creds", "encrypt", "--uid="+strconv.Itoa(uid), "--name="+name, "-", temporary)
+	command := exec.CommandContext(ctx, "systemd-creds", encryptedCredentialArguments(name, temporary, scopeUID)...)
 	command.Stdin = strings.NewReader(plaintext)
 	if output, err := command.CombinedOutput(); err != nil {
 		_ = os.Remove(temporary)
 		_ = output
 		return errors.New("encrypt Queue credential")
 	}
-	if err := os.Chown(temporary, uid, gid); err != nil {
+	if err := os.Chown(temporary, ownerUID, ownerGID); err != nil {
 		_ = os.Remove(temporary)
 		return errors.New("own encrypted Queue credential")
 	}
@@ -543,7 +567,7 @@ func observeManagedQueue(ctx context.Context, input planner.AsyncQueueInput, rec
 	entrypoint, entrypointErr := os.ReadFile(entrypointPath)
 	uid := accountUID(record.Account)
 	credentialPath := filepath.Join("/var/lib/provision/runtime", record.Environment, ".config", "credstore.encrypted", queueCredentialName)
-	if quadletErr != nil || string(quadlet) != renderQueueQuadlet(input, entrypointPath) || entrypointErr != nil || string(entrypoint) != queueCredentialEntrypoint() || uid <= 0 || !ownedBy(credentialPath, uid, 0600) || !environmentDataOwned(input.DataPath, record.Account, uid, accountGID(record.Account)) {
+	if quadletErr != nil || string(quadlet) != renderQueueQuadlet(input, entrypointPath) || entrypointErr != nil || string(entrypoint) != queueCredentialEntrypoint() || uid <= 0 || !ownedBy(credentialPath, uid, 0600) || !rootOwned(queueURLCredentialPath(record.Environment), 0600) || !environmentDataOwned(input.DataPath, record.Account, uid, accountGID(record.Account)) {
 		status.Health = "drifted-owned-resource"
 		status.Reason = "Queue runtime files or data ownership differ from the approved generation"
 		return status, "unknown"
@@ -677,6 +701,7 @@ func queueStatusIdentity(input planner.AsyncQueueInput) host.QueueStatus {
 		"probe-record:" + filepath.Join(serviceRoot, "probe.json"),
 		"credential-entrypoint:" + filepath.Join(serviceRoot, "credential-entrypoint"),
 		"encrypted-credential:" + credentialPath,
+		"encrypted-credential:" + queueURLCredentialPath(environment),
 		"rabbitmq-queue:" + input.LogicalID,
 		"rabbitmq-queue:" + topology.RetryQueue,
 		"rabbitmq-queue:" + topology.DeadLetterQueue,

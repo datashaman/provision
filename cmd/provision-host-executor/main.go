@@ -43,8 +43,14 @@ type bootstrapRecord struct {
 }
 
 func main() {
-	if err := run(os.Args[1:]); err != nil {
-		fmt.Fprintln(os.Stderr, "provision-host-executor:", err)
+	runner := run
+	program := "provision-host-executor"
+	if filepath.Base(os.Args[0]) == "provision-runtime-schedule" {
+		runner = runScheduleRuntime
+		program = "provision-runtime-schedule"
+	}
+	if err := runner(os.Args[1:]); err != nil {
+		fmt.Fprintln(os.Stderr, program+":", err)
 		os.Exit(1)
 	}
 }
@@ -258,12 +264,15 @@ func inspectAsync(environment, account string) *host.AsyncStatus {
 	dataOwned := environmentDataOwned(dataPath, account, accountUID, accountGID(account))
 	credentialPath := "/var/lib/provision/runtime/" + environment + "/.config/credstore.encrypted/rabbitmq-config"
 	credentialObserved := ownedBy(credentialPath, accountUID, 0600)
-	appletDigest := regularFileDigest("/usr/local/libexec/provision-runtime-schedule")
-	ledgerSchema := ""
-	if appletDigest != "" {
-		ledgerSchema = "provision.dev/schedule-ledger/v1alpha1"
-	}
+	// The restricted executor contains the separately installed, argv0-selected
+	// nonresident Schedule runtime. Planning pins these exact available bytes;
+	// installScheduleRuntime materializes them through the approved Plan.
+	appletDigest := regularFileDigest(host.ExecutorPath)
+	ledgerSchema := "provision.dev/schedule-ledger/v1alpha1"
 	queue, findings := inspectRecordedQueue(context.Background(), environment, account, systemExecutionPaths(environment))
+	deployment, workloadFindings := inspectAsyncDeployment(context.Background(), environment, account, systemExecutionPaths(environment))
+	deployment.Queue = queue
+	findings = append(findings, workloadFindings...)
 	return &host.AsyncStatus{
 		SchemaVersion: "provision.dev/host-async-inspection/v1alpha1", ObservationComplete: true,
 		Findings: findings,
@@ -272,14 +281,14 @@ func inspectAsync(environment, account string) *host.AsyncStatus {
 			RootlessEnvironmentAccount: hasAccount(account, "/var/lib/provision/runtime/"+environment), SystemdCredentials: commandSucceeded("systemd-creds", "--version"),
 			SubordinateIDs: subordinateIDs, LingeringUserManager: lingering, QuadletDefinitionRootOwned: quadletOwned,
 			DataPathEnvironmentOwned: dataOwned, EncryptedCredentialObserved: credentialObserved,
-			WorkerAdmissionGate:         false,
+			WorkerAdmissionGate:         commandSucceeded("systemd-creds", "--version") && hasAccount(account, "/var/lib/provision/runtime/"+environment),
 			RabbitMQQualificationDigest: qualifiedEvidence, RabbitMQVersion: qualifiedRabbitMQ,
 			RabbitMQImageIndex: qualifiedIndex, RabbitMQImageManifest: qualifiedManifest,
 			RabbitMQServiceUnit: service + ".service", RabbitMQContainer: service, RabbitMQAccount: account,
 			RabbitMQDataPath: dataPath, RabbitMQQuadletPath: quadletPath,
 			ScheduleAppletDigest: appletDigest, ScheduleLedgerSchema: ledgerSchema,
 		},
-		Deployment: host.AsyncDeploymentStatus{Queue: queue},
+		Deployment: deployment,
 	}
 }
 

@@ -27,7 +27,7 @@ import (
 
 var (
 	digestPattern  = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
-	operationID    = regexp.MustCompile(`^op-[0-9]{2}$`)
+	operationID    = regexp.MustCompile(`^op-[0-9]{2}(?:-[a-z]+)?$`)
 	attemptID      = regexp.MustCompile(`^attempt-[0-9a-f]{32}$`)
 	journalOutcome = regexp.MustCompile(`^(consumed|succeeded|failed|uncertain)$`)
 )
@@ -154,6 +154,8 @@ func runObserveOperation(args []string) error {
 	var observed host.OperationObservation
 	if planned.Kind == planner.PrepareQueue {
 		observed, err = observeQueueOperation(context.Background(), planned, record, paths)
+	} else if isAsyncWorkloadKind(planned.Kind) {
+		observed, err = observeAsyncWorkloadOperation(context.Background(), planned, record, paths)
 	} else {
 		observed, err = observeCandidateOperation(context.Background(), planned, record, paths)
 	}
@@ -253,6 +255,10 @@ func executeAuthorized(ctx context.Context, envelope operation.Envelope, record 
 		if err := validateStageArtifact(envelope.Operation); err != nil {
 			return operation.Result{}, err
 		}
+	} else if isAsyncWorkloadKind(envelope.Operation.Kind) {
+		if err := validateAsyncWorkloadOperation(envelope.Operation, record, paths); err != nil {
+			return operation.Result{}, err
+		}
 	} else if err := validateCandidateOperation(envelope.Operation, record, paths); err != nil {
 		return operation.Result{}, err
 	}
@@ -266,16 +272,23 @@ func executeAuthorized(ctx context.Context, envelope operation.Envelope, record 
 			if err := cleanupInterruptedArtifactStages(paths.authorityState, paths.artifactCache, claim.AttemptID); err != nil {
 				actionErr = err
 			} else {
-				observation, err := stageArtifact(ctx, paths.artifactCache, claim.AttemptID, *envelope.Operation.Input.Artifact)
-				if err != nil {
-					actionErr = err
+				artifact, inputErr := executorArtifactInput(envelope.Operation)
+				if inputErr != nil {
+					actionErr = inputErr
 				} else {
-					encoded, err = json.Marshal(observation)
-					actionErr = err
+					observation, err := stageArtifact(ctx, paths.artifactCache, claim.AttemptID, artifact)
+					if err != nil {
+						actionErr = err
+					} else {
+						encoded, err = json.Marshal(observation)
+						actionErr = err
+					}
 				}
 			}
 		} else if envelope.Operation.Kind == planner.PrepareQueue {
 			encoded, actionErr = applyQueueOperation(ctx, envelope.Operation, record, paths, envelope.SensitiveValues)
+		} else if isAsyncWorkloadKind(envelope.Operation.Kind) {
+			encoded, actionErr = applyAsyncWorkloadOperation(ctx, envelope.Operation, claim, record, paths)
 		} else if envelope.Operation.Kind == planner.SwitchEndpoint {
 			encoded, actionErr = applySwitchEndpoint(ctx, envelope.Operation, claim, record, paths, now)
 		} else if envelope.Operation.Kind == planner.VerifyActive {
@@ -313,7 +326,7 @@ func executeAuthorized(ctx context.Context, envelope operation.Envelope, record 
 	if actionErr != nil {
 		encoded := result.Observation
 		if envelope.Operation.Kind == planner.StageArtifact {
-			artifact := *envelope.Operation.Input.Artifact
+			artifact, _ := executorArtifactInput(envelope.Operation)
 			path, _ := host.ArtifactCachePath(paths.artifactCache, artifact.Digest)
 			var encodeErr error
 			encoded, encodeErr = json.Marshal(host.ArtifactObservation{
@@ -409,10 +422,10 @@ func cleanupInterruptedArtifactStages(authorityState, cacheRoot, currentAttempt 
 }
 
 func validateStageArtifact(planned planner.Operation) error {
-	if planned.Kind != planner.StageArtifact || len(planned.DependsOn) != 0 || planned.Input.Artifact == nil || planned.Input.Generation != nil || planned.Input.Systemd != nil || planned.Input.Health != nil || planned.Input.Endpoint != nil || planned.Input.Previous != nil || planned.Input.Drain != nil || planned.Input.Retention != nil {
+	artifact, err := executorArtifactInput(planned)
+	if planned.Kind != planner.StageArtifact || err != nil || planned.Input.Generation != nil || planned.Input.Systemd != nil || planned.Input.Health != nil || planned.Input.Endpoint != nil || planned.Input.Previous != nil || planned.Input.Drain != nil || planned.Input.Retention != nil {
 		return errors.New("only the typed stageArtifact operation is enabled")
 	}
-	artifact := planned.Input.Artifact
 	if !digestPattern.MatchString(artifact.Digest) {
 		return errors.New("Artifact digest is invalid")
 	}
@@ -421,6 +434,20 @@ func validateStageArtifact(planned planner.Operation) error {
 		return errors.New("Artifact source must be an immutable HTTPS reference without credentials or query data")
 	}
 	return nil
+}
+
+func executorArtifactInput(planned planner.Operation) (planner.ArtifactInput, error) {
+	if planned.Input.Artifact != nil && (planned.Input.Async == nil || planned.Input.Async.Artifact == nil) {
+		return *planned.Input.Artifact, nil
+	}
+	if planned.Input.Artifact == nil && planned.Input.Async != nil && planned.Input.Async.Artifact != nil && planned.Input.Async.Queue == nil && planned.Input.Async.Worker == nil && planned.Input.Async.Task == nil && planned.Input.Async.Schedule == nil && planned.Input.Async.Runtime == nil {
+		artifact := planned.Input.Async.Artifact
+		if artifact.Component == "" || artifact.Role != "worker" && artifact.Role != "task" {
+			return planner.ArtifactInput{}, errors.New("asynchronous Artifact identity is invalid")
+		}
+		return planner.ArtifactInput{Source: artifact.Source, Digest: artifact.Digest}, nil
+	}
+	return planner.ArtifactInput{}, errors.New("Artifact operation input is invalid")
 }
 
 func withHostFence(paths executionPaths, claim authority.Claim, planned planner.Operation, now time.Time, observation *json.RawMessage, action func() error) (error, error) {

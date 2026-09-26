@@ -156,7 +156,9 @@ func TestQueueMessageInspectionJoinsConfirmedMessagesOnlyToDurableSettlement(t *
 	candidateDigest := "sha256:" + strings.Repeat("c", 64)
 	taskEvidence := "{\"event\":\"message_confirmed\",\"messageId\":\"msg-1\",\"applicationRevision\":\"revision-a\",\"taskArtifactDigest\":\"" + taskDigest + "\",\"invocationId\":\"inv-1\"}\n" +
 		"{\"event\":\"message_confirmed\",\"messageId\":\"msg-2\",\"applicationRevision\":\"revision-a\",\"taskArtifactDigest\":\"" + taskDigest + "\",\"invocationId\":\"inv-2\"}\n"
-	workerEvidence := "{\"event\":\"requeue_decided\",\"messageId\":\"msg-1\",\"workerApplicationRevision\":\"revision-b\",\"workerArtifactDigest\":\"" + candidateDigest + "\"}\n" +
+	workerEvidence := "{\"event\":\"received\",\"messageId\":\"msg-1\",\"workerApplicationRevision\":\"revision-b\",\"workerArtifactDigest\":\"" + candidateDigest + "\"}\n" +
+		"{\"event\":\"post_gate_delivery_requeue_decided\",\"messageId\":\"msg-1\",\"workerApplicationRevision\":\"revision-b\",\"workerArtifactDigest\":\"" + candidateDigest + "\"}\n" +
+		"{\"event\":\"requeue_decided\",\"messageId\":\"msg-1\",\"workerApplicationRevision\":\"revision-b\",\"workerArtifactDigest\":\"" + candidateDigest + "\"}\n" +
 		"{\"event\":\"requeued\",\"messageId\":\"msg-1\",\"workerApplicationRevision\":\"revision-b\",\"workerArtifactDigest\":\"" + candidateDigest + "\"}\n" +
 		"{\"event\":\"acknowledgement_decided\",\"messageId\":\"msg-1\",\"workerApplicationRevision\":\"revision-a\",\"workerArtifactDigest\":\"" + activeDigest + "\"}\n" +
 		"{\"event\":\"connected_gated\",\"workerApplicationRevision\":\"revision-b\",\"workerArtifactDigest\":\"" + candidateDigest + "\"}\n" +
@@ -171,7 +173,7 @@ func TestQueueMessageInspectionJoinsConfirmedMessagesOnlyToDurableSettlement(t *
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(messages) != 2 || messages[0].Disposition != "acknowledged" || messages[0].WorkerArtifactDigest != activeDigest || len(messages[0].WorkerEvents) != 4 || messages[0].WorkerEvents[0].WorkerArtifactDigest != candidateDigest || messages[1].Disposition != "accepted-unsettled" || messages[1].WorkerArtifactDigest != "" {
+	if len(messages) != 2 || messages[0].Disposition != "acknowledged" || messages[0].WorkerArtifactDigest != activeDigest || len(messages[0].WorkerEvents) != 6 || messages[0].WorkerEvents[0].Event != "received" || messages[0].WorkerEvents[1].Event != "post_gate_delivery_requeue_decided" || messages[0].WorkerEvents[0].WorkerArtifactDigest != candidateDigest || messages[1].Disposition != "accepted-unsettled" || messages[1].WorkerArtifactDigest != "" {
 		t.Fatalf("message accounting = %+v", messages)
 	}
 }

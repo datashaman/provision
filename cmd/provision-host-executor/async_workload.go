@@ -926,16 +926,13 @@ func inspectQueueMessages(paths executionPaths) ([]host.QueueMessageStatus, erro
 			continue
 		}
 		if event.WorkerApplicationRevision == "" || !digestPattern.MatchString(event.WorkerArtifactDigest) {
-			return nil, errors.New("Worker settlement evidence is incomplete")
+			return nil, errors.New("Worker message evidence is incomplete")
 		}
 		workerEvent := host.QueueMessageWorkerEvent{Event: event.Event, WorkerApplicationRevision: event.WorkerApplicationRevision, WorkerArtifactDigest: event.WorkerArtifactDigest}
+		messages[index].WorkerEvents = append(messages[index].WorkerEvents, workerEvent)
 		switch event.Event {
-		case "acknowledgement_decided", "requeue_decided", "rejection_decided", "acknowledged", "requeued", "rejected":
-			messages[index].WorkerEvents = append(messages[index].WorkerEvents, workerEvent)
+		case "acknowledged", "requeued", "rejected":
 		default:
-			continue
-		}
-		if event.Event != "acknowledged" && event.Event != "requeued" && event.Event != "rejected" {
 			continue
 		}
 		messages[index].Disposition = event.Event

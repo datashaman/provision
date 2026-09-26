@@ -509,7 +509,7 @@ func observeTaskGeneration(ctx context.Context, input planner.AsyncTaskInput, re
 		return result
 	}
 	recorded, err := readTaskGenerationRecord(taskGenerationRecordPath(paths, input.GenerationID))
-	if err != nil || recorded.Input != input || recorded.Executable != generation.Executable || recorded.SchemaVersion != asyncGenerationSchema {
+	if err != nil || !reflect.DeepEqual(recorded.Input, input) || recorded.Executable != generation.Executable || recorded.SchemaVersion != asyncGenerationSchema {
 		result.Status, result.Reason = "unknown", "Task generation record differs from the approved Plan"
 		return result
 	}
@@ -535,7 +535,7 @@ func observeWorkerGeneration(ctx context.Context, input planner.AsyncWorkerInput
 		return result
 	}
 	recorded, err := readWorkerGenerationRecord(workerGenerationRecordPath(paths, input.GenerationID))
-	if err != nil || recorded.Input != input || recorded.Executable != generation.Executable || recorded.SchemaVersion != asyncGenerationSchema {
+	if err != nil || !reflect.DeepEqual(recorded.Input, input) || recorded.Executable != generation.Executable || recorded.SchemaVersion != asyncGenerationSchema {
 		result.Status, result.Reason = "unknown", "Worker generation record differs from the approved Plan"
 		return result
 	}

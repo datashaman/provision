@@ -1,8 +1,10 @@
 package main
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -10,6 +12,48 @@ import (
 	"provision/internal/host"
 	"provision/internal/planner"
 )
+
+func TestWorkerGenerationInputSurvivesDurableRoundTripWithPreviousGeneration(t *testing.T) {
+	_, _, _, input, _ := asyncOperationFixture(t)
+	input.Previous = &host.WorkerGenerationStatus{
+		ID: "provision-example-async-v0-ffffffffffff", Revision: "provision-example-async-v0",
+		ArtifactDigest: "sha256:" + strings.Repeat("f", 64), SystemdUnit: "provision-lab-consumer-ffffffffffff.service",
+		Active: true, Gate: "open", UnitActive: true, QueueConnected: true,
+	}
+	installed := installedWorkerGeneration{SchemaVersion: asyncGenerationSchema, Input: input, Executable: "provision-example-async-worker"}
+	encoded, err := json.Marshal(installed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var recorded installedWorkerGeneration
+	if err := json.Unmarshal(encoded, &recorded); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(recorded.Input, input) {
+		t.Fatalf("durably decoded Worker input differs from its approved value: recorded=%+v planned=%+v", recorded.Input, input)
+	}
+}
+
+func TestTaskGenerationInputSurvivesDurableRoundTripWithPreviousGeneration(t *testing.T) {
+	_, _, input, _, _ := asyncOperationFixture(t)
+	input.Previous = &host.TaskGenerationStatus{
+		ID: "provision-example-async-v0-eeeeeeeeeeee", Revision: "provision-example-async-v0",
+		ArtifactDigest: "sha256:" + strings.Repeat("e", 64), SystemdUnit: "provision-lab-publish-eeeeeeeeeeee@.service",
+		Queue: "provision-lab-messages", ConfigurationDigest: "sha256:" + strings.Repeat("c", 64), Timeout: "1m0s",
+	}
+	installed := installedTaskGeneration{SchemaVersion: asyncGenerationSchema, Input: input, Executable: "provision-example-async-task"}
+	encoded, err := json.Marshal(installed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var recorded installedTaskGeneration
+	if err := json.Unmarshal(encoded, &recorded); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(recorded.Input, input) {
+		t.Fatalf("durably decoded Task input differs from its approved value: recorded=%+v planned=%+v", recorded.Input, input)
+	}
+}
 
 func TestInitialAsyncOperationValidationPinsTaskWorkerAndScheduleIdentities(t *testing.T) {
 	record, paths, task, worker, schedule := asyncOperationFixture(t)

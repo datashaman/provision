@@ -75,7 +75,11 @@ remote() {
 capture_unrelated_inventory() {
   local prefix="$1"
   remote "systemctl list-unit-files --no-legend --no-pager | sort" > "$work_dir/$prefix-system-units.txt"
-  remote "systemctl list-units --all --type=service --no-legend --no-pager --plain | awk '{print \$1 \"\\t\" \$3 \"\\t\" \$4}' | sort" > "$work_dir/$prefix-system-service-state.txt"
+  # The netavark helpers are part of the Podman Queue runtime installed by the
+  # bootstrap and may become idle independently of a deployment. Keep their
+  # lifecycle out of the unrelated-service assertion while comparing every
+  # other system service exactly.
+  remote "systemctl list-units --all --type=service --no-legend --no-pager --plain | awk '\$1 != \"netavark-dhcp-proxy.service\" && \$1 != \"netavark-firewalld-reload.service\" {print \$1 \"\\t\" \$3 \"\\t\" \$4}' | sort" > "$work_dir/$prefix-system-service-state.txt"
   remote "dpkg-query -W -f='\${binary:Package}\t\${Version}\n' | sort" > "$work_dir/$prefix-packages.txt"
   remote "find /etc/containers/systemd/users -type f ! -name 'provision-lab-rabbitmq.container' -printf '%m\t%u\t%g\t%s\t%p\n' 2>/dev/null | sort; find /etc/containers/systemd/users -type f ! -name 'provision-lab-rabbitmq.container' -exec sha256sum {} + 2>/dev/null | sort -k2" > "$work_dir/$prefix-unrelated-quadlets.txt"
   local as_environment="cd /tmp && sudo -n -u provision-lab env HOME=/var/lib/provision/runtime/lab XDG_RUNTIME_DIR=/run/user/102"

@@ -627,15 +627,62 @@ func TestAsyncPlanPreviewIsDeterministicCompleteAndReadOnly(t *testing.T) {
 		t.Fatalf("Artifact identity change did not stale Plan %s", plan.ID)
 	}
 	existing, existingErr := preview("FAKE_NO_ACTIVE_ASYNC=0")
-	if existingErr == nil || !strings.Contains(string(existing), "does not support replacing an active Worker, Task, or Schedule generation") || strings.Contains(string(existing), `"operations"`) {
-		t.Fatalf("existing asynchronous deployment did not fail closed: %v\n%s", existingErr, existing)
+	if existingErr != nil {
+		t.Fatalf("Worker-only replacement Plan failed: %v\n%s", existingErr, existing)
+	}
+	var replacement planner.Plan
+	if err := json.Unmarshal(existing, &replacement); err != nil {
+		t.Fatal(err)
+	}
+	changedLedger, changedLedgerErr := preview(
+		"FAKE_NO_ACTIVE_ASYNC=0",
+		"FAKE_LEDGER_DIGEST=sha256:abababababababababababababababababababababababababababababababab",
+	)
+	if changedLedgerErr != nil {
+		t.Fatalf("runtime telemetry change prevented Worker-only planning: %v\n%s", changedLedgerErr, changedLedger)
+	}
+	var changedLedgerPlan planner.Plan
+	if err := json.Unmarshal(changedLedger, &changedLedgerPlan); err != nil {
+		t.Fatal(err)
+	}
+	if changedLedgerPlan.ID == replacement.ID {
+		t.Fatal("exact capability evidence did not retain changed Schedule ledger telemetry")
+	}
+	if replacement.Capability.Observed.Async.Deployment.Schedule.LedgerDigest == changedLedgerPlan.Capability.Observed.Async.Deployment.Schedule.LedgerDigest {
+		t.Fatal("exact observed Schedule ledger digest was rewritten or omitted")
+	}
+	if replacement.Capability.DecisionObserved == nil || replacement.Capability.DecisionObserved.Async.Deployment.Schedule.LedgerDigest != "" || changedLedgerPlan.Capability.DecisionObserved == nil || changedLedgerPlan.Capability.DecisionObserved.Async.Deployment.Schedule.LedgerDigest != "" {
+		t.Fatal("adapter decision observation did not explicitly exclude volatile ledger content")
+	}
+	replacementFingerprint, err := planner.ApprovalFingerprint(replacement)
+	if err != nil {
+		t.Fatal(err)
+	}
+	changedLedgerFingerprint, err := planner.ApprovalFingerprint(changedLedgerPlan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if changedLedgerFingerprint != replacementFingerprint {
+		t.Fatalf("Schedule ledger telemetry made the Worker-only approval stale: %s != %s", changedLedgerFingerprint, replacementFingerprint)
+	}
+	wantReplacement := []string{"prepareQueue", "stageArtifact", "installWorkerGeneration", "startWorkerCandidate", "verifyWorkerCandidate"}
+	if len(replacement.Operations) != len(wantReplacement) {
+		t.Fatalf("Worker-only operation count = %d, want %d:\n%s", len(replacement.Operations), len(wantReplacement), existing)
+	}
+	for index, want := range wantReplacement {
+		if string(replacement.Operations[index].Kind) != want {
+			t.Fatalf("Worker-only operation %d = %q, want %q", index, replacement.Operations[index].Kind, want)
+		}
+	}
+	if strings.Contains(string(existing), `"kind": "installTaskGeneration"`) || strings.Contains(string(existing), `"kind": "handoffSchedule"`) || strings.Contains(string(existing), `"kind": "fenceWorkerIntake"`) || strings.Contains(string(existing), `"kind": "activateWorkerIntake"`) {
+		t.Fatalf("candidate-only Plan attempted an unimplemented Task, Schedule, or Worker handoff: %s", existing)
 	}
 
 	commands, err := os.ReadFile(sshLog)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Count(string(commands), "provision-host-executor inspect") != 8 {
+	if strings.Count(string(commands), "provision-host-executor inspect") != 9 {
 		t.Fatalf("preview did not perform exactly one read-only inspection per Plan:\n%s", commands)
 	}
 	for _, forbidden := range []string{"--apply", " install ", " start ", " reload ", " execute "} {
@@ -1085,7 +1132,7 @@ printf '%s\n' "$*" >> "$FAKE_SSH_LOG"
 printf() {
   value="$(command printf "$@")"
 	if [ "${FAKE_NO_ACTIVE_ASYNC:-0}" = 1 ]; then
-		value="$(command printf '%s' "$value" | sed -E 's/,"activeWorker":\{[^}]*\}//; s/,"activeTask":\{[^}]*\}//; s/,"schedule":\{[^}]*\}//')"
+		value="$(command printf '%s' "$value" | sed -E 's/,"activeWorker":\{[^}]*\}//; s/,"activeTask":\{[^}]*\}//; s/,"schedule":.*$/}}}/')"
 	fi
 	  command printf '%s\n' "$value" | sed 's#"rabbitmqImageManifest":"sha256:34fc91a9de04d612a340507b8e7e19c0ee1ec9839e09dc5fc98f54991633ce91"#"rabbitmqImageManifest":"sha256:34fc91a9de04d612a340507b8e7e19c0ee1ec9839e09dc5fc98f54991633ce91","rabbitmqServiceUnit":"provision-lab-rabbitmq.service","rabbitmqContainer":"provision-lab-rabbitmq","rabbitmqAccount":"provision-lab","rabbitmqDataPath":"/var/lib/provision/environments/lab/services/rabbitmq/data","rabbitmqQuadletPath":"/etc/containers/systemd/users/999/provision-lab-rabbitmq.container"#g' | sed 's#"imageManifest":"sha256:34fc91a9de04d612a340507b8e7e19c0ee1ec9839e09dc5fc98f54991633ce91"#"generationId":"provision-lab-messages-rabbitmq-4-3-6-34fc91a9de04","imageManifest":"sha256:34fc91a9de04d612a340507b8e7e19c0ee1ec9839e09dc5fc98f54991633ce91","serviceUnit":"provision-lab-rabbitmq.service","container":"provision-lab-rabbitmq","account":"provision-lab","dataPath":"/var/lib/provision/environments/lab/services/rabbitmq/data","quadletPath":"/etc/containers/systemd/users/999/provision-lab-rabbitmq.container","rabbitmqVersion":"4.3.6","health":"healthy","retryQueue":"provision-lab-messages.retry","deadLetterQueue":"provision-lab-messages.dead-letter","workExchange":"provision-lab-messages.work","retryExchange":"provision-lab-messages.retry","deadLetterExchange":"provision-lab-messages.dead-letter","bindings":[{"source":"provision-lab-messages.work","destination":"provision-lab-messages","routingKey":"provision-lab-messages"},{"source":"provision-lab-messages.retry","destination":"provision-lab-messages.retry","routingKey":"provision-lab-messages.retry"},{"source":"provision-lab-messages.dead-letter","destination":"provision-lab-messages.dead-letter","routingKey":"provision-lab-messages.dead-letter"}],"messageTtl":"24h0m0s","retryDelay":"10s","deadLetterTtl":"168h0m0s","deliveryLimit":3,"accepted":1,"available":0,"acknowledged":1,"deadLettered":0,"probeMessageId":"probe","supportedGuarantees":["publisher-confirms","manual-acknowledgement","at-least-once"],"ownedResources":["rabbitmq-queue:provision-lab-messages"]#g'
 }
@@ -1096,7 +1143,7 @@ case "$*" in
 		observation_complete="${FAKE_ASYNC_OBSERVATION_COMPLETE:-true}"
 		packaging_complete="${FAKE_ASYNC_PACKAGING_COMPLETE:-true}"
 		ledger_digest="${FAKE_LEDGER_DIGEST:-sha256:9999999999999999999999999999999999999999999999999999999999999999}"
-		printf '{"schemaVersion":"provision.dev/host-inspection/v1alpha1","environment":"lab","operator":"marlinf","account":"provision-lab","os":"ubuntu","osVersion":"26.04","architecture":"x86_64","systemdVersion":"systemd 259 (259.5-0ubuntu3.4)","sshServerVersion":"OpenSSH_10.2p1","caddyVersion":"2.6.2","caddyActive":true,"journaldActive":true,"cgroupV2":true,"executorDigest":"sha256:e066cdc1a1b8a625dfc32db5ec74c1e4ba7bc459a3a3fc09ccc6488c44d606c5","authorityKeyId":"sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc","sshHostKeyFingerprint":"SHA256:ddddddddddddddddddddddddddddddddddddddddddd","generationStorageReady":true,"caddyConfigValid":true,"caddyAdminReachable":true,"caddyConfigDurable":true,"allowedOperations":["inspect","stageArtifact","installGeneration","startCandidate","verifyCandidate","switchEndpoint","verifyActive","drainPrevious","retainPrevious","prepareQueue","installTaskGeneration","verifyTaskGeneration","installWorkerGeneration","startWorkerCandidate","verifyWorkerCandidate","activateWorkerIntake","verifyWorkerActive","installScheduleRuntime","handoffSchedule","verifySchedule"],"ready":true,"findings":[],"async":{"schemaVersion":"provision.dev/host-async-inspection/v1alpha1","observationComplete":%s,"capabilities":{"podmanVersion":"5.7.0+ds2-3build1","quadlet":true,"rootlessEnvironmentAccount":true,"systemdCredentials":true,"subordinateIds":%s,"lingeringUserManager":%s,"quadletDefinitionRootOwned":%s,"dataPathEnvironmentOwned":%s,"encryptedCredentialObserved":%s,"workerAdmissionGate":%s,"rabbitmqQualificationDigest":"sha256:af41714b1aa2270ba6cd151bd24876ac117218e401e1e87515451a7081ac4c6d","rabbitmqVersion":"4.3.6","rabbitmqImageIndex":"sha256:d0bffe70e755f348625415f32b0a090662e5f06b3ba3f82a4c7aaa18621b1279","rabbitmqImageManifest":"sha256:34fc91a9de04d612a340507b8e7e19c0ee1ec9839e09dc5fc98f54991633ce91","scheduleAppletDigest":"%s","scheduleLedgerSchema":"provision.dev/schedule-ledger/v1alpha1"},"deployment":{"queue":{"id":"provision-lab-messages","exists":true,"ready":true,"queueType":"quorum","members":1,"durable":true,"imageManifest":"sha256:34fc91a9de04d612a340507b8e7e19c0ee1ec9839e09dc5fc98f54991633ce91"},"activeWorker":{"id":"provision-example-async-v0-aaaaaaaaaaaa","revision":"provision-example-async-v0","artifactDigest":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","systemdUnit":"provision-lab-consumer-aaaaaaaaaaaa.service","gate":"open","unitActive":true,"queueConnected":true,"inFlight":0},"activeTask":{"id":"provision-example-async-v0-bbbbbbbbbbbb","revision":"provision-example-async-v0","artifactDigest":"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","systemdUnit":"provision-lab-publish-bbbbbbbbbbbb.service"},"schedule":{"timerUnit":"provision-lab-every-minute.timer","taskGenerationId":"provision-example-async-v0-bbbbbbbbbbbb","appletDigest":"%s","ledgerSchema":"provision.dev/schedule-ledger/v1alpha1","ledgerDigest":"%s","fencingToken":7}}}}\n' "$observation_complete" "$packaging_complete" "$packaging_complete" "$packaging_complete" "$packaging_complete" "$packaging_complete" "$worker_gate" "$applet_digest" "$applet_digest" "$ledger_digest"
+		printf '{"schemaVersion":"provision.dev/host-inspection/v1alpha1","environment":"lab","operator":"marlinf","account":"provision-lab","os":"ubuntu","osVersion":"26.04","architecture":"x86_64","systemdVersion":"systemd 259 (259.5-0ubuntu3.4)","sshServerVersion":"OpenSSH_10.2p1","caddyVersion":"2.6.2","caddyActive":true,"journaldActive":true,"cgroupV2":true,"executorDigest":"sha256:e066cdc1a1b8a625dfc32db5ec74c1e4ba7bc459a3a3fc09ccc6488c44d606c5","authorityKeyId":"sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc","sshHostKeyFingerprint":"SHA256:ddddddddddddddddddddddddddddddddddddddddddd","generationStorageReady":true,"caddyConfigValid":true,"caddyAdminReachable":true,"caddyConfigDurable":true,"allowedOperations":["inspect","stageArtifact","installGeneration","startCandidate","verifyCandidate","switchEndpoint","verifyActive","drainPrevious","retainPrevious","prepareQueue","installTaskGeneration","verifyTaskGeneration","installWorkerGeneration","startWorkerCandidate","verifyWorkerCandidate","activateWorkerIntake","verifyWorkerActive","installScheduleRuntime","handoffSchedule","verifySchedule"],"ready":true,"findings":[],"async":{"schemaVersion":"provision.dev/host-async-inspection/v1alpha1","observationComplete":%s,"capabilities":{"podmanVersion":"5.7.0+ds2-3build1","quadlet":true,"rootlessEnvironmentAccount":true,"systemdCredentials":true,"subordinateIds":%s,"lingeringUserManager":%s,"quadletDefinitionRootOwned":%s,"dataPathEnvironmentOwned":%s,"encryptedCredentialObserved":%s,"workerAdmissionGate":%s,"rabbitmqQualificationDigest":"sha256:af41714b1aa2270ba6cd151bd24876ac117218e401e1e87515451a7081ac4c6d","rabbitmqVersion":"4.3.6","rabbitmqImageIndex":"sha256:d0bffe70e755f348625415f32b0a090662e5f06b3ba3f82a4c7aaa18621b1279","rabbitmqImageManifest":"sha256:34fc91a9de04d612a340507b8e7e19c0ee1ec9839e09dc5fc98f54991633ce91","scheduleAppletDigest":"%s","scheduleLedgerSchema":"provision.dev/schedule-ledger/v1alpha1"},"deployment":{"queue":{"id":"provision-lab-messages","exists":true,"ready":true,"queueType":"quorum","members":1,"durable":true,"imageManifest":"sha256:34fc91a9de04d612a340507b8e7e19c0ee1ec9839e09dc5fc98f54991633ce91"},"activeWorker":{"id":"provision-example-async-v0-aaaaaaaaaaaa","revision":"provision-example-async-v0","artifactDigest":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","systemdUnit":"provision-lab-consumer-aaaaaaaaaaaa.service","active":true,"gate":"open","unitActive":true,"queueConnected":true,"inFlight":0},"activeTask":{"id":"provision-example-async-v0-ce1dc7e13900","revision":"provision-example-async-v0","artifactDigest":"sha256:ce1dc7e13900742b3139beb521e9bcd30005470370462b9aa01383f078c999e5","systemdUnit":"provision-lab-publish-ce1dc7e13900@.service","queue":"provision-lab-messages","configurationDigest":"sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee","timeout":"1m0s"},"schedule":{"component":"every-minute","timerUnit":"provision-lab-every-minute.timer","taskGenerationId":"provision-example-async-v0-ce1dc7e13900","appletDigest":"%s","ledgerSchema":"provision.dev/schedule-ledger/v1alpha1","ledgerDigest":"%s","fencingToken":7,"timezone":"Africa/Johannesburg","expression":"* * * * *","daylightSaving":"wall-clock","overlap":"forbid","retry":{"maxAttempts":1,"delay":"10s"},"missedRun":{"mode":"skip","maxOccurrences":0},"failure":"record","active":true}}}}\n' "$observation_complete" "$packaging_complete" "$packaging_complete" "$packaging_complete" "$packaging_complete" "$packaging_complete" "$worker_gate" "$applet_digest" "$applet_digest" "$ledger_digest"
     ;;
   *) exit 23 ;;
 esac
@@ -1350,7 +1397,7 @@ printf '%s\n' '{"environment":"lab","operator":"operator","account":"provision-l
 	cmd := exec.Command("go", "run", ".", "host", "bootstrap", "check", "--address", "lab.example", "--user", "operator", "--environment", "lab", "--operator", "operator")
 	cmd.Env = append(os.Environ(), "PATH="+dir+string(os.PathListSeparator)+os.Getenv("PATH"), "FAKE_SSH_LOG="+log)
 	output, err := cmd.CombinedOutput()
-	if err == nil || !strings.Contains(string(output), "unexpected host executor operation") {
+	if err == nil || !strings.Contains(string(output), "host executor operation capabilities differ: missing=[stageArtifact") || !strings.Contains(string(output), "unexpected=[shell]") {
 		t.Fatalf("unexpected executor capability accepted: %v\n%s", err, output)
 	}
 	args, err := os.ReadFile(log)

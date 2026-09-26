@@ -126,7 +126,32 @@ func validateAsyncWorkerInput(input planner.AsyncWorkerInput, record bootstrapRe
 	if err != nil || duration < time.Second || duration > 5*time.Minute || duration.String() != input.Drain.MaxDuration {
 		return errors.New("Worker drain bound is unsupported")
 	}
+	if input.Previous != nil {
+		if err := validatePlannedPreviousWorker(input, record, paths); err != nil {
+			return err
+		}
+	}
 	return validateGenerationReference(asyncGenerationReference(input.GenerationID, input.Revision, input.ArtifactDigest, record, paths), record, paths)
+}
+
+func validatePlannedPreviousWorker(input planner.AsyncWorkerInput, record bootstrapRecord, paths executionPaths) error {
+	previous := input.Previous
+	if previous.ID == input.GenerationID || previous.ArtifactDigest == input.ArtifactDigest || previous.SystemdUnit == input.SystemdUnit {
+		return errors.New("Worker candidate must be a separate immutable Generation from the active Worker")
+	}
+	active, err := readWorkerGenerationRecord(filepath.Join(paths.environmentHome, "workers", "active.json"))
+	if err != nil || !active.Active || active.Input.GenerationID != previous.ID || active.Input.Revision != previous.Revision || active.Input.ArtifactDigest != previous.ArtifactDigest || active.Input.SystemdUnit != previous.SystemdUnit {
+		return errors.New("planned previous Worker does not match the durable active Worker record")
+	}
+	gate, err := os.ReadFile(workerGatePath(paths, active.Input.GenerationID))
+	if err != nil || string(gate) != "open\n" {
+		return errors.New("planned previous Worker intake is not durably open")
+	}
+	state, err := readWorkerState(workerStatePath(paths, active.Input.GenerationID))
+	if err != nil || state.ApplicationRevision != active.Input.Revision || state.WorkerArtifactDigest != active.Input.ArtifactDigest || state.Queue != active.Input.QueueLogicalID || !state.Connected || state.Gated || !state.Consuming {
+		return errors.New("planned previous Worker runtime state is not exact and active")
+	}
+	return nil
 }
 
 func validateAsyncScheduleInput(input planner.AsyncScheduleInput, record bootstrapRecord) error {
@@ -404,18 +429,27 @@ func waitForWorker(ctx context.Context, input planner.AsyncWorkerInput, record b
 	deadline := time.Now().Add(paths.healthTimeout)
 	for {
 		observed := observeWorkerGeneration(ctx, input, record, paths)
-		if observed.Worker.UnitActive && observed.Worker.QueueConnected && (gated && observed.Worker.Gate == "closed" || !gated && observed.Worker.Gate == "open") {
+		gatedReady := gated && observed.Worker.Gate == "closed" && observed.Checks.Liveness && observed.Checks.QueueConnectivity && observed.Checks.RevisionIdentity && observed.Checks.IntakeDisabled
+		activeReady := !gated && observed.Worker.Gate == "open" && observed.Checks.Liveness && observed.Checks.QueueConnectivity && observed.Checks.RevisionIdentity
+		if gatedReady || activeReady {
 			return observed, nil
 		}
 		if time.Now().After(deadline) || ctx.Err() != nil {
 			observed.Status = "failed"
 			diagnostic := inspectSystemdUnit(ctx, paths.systemd, input.SystemdUnit)
 			observed.UnitDiagnostic = &diagnostic
-			observed.Reason = summarizeWorkerUnitFailure(input.SystemdUnit, diagnostic)
+			observed.Reason = summarizeWorkerVerificationFailure(input.SystemdUnit, observed.Checks, diagnostic)
+			observed.Worker.Health = "candidate-unverified"
+			observed.Worker.Reason = observed.Reason
+			observed.Worker.RecoveryAction = "keep intake closed; inspect the failed verification checks and create a new approved Plan after correcting the candidate"
 			return observed, errors.New(observed.Reason)
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
+}
+
+func summarizeWorkerVerificationFailure(unit string, checks host.WorkerVerificationChecks, diagnostic host.SystemdUnitDiagnostic) string {
+	return fmt.Sprintf("Worker candidate verification failed for %s (liveness=%t, queueConnectivity=%t, revisionIdentity=%t, intakeDisabled=%t): %s", unit, checks.Liveness, checks.QueueConnectivity, checks.RevisionIdentity, checks.IntakeDisabled, summarizeWorkerUnitFailure(unit, diagnostic))
 }
 
 func inspectSystemdUnit(ctx context.Context, systemd systemdController, unit string) host.SystemdUnitDiagnostic {
@@ -475,7 +509,7 @@ func observeTaskGeneration(ctx context.Context, input planner.AsyncTaskInput, re
 		return result
 	}
 	recorded, err := readTaskGenerationRecord(taskGenerationRecordPath(paths, input.GenerationID))
-	if err != nil || recorded.Input != input || recorded.Executable != generation.Executable || recorded.SchemaVersion != asyncGenerationSchema {
+	if err != nil || !reflect.DeepEqual(recorded.Input, input) || recorded.Executable != generation.Executable || recorded.SchemaVersion != asyncGenerationSchema {
 		result.Status, result.Reason = "unknown", "Task generation record differs from the approved Plan"
 		return result
 	}
@@ -501,7 +535,7 @@ func observeWorkerGeneration(ctx context.Context, input planner.AsyncWorkerInput
 		return result
 	}
 	recorded, err := readWorkerGenerationRecord(workerGenerationRecordPath(paths, input.GenerationID))
-	if err != nil || recorded.Input != input || recorded.Executable != generation.Executable || recorded.SchemaVersion != asyncGenerationSchema {
+	if err != nil || !reflect.DeepEqual(recorded.Input, input) || recorded.Executable != generation.Executable || recorded.SchemaVersion != asyncGenerationSchema {
 		result.Status, result.Reason = "unknown", "Worker generation record differs from the approved Plan"
 		return result
 	}
@@ -513,26 +547,63 @@ func observeWorkerGeneration(ctx context.Context, input planner.AsyncWorkerInput
 	result.Status, result.Verified = "installed", recorded.Verified
 	active, _ := paths.systemd.Run(ctx, "is-active", input.SystemdUnit)
 	status.UnitActive = strings.TrimSpace(string(active)) == "active"
+	result.Checks.Liveness = status.UnitActive
 	if !status.UnitActive {
+		status.Health = "candidate-unverified"
+		status.Reason = "Worker systemd unit is not active"
+		status.RecoveryAction = "keep intake closed; inspect the candidate unit and create a new approved Plan after correcting the Artifact"
+		result.Worker = status
 		return result
 	}
 	state, err := readWorkerState(status.StatePath)
 	if err != nil || state.SchemaVersion != "provision.dev/example-async-worker-state/v1alpha1" || state.ApplicationRevision != input.Revision || state.WorkerArtifactDigest != input.ArtifactDigest || state.Queue != input.QueueLogicalID {
 		result.Status, result.Reason = "unknown", "Worker runtime state is missing or does not match its Generation"
+		status.Health = "candidate-unverified"
+		status.Reason = result.Reason
+		status.RecoveryAction = "keep intake closed; repair the candidate runtime identity and create a new approved Plan"
+		result.Worker = status
 		return result
 	}
+	result.Checks.RevisionIdentity = true
 	status.QueueConnected = state.Connected
+	result.Checks.QueueConnectivity = state.Connected
 	status.InFlight = 0
 	if state.InFlightMessageID != "" {
 		status.InFlight = 1
 	}
-	if state.Gated || !state.Consuming {
-		status.Gate, result.Status = "closed", "active-gated"
+	gate, gateErr := os.ReadFile(status.GatePath)
+	if gateErr != nil {
+		gate = nil
+	}
+	status.Gate, result.Status, result.Checks.IntakeDisabled = workerAdmissionObservation(gate, state)
+	if result.Status == "active-gated" && result.Checks.Liveness && result.Checks.QueueConnectivity && result.Checks.RevisionIdentity && result.Checks.IntakeDisabled {
+		status.Health = "candidate-gated"
+	} else if result.Status == "active-open" {
+		status.Health = "active"
 	} else {
-		status.Gate, result.Status = "open", "active-open"
+		status.Health = "candidate-unverified"
+		status.Reason = "Worker candidate has not satisfied every verification gate"
+		status.RecoveryAction = "keep intake closed; inspect liveness, Queue connectivity, Revision identity, and gate state before replanning"
 	}
 	result.Worker = status
 	return result
+}
+
+func workerAdmissionObservation(gate []byte, state exampleWorkerState) (string, string, bool) {
+	switch string(gate) {
+	case "closed\n":
+		if state.Gated && !state.Consuming {
+			return "closed", "active-gated", true
+		}
+		return "closed", "unknown", false
+	case "open\n":
+		if !state.Gated && state.Consuming {
+			return "open", "active-open", false
+		}
+		return "open", "unknown", false
+	default:
+		return "unknown", "unknown", false
+	}
 }
 
 func exactActiveWorkerRecord(paths executionPaths, recorded installedWorkerGeneration) bool {
@@ -717,6 +788,7 @@ func inspectAsyncDeployment(ctx context.Context, environment, account string, pa
 		findings = append(findings, "active Task generation record is unreadable")
 	}
 	workerActivePath := filepath.Join(paths.environmentHome, "workers", "active.json")
+	activeWorkerID := ""
 	if worker, err := readWorkerGenerationRecord(workerActivePath); err == nil {
 		observed := observeWorkerGeneration(ctx, worker.Input, record, paths)
 		if observed.Status != "active-open" || !observed.Verified {
@@ -724,9 +796,38 @@ func inspectAsyncDeployment(ctx context.Context, environment, account string, pa
 		} else {
 			status := observed.Worker
 			deployment.ActiveWorker = &status
+			activeWorkerID = status.ID
 		}
 	} else if activeRecordShouldExist(workerActivePath, filepath.Join(paths.environmentHome, "workers")) {
 		findings = append(findings, "installed Worker generation has no readable active Worker record")
+	}
+	workerEntries, workerEntriesErr := os.ReadDir(filepath.Join(paths.environmentHome, "workers"))
+	if workerEntriesErr == nil {
+		for _, entry := range workerEntries {
+			if entry.IsDir() || entry.Name() == "active.json" || !strings.HasSuffix(entry.Name(), ".json") {
+				continue
+			}
+			candidate, readErr := readWorkerGenerationRecord(filepath.Join(paths.environmentHome, "workers", entry.Name()))
+			if readErr != nil || candidate.Input.GenerationID == activeWorkerID {
+				continue
+			}
+			if deployment.Candidate != nil {
+				findings = append(findings, "more than one non-active Worker generation requires an explicit retention decision")
+				continue
+			}
+			observed := observeWorkerGeneration(ctx, candidate.Input, record, paths)
+			status := observed.Worker
+			if observed.Reason != "" {
+				status.Reason = observed.Reason
+			}
+			if status.Health == "" {
+				status.Health = "candidate-unverified"
+				status.RecoveryAction = "keep intake closed; inspect the candidate and create a new approved Plan before any Worker handoff"
+			}
+			deployment.Candidate = &status
+		}
+	} else if !errors.Is(workerEntriesErr, os.ErrNotExist) {
+		findings = append(findings, "Worker generation inventory cannot be observed")
 	}
 	schedulesRoot := filepath.Join(paths.environmentHome, "schedules")
 	entries, err := os.ReadDir(schedulesRoot)
@@ -740,7 +841,7 @@ func inspectAsyncDeployment(ctx context.Context, environment, account string, pa
 				findings = append(findings, "installed Schedule record is unreadable")
 			} else {
 				active, _ := paths.systemd.Run(ctx, "is-active", installed.TimerUnit)
-				status := host.ScheduleStatus{Component: installed.Component, TimerUnit: installed.TimerUnit, TaskGenerationID: installed.TaskGenerationID, AppletDigest: installed.AppletDigest, LedgerSchema: installed.LedgerSchema, LedgerDigest: regularFileDigest(installed.LedgerPath), FencingToken: installed.FencingToken, Timezone: installed.Timezone, Expression: installed.Expression, Active: strings.TrimSpace(string(active)) == "active"}
+				status := host.ScheduleStatus{Component: installed.Component, TimerUnit: installed.TimerUnit, TaskGenerationID: installed.TaskGenerationID, AppletDigest: installed.AppletDigest, LedgerSchema: installed.LedgerSchema, LedgerDigest: regularFileDigest(installed.LedgerPath), FencingToken: installed.FencingToken, Timezone: installed.Timezone, Expression: installed.Expression, DaylightSaving: installed.DaylightSaving, Overlap: installed.Overlap, Retry: installed.Retry, MissedRun: installed.MissedRun, Failure: installed.Failure, Active: strings.TrimSpace(string(active)) == "active"}
 				deployment.Schedule = &status
 				if store, openErr := scheduler.OpenReadOnly(installed.LedgerPath); openErr == nil {
 					occurrence, invocation, latestErr := store.Latest(ctx, component)
@@ -755,7 +856,93 @@ func inspectAsyncDeployment(ctx context.Context, environment, account string, pa
 	} else if !errors.Is(err, os.ErrNotExist) {
 		findings = append(findings, "Schedule inventory cannot be observed")
 	}
+	messages, messageErr := inspectQueueMessages(paths)
+	if messageErr != nil {
+		findings = append(findings, "Queue message evidence cannot be observed: "+messageErr.Error())
+	} else {
+		deployment.Messages = messages
+	}
 	return deployment, findings
+}
+
+func inspectQueueMessages(paths executionPaths) ([]host.QueueMessageStatus, error) {
+	messages := []host.QueueMessageStatus{}
+	indexes := map[string]int{}
+	taskFile, err := os.Open(taskEvidencePath(paths))
+	if errors.Is(err, os.ErrNotExist) {
+		return messages, nil
+	}
+	if err != nil {
+		return nil, errors.New("read Task confirmation evidence")
+	}
+	taskScanner := bufio.NewScanner(taskFile)
+	for taskScanner.Scan() {
+		var event struct {
+			Event, MessageID, ApplicationRevision, TaskArtifactDigest, InvocationID string
+		}
+		if json.Unmarshal(taskScanner.Bytes(), &event) != nil {
+			_ = taskFile.Close()
+			return nil, errors.New("Task confirmation evidence is invalid")
+		}
+		if event.Event != "message_confirmed" {
+			continue
+		}
+		if event.MessageID == "" || event.ApplicationRevision == "" || !digestPattern.MatchString(event.TaskArtifactDigest) || event.InvocationID == "" {
+			_ = taskFile.Close()
+			return nil, errors.New("Task confirmation evidence is incomplete")
+		}
+		if _, duplicate := indexes[event.MessageID]; duplicate {
+			continue
+		}
+		indexes[event.MessageID] = len(messages)
+		messages = append(messages, host.QueueMessageStatus{ID: event.MessageID, ProducerApplicationRevision: event.ApplicationRevision, TaskArtifactDigest: event.TaskArtifactDigest, TaskInvocationID: event.InvocationID, Disposition: "accepted-unsettled"})
+	}
+	if scanErr := taskScanner.Err(); scanErr != nil {
+		_ = taskFile.Close()
+		return nil, errors.New("scan Task confirmation evidence")
+	}
+	if closeErr := taskFile.Close(); closeErr != nil {
+		return nil, errors.New("close Task confirmation evidence")
+	}
+
+	workerFile, err := os.Open(workerEvidencePath(paths))
+	if errors.Is(err, os.ErrNotExist) {
+		return messages, nil
+	}
+	if err != nil {
+		return nil, errors.New("read Worker settlement evidence")
+	}
+	defer workerFile.Close()
+	workerScanner := bufio.NewScanner(workerFile)
+	for workerScanner.Scan() {
+		var event struct {
+			Event, MessageID, WorkerApplicationRevision, WorkerArtifactDigest string
+		}
+		if json.Unmarshal(workerScanner.Bytes(), &event) != nil {
+			return nil, errors.New("Worker settlement evidence is invalid")
+		}
+		index, accepted := indexes[event.MessageID]
+		if !accepted {
+			continue
+		}
+		if event.WorkerApplicationRevision == "" || !digestPattern.MatchString(event.WorkerArtifactDigest) {
+			return nil, errors.New("Worker message evidence is incomplete")
+		}
+		workerEvent := host.QueueMessageWorkerEvent{Event: event.Event, WorkerApplicationRevision: event.WorkerApplicationRevision, WorkerArtifactDigest: event.WorkerArtifactDigest}
+		messages[index].WorkerEvents = append(messages[index].WorkerEvents, workerEvent)
+		switch event.Event {
+		case "acknowledged", "requeued", "rejected":
+		default:
+			continue
+		}
+		messages[index].Disposition = event.Event
+		messages[index].WorkerApplicationRevision = event.WorkerApplicationRevision
+		messages[index].WorkerArtifactDigest = event.WorkerArtifactDigest
+	}
+	if workerScanner.Err() != nil {
+		return nil, errors.New("scan Worker settlement evidence")
+	}
+	return messages, nil
 }
 
 func activeRecordShouldExist(activePath, recordsDirectory string) bool {
@@ -866,7 +1053,7 @@ func ensureAsyncDataRoots(record bootstrapRecord, paths executionPaths, uid, gid
 }
 
 func taskStatus(input planner.AsyncTaskInput, record bootstrapRecord, paths executionPaths) host.TaskGenerationStatus {
-	return host.TaskGenerationStatus{ID: input.GenerationID, Revision: input.Revision, ArtifactDigest: input.ArtifactDigest, SystemdUnit: input.SystemdUnit, Queue: input.QueueLogicalID, ConfigurationDigest: input.ConfigurationDigest, EvidencePath: taskEvidencePath(paths)}
+	return host.TaskGenerationStatus{ID: input.GenerationID, Revision: input.Revision, ArtifactDigest: input.ArtifactDigest, SystemdUnit: input.SystemdUnit, Queue: input.QueueLogicalID, ConfigurationDigest: input.ConfigurationDigest, Timeout: input.Timeout, EvidencePath: taskEvidencePath(paths)}
 }
 
 func workerStatus(input planner.AsyncWorkerInput, record bootstrapRecord, paths executionPaths) host.WorkerGenerationStatus {
@@ -874,7 +1061,7 @@ func workerStatus(input planner.AsyncWorkerInput, record bootstrapRecord, paths 
 }
 
 func scheduleStatus(input planner.AsyncScheduleInput) host.ScheduleStatus {
-	return host.ScheduleStatus{Component: input.Component, TimerUnit: input.TimerUnit, TaskGenerationID: input.TaskGenerationID, AppletDigest: input.AppletDigest, LedgerSchema: input.LedgerSchema, Timezone: input.Timezone, Expression: input.Expression}
+	return host.ScheduleStatus{Component: input.Component, TimerUnit: input.TimerUnit, TaskGenerationID: input.TaskGenerationID, AppletDigest: input.AppletDigest, LedgerSchema: input.LedgerSchema, Timezone: input.Timezone, Expression: input.Expression, DaylightSaving: input.DaylightSaving, Overlap: input.Overlap, Retry: input.Retry, MissedRun: input.MissedRun, Failure: input.Failure}
 }
 
 func taskGenerationRecordPath(paths executionPaths, generation string) string {

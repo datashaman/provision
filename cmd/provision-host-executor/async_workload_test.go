@@ -1,8 +1,10 @@
 package main
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -10,6 +12,48 @@ import (
 	"provision/internal/host"
 	"provision/internal/planner"
 )
+
+func TestWorkerGenerationInputSurvivesDurableRoundTripWithPreviousGeneration(t *testing.T) {
+	_, _, _, input, _ := asyncOperationFixture(t)
+	input.Previous = &host.WorkerGenerationStatus{
+		ID: "provision-example-async-v0-ffffffffffff", Revision: "provision-example-async-v0",
+		ArtifactDigest: "sha256:" + strings.Repeat("f", 64), SystemdUnit: "provision-lab-consumer-ffffffffffff.service",
+		Active: true, Gate: "open", UnitActive: true, QueueConnected: true,
+	}
+	installed := installedWorkerGeneration{SchemaVersion: asyncGenerationSchema, Input: input, Executable: "provision-example-async-worker"}
+	encoded, err := json.Marshal(installed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var recorded installedWorkerGeneration
+	if err := json.Unmarshal(encoded, &recorded); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(recorded.Input, input) {
+		t.Fatalf("durably decoded Worker input differs from its approved value: recorded=%+v planned=%+v", recorded.Input, input)
+	}
+}
+
+func TestTaskGenerationInputSurvivesDurableRoundTripWithPreviousGeneration(t *testing.T) {
+	_, _, input, _, _ := asyncOperationFixture(t)
+	input.Previous = &host.TaskGenerationStatus{
+		ID: "provision-example-async-v0-eeeeeeeeeeee", Revision: "provision-example-async-v0",
+		ArtifactDigest: "sha256:" + strings.Repeat("e", 64), SystemdUnit: "provision-lab-publish-eeeeeeeeeeee@.service",
+		Queue: "provision-lab-messages", ConfigurationDigest: "sha256:" + strings.Repeat("c", 64), Timeout: "1m0s",
+	}
+	installed := installedTaskGeneration{SchemaVersion: asyncGenerationSchema, Input: input, Executable: "provision-example-async-task"}
+	encoded, err := json.Marshal(installed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var recorded installedTaskGeneration
+	if err := json.Unmarshal(encoded, &recorded); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(recorded.Input, input) {
+		t.Fatalf("durably decoded Task input differs from its approved value: recorded=%+v planned=%+v", recorded.Input, input)
+	}
+}
 
 func TestInitialAsyncOperationValidationPinsTaskWorkerAndScheduleIdentities(t *testing.T) {
 	record, paths, task, worker, schedule := asyncOperationFixture(t)
@@ -98,6 +142,58 @@ func TestScheduleVerificationRejectsDecisionDuplicateAndWrongWorkerEvidence(t *t
 	}
 }
 
+func TestQueueMessageInspectionJoinsConfirmedMessagesOnlyToDurableSettlement(t *testing.T) {
+	root := t.TempDir()
+	paths := executionPaths{environmentHome: root}
+	if err := os.MkdirAll(filepath.Dir(taskEvidencePath(paths)), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(workerEvidencePath(paths)), 0755); err != nil {
+		t.Fatal(err)
+	}
+	taskDigest := "sha256:" + strings.Repeat("b", 64)
+	activeDigest := "sha256:" + strings.Repeat("a", 64)
+	candidateDigest := "sha256:" + strings.Repeat("c", 64)
+	taskEvidence := "{\"event\":\"message_confirmed\",\"messageId\":\"msg-1\",\"applicationRevision\":\"revision-a\",\"taskArtifactDigest\":\"" + taskDigest + "\",\"invocationId\":\"inv-1\"}\n" +
+		"{\"event\":\"message_confirmed\",\"messageId\":\"msg-2\",\"applicationRevision\":\"revision-a\",\"taskArtifactDigest\":\"" + taskDigest + "\",\"invocationId\":\"inv-2\"}\n"
+	workerEvidence := "{\"event\":\"received\",\"messageId\":\"msg-1\",\"workerApplicationRevision\":\"revision-b\",\"workerArtifactDigest\":\"" + candidateDigest + "\"}\n" +
+		"{\"event\":\"post_gate_delivery_requeue_decided\",\"messageId\":\"msg-1\",\"workerApplicationRevision\":\"revision-b\",\"workerArtifactDigest\":\"" + candidateDigest + "\"}\n" +
+		"{\"event\":\"requeue_decided\",\"messageId\":\"msg-1\",\"workerApplicationRevision\":\"revision-b\",\"workerArtifactDigest\":\"" + candidateDigest + "\"}\n" +
+		"{\"event\":\"requeued\",\"messageId\":\"msg-1\",\"workerApplicationRevision\":\"revision-b\",\"workerArtifactDigest\":\"" + candidateDigest + "\"}\n" +
+		"{\"event\":\"acknowledgement_decided\",\"messageId\":\"msg-1\",\"workerApplicationRevision\":\"revision-a\",\"workerArtifactDigest\":\"" + activeDigest + "\"}\n" +
+		"{\"event\":\"connected_gated\",\"workerApplicationRevision\":\"revision-b\",\"workerArtifactDigest\":\"" + candidateDigest + "\"}\n" +
+		"{\"event\":\"acknowledged\",\"messageId\":\"msg-1\",\"workerApplicationRevision\":\"revision-a\",\"workerArtifactDigest\":\"" + activeDigest + "\"}\n"
+	if err := os.WriteFile(taskEvidencePath(paths), []byte(taskEvidence), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(workerEvidencePath(paths), []byte(workerEvidence), 0600); err != nil {
+		t.Fatal(err)
+	}
+	messages, err := inspectQueueMessages(paths)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(messages) != 2 || messages[0].Disposition != "acknowledged" || messages[0].WorkerArtifactDigest != activeDigest || len(messages[0].WorkerEvents) != 6 || messages[0].WorkerEvents[0].Event != "received" || messages[0].WorkerEvents[1].Event != "post_gate_delivery_requeue_decided" || messages[0].WorkerEvents[0].WorkerArtifactDigest != candidateDigest || messages[1].Disposition != "accepted-unsettled" || messages[1].WorkerArtifactDigest != "" {
+		t.Fatalf("message accounting = %+v", messages)
+	}
+}
+
+func TestWorkerAdmissionRequiresRootGateAndRuntimeStateToAgree(t *testing.T) {
+	gated := exampleWorkerState{Gated: true, Consuming: false}
+	gate, status, disabled := workerAdmissionObservation([]byte("closed\n"), gated)
+	if gate != "closed" || status != "active-gated" || !disabled {
+		t.Fatalf("closed admission = %q, %q, %t", gate, status, disabled)
+	}
+	gate, status, disabled = workerAdmissionObservation([]byte("open\n"), gated)
+	if gate != "open" || status != "unknown" || disabled {
+		t.Fatalf("opened root gate with stale gated runtime state passed verification: %q, %q, %t", gate, status, disabled)
+	}
+	gate, status, disabled = workerAdmissionObservation([]byte("closed\n"), exampleWorkerState{Gated: false, Consuming: true})
+	if gate != "closed" || status != "unknown" || disabled {
+		t.Fatalf("closed root gate with stale consuming runtime state passed verification: %q, %q, %t", gate, status, disabled)
+	}
+}
+
 func TestTaskInstanceUsesStableInvocationIdentity(t *testing.T) {
 	unit, err := taskInstanceUnit("provision-lab-publish-bbbbbbbbbbbb@.service", "inv-1234567890abcdef")
 	if err != nil || unit != "provision-lab-publish-bbbbbbbbbbbb@inv-1234567890abcdef.service" {
@@ -117,6 +213,12 @@ func TestWorkerUnitDiagnosticNamesSystemdCredentialFailure(t *testing.T) {
 	if !strings.Contains(summary, "systemd credential setup") || !strings.Contains(summary, "exit status 243/CREDENTIALS") {
 		t.Fatalf("summary = %q", summary)
 	}
+	verification := summarizeWorkerVerificationFailure("provision-lab-consumer.service", host.WorkerVerificationChecks{QueueConnectivity: true, RevisionIdentity: true, IntakeDisabled: true}, diagnostic)
+	for _, evidence := range []string{"liveness=false", "queueConnectivity=true", "revisionIdentity=true", "intakeDisabled=true", "exit status 243/CREDENTIALS"} {
+		if !strings.Contains(verification, evidence) {
+			t.Fatalf("verification summary omitted %q: %s", evidence, verification)
+		}
+	}
 }
 
 func TestVerifyWorkerActiveRequiresDurableActiveRecord(t *testing.T) {
@@ -130,6 +232,53 @@ func TestVerifyWorkerActiveRequiresDurableActiveRecord(t *testing.T) {
 	observed.Worker.Active = true
 	if !workerOperationSatisfied(planner.VerifyWorkerActive, observed) {
 		t.Fatal("exact active Worker did not satisfy verifyWorkerActive")
+	}
+}
+
+func TestWorkerCandidateRequiresAndPreservesExactDistinctActiveGeneration(t *testing.T) {
+	record, paths, _, candidate, _ := asyncOperationFixture(t)
+	activeDigest := "sha256:" + strings.Repeat("f", 64)
+	activeInput := planner.AsyncWorkerInput{
+		Component: "consumer", Queue: "messages", QueueLogicalID: "provision-lab-messages",
+		GenerationID: "provision-example-async-v0-ffffffffffff", Revision: "provision-example-async-v0", ArtifactDigest: activeDigest,
+		SystemdUnit: "provision-lab-consumer-ffffffffffff.service", Admission: "gated",
+		Drain: config.WorkerDrain{Mode: "bounded-in-flight", MaxDuration: "30s"}, Rollout: "required",
+	}
+	active := installedWorkerGeneration{SchemaVersion: asyncGenerationSchema, Input: activeInput, Executable: "provision-example-async-worker", Verified: true, Active: true}
+	workersRoot := filepath.Join(paths.environmentHome, "workers")
+	if err := os.MkdirAll(workersRoot, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeJSONAtomic(filepath.Join(workersRoot, "active.json"), active, 0444); err != nil {
+		t.Fatal(err)
+	}
+	gatePath := workerGatePath(paths, activeInput.GenerationID)
+	if err := os.MkdirAll(filepath.Dir(gatePath), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(gatePath, []byte("open\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	state := exampleWorkerState{SchemaVersion: "provision.dev/example-async-worker-state/v1alpha1", ApplicationRevision: activeInput.Revision, WorkerArtifactDigest: activeInput.ArtifactDigest, Queue: activeInput.QueueLogicalID, Connected: true, Consuming: true}
+	if err := writeJSONAtomic(workerStatePath(paths, activeInput.GenerationID), state, 0644); err != nil {
+		t.Fatal(err)
+	}
+	candidate.Previous = &host.WorkerGenerationStatus{ID: activeInput.GenerationID, Revision: activeInput.Revision, ArtifactDigest: activeInput.ArtifactDigest, SystemdUnit: activeInput.SystemdUnit, Active: true, Gate: "open", UnitActive: true, QueueConnected: true}
+	before, err := os.ReadFile(filepath.Join(workersRoot, "active.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := validateAsyncWorkerInput(candidate, record, paths); err != nil {
+		t.Fatalf("distinct candidate rejected: %v", err)
+	}
+	after, err := os.ReadFile(filepath.Join(workersRoot, "active.json"))
+	if err != nil || string(after) != string(before) {
+		t.Fatalf("candidate validation mutated the active Worker: %v", err)
+	}
+	tampered := candidate
+	tampered.Previous = &host.WorkerGenerationStatus{ID: activeInput.GenerationID, Revision: activeInput.Revision, ArtifactDigest: candidate.ArtifactDigest, SystemdUnit: activeInput.SystemdUnit}
+	if err := validateAsyncWorkerInput(tampered, record, paths); err == nil || !strings.Contains(err.Error(), "separate immutable Generation") {
+		t.Fatalf("candidate matching the planned active Artifact was accepted: %v", err)
 	}
 }
 

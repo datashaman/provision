@@ -141,7 +141,7 @@ func TestAuthorizedArtifactPreparationRejectsReplayAndStaleFence(t *testing.T) {
 	}
 
 	stale := signedTestEnvelope(t, signer, planned, operationDigest, record, "attempt-11111111111111111111111111111111", 1, now, now.Add(time.Minute))
-	if _, err := executeAuthorized(context.Background(), stale, record, publicKey, paths, now); err == nil || !strings.Contains(err.Error(), "fencing token is stale") {
+	if _, err := executeAuthorized(context.Background(), stale, record, publicKey, paths, now); err == nil || !strings.Contains(err.Error(), "fencing token is stale: submitted=1 current=2") {
 		t.Fatalf("stale fencing token accepted: %v", err)
 	}
 

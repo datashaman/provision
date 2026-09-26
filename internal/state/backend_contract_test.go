@@ -206,6 +206,52 @@ func TestSQLiteBackendEnablesIndependentQueuePreparation(t *testing.T) {
 	}
 }
 
+func TestSQLiteBackendRejectsWorkerIntakeOutsideCandidateOnlyPlan(t *testing.T) {
+	path := t.TempDir() + "/state.db"
+	backend, err := OpenSQLite(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer backend.Close()
+
+	plan := contractPlan(t, "application-a", "lab", "revision-b")
+	plan.Operations = []planner.Operation{
+		{ID: "op-01", Kind: planner.StageArtifact},
+		{ID: "op-06", Kind: planner.StartWorkerCandidate, DependsOn: []string{"op-01"}},
+		{ID: "op-07", Kind: planner.VerifyWorkerCandidate, DependsOn: []string{"op-06"}},
+	}
+	plan.ID = ""
+	encoded, err := json.Marshal(plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	digest := sha256.Sum256(encoded)
+	plan.ID = "sha256:" + hex.EncodeToString(digest[:])
+	now := time.Date(2026, 9, 26, 12, 0, 0, 0, time.UTC)
+	if err := backend.StoreCurrentPlan(context.Background(), plan, now); err != nil {
+		t.Fatal(err)
+	}
+	if err := backend.RecordApproval(context.Background(), plan.ID, ApprovalRecord{Actor: "tester", Decision: DecisionApproved, DecidedAt: now, ExpiresAt: now.Add(time.Hour)}); err != nil {
+		t.Fatal(err)
+	}
+	complete := func(id string, outcome ExecutionOutcome, offset time.Duration) {
+		t.Helper()
+		attempt, beginErr := backend.BeginOperation(context.Background(), BeginOperationRequest{PlanID: plan.ID, OperationID: id, Holder: "holder", StartedAt: now.Add(offset), LeaseDuration: time.Minute})
+		if beginErr != nil {
+			t.Fatalf("begin %s: %v", id, beginErr)
+		}
+		if completeErr := backend.CompleteOperation(context.Background(), CompleteOperationRequest{AttemptID: attempt.AttemptID, Holder: attempt.Holder, PlanID: plan.ID, OperationID: id, FencingToken: attempt.FencingToken, Outcome: outcome, Observation: json.RawMessage(`{"status":"recorded"}`), CompletedAt: now.Add(offset + time.Second)}); completeErr != nil {
+			t.Fatalf("complete %s: %v", id, completeErr)
+		}
+	}
+	complete("op-01", ExecutionSucceeded, time.Minute)
+	complete("op-06", ExecutionSucceeded, 2*time.Minute)
+	complete("op-07", ExecutionFailed, 3*time.Minute)
+	if _, err := backend.BeginOperation(context.Background(), BeginOperationRequest{PlanID: plan.ID, OperationID: "op-08", Holder: "holder", StartedAt: now.Add(4 * time.Minute), LeaseDuration: time.Minute}); err == nil || !strings.Contains(err.Error(), "not present in the approved Plan") {
+		t.Fatalf("Worker intake operation outside candidate-only Plan became executable: %v", err)
+	}
+}
+
 func TestSQLiteBackendAllowsArtifactStagingAfterQueuePreparation(t *testing.T) {
 	path := t.TempDir() + "/state.db"
 	backend, err := OpenSQLite(path)

@@ -65,6 +65,24 @@ func TestLoadAsyncExampleDeterministically(t *testing.T) {
 	}
 }
 
+func TestLoadAsyncWorkerReplacementBindsOnlyANewWorkerArtifact(t *testing.T) {
+	root := filepath.Join("..", "..", "examples", "host-async")
+	initial, err := Load(filepath.Join(root, "root.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	replacement, err := Load(filepath.Join(root, "root-worker-v2.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if replacement.Revision.Name != "provision-example-async-v2" || replacement.Revision.Artifacts["consumer"].Digest != "sha256:14caeac0dbdaff68a2644798b0a1b2549f82342bedbf79d9b8da4625e2080d95" {
+		t.Fatalf("replacement Revision does not bind the v0.2.0 Worker: %+v", replacement.Revision)
+	}
+	if replacement.Revision.Artifacts["publish"] != initial.Revision.Artifacts["publish"] {
+		t.Fatalf("Worker-only replacement changed the Task Artifact: initial=%+v replacement=%+v", initial.Revision.Artifacts["publish"], replacement.Revision.Artifacts["publish"])
+	}
+}
+
 func TestLoadQueueOnlyExampleDeterministically(t *testing.T) {
 	path := filepath.Join("..", "..", "examples", "host-queue", "root.yaml")
 	first, err := Load(path)

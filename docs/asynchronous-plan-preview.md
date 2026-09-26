@@ -62,7 +62,23 @@ The checked-in black-box harness is
 Its qualified live run is recorded in the
 [first scheduled-message evidence](evidence/2026-09-26-first-scheduled-message.md).
 
-This first tracer does not implement Worker replacement, Schedule handoff
-between revisions, retry/redelivery policy, overlap behavior, missed-run
-catch-up, crash-boundary recovery, or Queue-generation replacement. Those
-remain explicit later transitions rather than implied guarantees.
+For a Worker-only candidate, the Planner keeps the existing Queue, Task, and
+Schedule identities and emits only Queue verification, Artifact staging,
+immutable candidate installation, gated start, and candidate verification. It
+does not authorize the still-unimplemented intake fence, old-Worker drain,
+candidate activation, active verification, or retention operations. The
+restricted executor requires the root-owned gate file and Worker runtime state
+to agree before it reports intake closed, and it reports process identity,
+Queue connection, Revision identity, complete per-message Worker event history,
+and safe systemd diagnostics. If verification fails, the candidate remains
+closed and separately actionable while the existing Worker continues handling
+normal messages. The checked-in
+[`scripts/test-rejected-worker-candidate-host.sh`](../scripts/test-rejected-worker-candidate-host.sh)
+harness and its [live evidence](evidence/2026-09-26-rejected-worker-candidate.md)
+qualify that rejection path.
+
+This tracer does not yet implement a successful Worker intake handoff, old
+Worker drain and retention, Schedule handoff between revisions,
+retry/redelivery policy, overlap behavior, missed-run catch-up, crash-boundary
+recovery, or Queue-generation replacement. Those remain explicit later
+transitions rather than implied guarantees.

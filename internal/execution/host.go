@@ -183,9 +183,13 @@ func verifyAsyncWorkerResult(envelope operation.Envelope, result operation.Resul
 			if observed.Status != "installed" {
 				return errors.New("host Worker installation observation is invalid")
 			}
-		case planner.StartWorkerCandidate, planner.VerifyWorkerCandidate:
+		case planner.StartWorkerCandidate:
 			if observed.Status != "active-gated" || !observed.Worker.UnitActive || !observed.Worker.QueueConnected || observed.Worker.Gate != "closed" {
 				return errors.New("host gated Worker observation is invalid")
+			}
+		case planner.VerifyWorkerCandidate:
+			if observed.Status != "active-gated" || !observed.Verified || !observed.Checks.Liveness || !observed.Checks.QueueConnectivity || !observed.Checks.RevisionIdentity || !observed.Checks.IntakeDisabled || observed.Worker.Gate != "closed" {
+				return errors.New("host Worker candidate verification observation is invalid")
 			}
 		case planner.ActivateWorkerIntake, planner.VerifyWorkerActive:
 			if observed.Status != "active-open" || !observed.Worker.UnitActive || !observed.Worker.QueueConnected || observed.Worker.Gate != "open" {

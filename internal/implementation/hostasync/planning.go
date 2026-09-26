@@ -13,16 +13,16 @@ type PlanningOutput struct {
 	Transitions              TransitionSet
 	SensitiveValueReferences []string
 	QueueOnly                bool
+	WorkerOnly               bool
 }
 
 type TransitionSet struct {
-	QueuePreparation    planmodel.Operation
-	WorkerArtifact      planmodel.Operation
-	TaskArtifact        planmodel.Operation
-	Task                TransitionChain
-	Worker              TransitionChain
-	Schedule            ScheduleTransitionChain
-	PreviousWorkerStore *planmodel.Operation
+	QueuePreparation planmodel.Operation
+	WorkerArtifact   planmodel.Operation
+	TaskArtifact     planmodel.Operation
+	Task             TransitionChain
+	Worker           TransitionChain
+	Schedule         ScheduleTransitionChain
 }
 
 type TransitionChain struct {
@@ -110,10 +110,6 @@ func Plan(compiled config.Compiled, observation host.BootstrapStatus) PlanningOu
 	workerArtifactInput := &planmodel.AsyncArtifactInput{Component: workerName, Role: "worker", Source: workerArtifact.Source, Digest: workerArtifact.Digest}
 	taskArtifactInput := &planmodel.AsyncArtifactInput{Component: taskName, Role: "task", Source: taskArtifact.Source, Digest: taskArtifact.Digest}
 	runtimeInput := &planmodel.AsyncRuntimeInput{AppletDigest: async.Capabilities.ScheduleAppletDigest, LedgerSchema: async.Capabilities.ScheduleLedgerSchema}
-	previousWorker := "none"
-	if workerInput.Previous != nil {
-		previousWorker = workerInput.Previous.ID
-	}
 	previousSchedule := "none"
 	if scheduleInput.Previous != nil {
 		previousSchedule = scheduleInput.Previous.TaskGenerationID
@@ -147,26 +143,24 @@ func Plan(compiled config.Compiled, observation host.BootstrapStatus) PlanningOu
 		{ID: "op-06", Kind: planmodel.StartWorkerCandidate, DependsOn: []string{"op-05"}, Input: planmodel.OperationInput{Async: &planmodel.AsyncOperationInput{Worker: workerInput}}, Preconditions: conditions("worker-admission", workerGenerationID, "closed"), ExpectedObservations: conditions("systemd-unit", workerUnit, "active-gated"), Recovery: planmodel.KeepCandidateGated},
 		{ID: "op-07", Kind: planmodel.VerifyWorkerCandidate, DependsOn: []string{"op-06"}, Input: planmodel.OperationInput{Async: &planmodel.AsyncOperationInput{Worker: workerInput}}, Preconditions: conditions("worker-admission", workerGenerationID, "closed"), ExpectedObservations: conditions("worker-candidate", workerGenerationID, "gated-queue-connected"), Recovery: planmodel.KeepCandidateGated},
 	}
+	workerReadyID := "op-11"
 	if workerInput.Previous == nil {
 		workerOperations = append(workerOperations,
 			planmodel.Operation{ID: "op-10", Kind: planmodel.ActivateWorkerIntake, DependsOn: []string{"op-07"}, Input: planmodel.OperationInput{Async: &planmodel.AsyncOperationInput{Worker: workerInput}}, Preconditions: conditions("worker-candidate", workerGenerationID, "verified"), ExpectedObservations: conditions("worker-admission", workerGenerationID, "open"), Recovery: planmodel.KeepCandidateGated},
 			planmodel.Operation{ID: "op-11", Kind: planmodel.VerifyWorkerActive, DependsOn: []string{"op-10"}, Input: planmodel.OperationInput{Async: &planmodel.AsyncOperationInput{Worker: workerInput}}, Preconditions: conditions("worker-admission", workerGenerationID, "open"), ExpectedObservations: conditions("worker-intake", workerGenerationID, "open-queue-connected"), Recovery: planmodel.KeepCandidateGated},
 		)
 	} else {
-		workerOperations = append(workerOperations,
-			planmodel.Operation{ID: "op-08", Kind: planmodel.FenceWorkerIntake, DependsOn: []string{"op-07"}, Input: planmodel.OperationInput{Async: &planmodel.AsyncOperationInput{Worker: workerInput}}, Preconditions: conditions("active-worker", previousWorker, "observed"), ExpectedObservations: conditions("previous-worker-admission", previousWorker, "closed"), Recovery: planmodel.RestorePreviousWorkerIntake},
-			planmodel.Operation{ID: "op-09", Kind: planmodel.DrainWorkerPrevious, DependsOn: []string{"op-08"}, Input: planmodel.OperationInput{Async: &planmodel.AsyncOperationInput{Worker: workerInput}}, Preconditions: conditions("previous-worker-admission", previousWorker, "closed"), ExpectedObservations: conditions("previous-worker-in-flight", previousWorker, "drained-or-safely-released"), Recovery: planmodel.ReleaseInflight},
-			planmodel.Operation{ID: "op-10", Kind: planmodel.ActivateWorkerIntake, DependsOn: []string{"op-09"}, Input: planmodel.OperationInput{Async: &planmodel.AsyncOperationInput{Worker: workerInput}}, Preconditions: conditions("worker-candidate", workerGenerationID, "verified"), ExpectedObservations: conditions("worker-admission", workerGenerationID, "open"), Recovery: planmodel.RestorePreviousWorkerIntake},
-			planmodel.Operation{ID: "op-11", Kind: planmodel.VerifyWorkerActive, DependsOn: []string{"op-10"}, Input: planmodel.OperationInput{Async: &planmodel.AsyncOperationInput{Worker: workerInput}}, Preconditions: conditions("worker-admission", workerGenerationID, "open"), ExpectedObservations: conditions("worker-processing", workerGenerationID, "verified-at-least-once"), Recovery: planmodel.RestorePreviousWorkerIntake},
-		)
-		retention := planmodel.Operation{ID: "op-15", Kind: planmodel.RetainWorkerPrevious, DependsOn: []string{}, Input: planmodel.OperationInput{Async: &planmodel.AsyncOperationInput{Worker: workerInput}}, Preconditions: conditions("worker-generation", workerGenerationID, "verified-active"), ExpectedObservations: conditions("previous-worker-generation", previousWorker, "retained-for-rollback-window"), Recovery: planmodel.RetainBothWorkerGenerations}
-		transitions.PreviousWorkerStore = &retention
+		// A replacement Plan stops at candidate verification until the Worker
+		// handoff operations are implemented and capability-qualified. An
+		// approved candidate-only Plan cannot authorize intake mutation.
+		workerReadyID = "op-07"
 	}
-	transitions.Worker = TransitionChain{Operations: workerOperations, EntryID: "op-05", ReadyID: "op-11"}
+	transitions.Worker = TransitionChain{Operations: workerOperations, EntryID: "op-05", ReadyID: workerReadyID}
 	return PlanningOutput{
 		Transitions:              transitions,
 		SensitiveValueReferences: []string{queueImplementation.Credential},
 		QueueOnly:                false,
+		WorkerOnly:               workerInput.Previous != nil,
 	}
 }
 
@@ -180,4 +174,39 @@ func roleNames(compiled config.Compiled) map[string]string {
 
 func conditions(kind, subject, expected string) []planmodel.TypedCondition {
 	return []planmodel.TypedCondition{{Kind: kind, Subject: subject, Expected: expected}}
+}
+
+// DecisionObservation projects the exact Host observation onto the state that
+// can affect an asynchronous deployment decision. The complete observation is
+// still embedded in capability evidence. Occurrence, invocation, message,
+// ledger-content, and instantaneous in-flight telemetry are re-read by the
+// operations that use them and do not race a human Plan approval.
+func DecisionObservation(observation host.BootstrapStatus) host.BootstrapStatus {
+	if observation.Async == nil {
+		return observation
+	}
+	stable := observation
+	async := *observation.Async
+	deployment := async.Deployment
+	deployment.Occurrences = nil
+	deployment.Invocations = nil
+	deployment.Messages = nil
+	if deployment.ActiveWorker != nil {
+		worker := *deployment.ActiveWorker
+		worker.InFlight = 0
+		deployment.ActiveWorker = &worker
+	}
+	if deployment.Candidate != nil {
+		worker := *deployment.Candidate
+		worker.InFlight = 0
+		deployment.Candidate = &worker
+	}
+	if deployment.Schedule != nil {
+		schedule := *deployment.Schedule
+		schedule.LedgerDigest = ""
+		deployment.Schedule = &schedule
+	}
+	async.Deployment = deployment
+	stable.Async = &async
+	return stable
 }

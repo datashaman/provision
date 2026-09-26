@@ -55,12 +55,13 @@ type Target struct {
 }
 
 type CapabilityEvidence struct {
-	Contract        string               `json:"contract"`
-	RequiredMode    string               `json:"requiredMode"`
-	Guarantees      []string             `json:"guarantees"`
-	SupportEvidence []string             `json:"supportEvidence"`
-	Observed        host.BootstrapStatus `json:"observed"`
-	Decision        string               `json:"decision"`
+	Contract         string                `json:"contract"`
+	RequiredMode     string                `json:"requiredMode"`
+	Guarantees       []string              `json:"guarantees"`
+	SupportEvidence  []string              `json:"supportEvidence"`
+	Observed         host.BootstrapStatus  `json:"observed"`
+	DecisionObserved *host.BootstrapStatus `json:"decisionObserved,omitempty"`
+	Decision         string                `json:"decision"`
 }
 
 type ApprovalRequirement struct {
@@ -243,7 +244,7 @@ func buildAsync(compiled config.Compiled, observation host.BootstrapStatus) (Pre
 	}
 	reasons := append([]string(nil), evaluation.Reasons...)
 	if !compiled.IsQueueOnly() && observation.Async != nil {
-		if reason := hostasync.InitialReplacementReason(observation.Async.Deployment); reason != "" {
+		if reason := hostasync.ReplacementReason(compiled, *observation.Async); reason != "" {
 			reasons = append(reasons, reason)
 		}
 		capability := observation.Async.Capabilities
@@ -267,7 +268,10 @@ func buildAsync(compiled config.Compiled, observation host.BootstrapStatus) (Pre
 		return preview, nil
 	}
 
-	observationDigest, err := digest(observation)
+	planObservation := hostasync.DecisionObservation(observation)
+	evidence.DecisionObserved = &planObservation
+	preview.Capability = evidence
+	observationDigest, err := digest(planObservation)
 	if err != nil {
 		return Preview{}, err
 	}
@@ -275,7 +279,19 @@ func buildAsync(compiled config.Compiled, observation host.BootstrapStatus) (Pre
 	for name, artifact := range compiled.Revision.Artifacts {
 		artifactDigests[name] = artifact.Digest
 	}
-	adapterPlan := hostasync.Plan(compiled, observation)
+	adapterPlan := hostasync.Plan(compiled, planObservation)
+	operations := composeAsyncOperations(adapterPlan)
+	for _, operation := range operations {
+		if !slices.Contains(observation.AllowedOperations, string(operation.Kind)) {
+			reasons = append(reasons, fmt.Sprintf("host executor does not allow typed %s operations", operation.Kind))
+		}
+	}
+	if len(reasons) != 0 {
+		preview.Executable = false
+		preview.Reasons = unique(reasons)
+		preview.Capability.Decision = "unsupported"
+		return preview, nil
+	}
 	plan := Plan{
 		SchemaVersion:       SchemaVersion,
 		Application:         compiled.Application.Name,
@@ -290,7 +306,7 @@ func buildAsync(compiled config.Compiled, observation host.BootstrapStatus) (Pre
 			Capability: "approve", Reason: "environment deployment policy requires approval of this exact Plan",
 		}},
 		SensitiveValueReferences: adapterPlan.SensitiveValueReferences,
-		Operations:               composeAsyncOperations(adapterPlan),
+		Operations:               operations,
 	}
 	plan.ID, err = digest(plan)
 	if err != nil {
@@ -306,9 +322,14 @@ func composeAsyncOperations(adapterPlan hostasync.PlanningOutput) []Operation {
 		return []Operation{transitions.QueuePreparation}
 	}
 	workerArtifact := withDependencies(transitions.WorkerArtifact, transitions.QueuePreparation.ID)
+	workerOperations := withExternalDependencies(transitions.Worker.Operations, transitions.Worker.EntryID, workerArtifact.ID, transitions.QueuePreparation.ID)
+	if adapterPlan.WorkerOnly {
+		operations := []Operation{transitions.QueuePreparation, workerArtifact}
+		operations = append(operations, workerOperations...)
+		return operations
+	}
 	taskArtifact := withDependencies(transitions.TaskArtifact, transitions.QueuePreparation.ID)
 	taskOperations := withExternalDependencies(transitions.Task.Operations, transitions.Task.EntryID, taskArtifact.ID)
-	workerOperations := withExternalDependencies(transitions.Worker.Operations, transitions.Worker.EntryID, workerArtifact.ID, transitions.QueuePreparation.ID)
 	scheduleOperations := withExternalDependencies(transitions.Schedule.Operations, transitions.Schedule.RuntimeID, transitions.Task.ReadyID)
 	scheduleOperations = withExternalDependencies(scheduleOperations, transitions.Schedule.ActivationID, transitions.Worker.ReadyID, transitions.Task.ReadyID)
 
@@ -316,10 +337,6 @@ func composeAsyncOperations(adapterPlan hostasync.PlanningOutput) []Operation {
 	operations = append(operations, taskOperations...)
 	operations = append(operations, workerOperations...)
 	operations = append(operations, scheduleOperations...)
-	if transitions.PreviousWorkerStore != nil {
-		retention := withDependencies(*transitions.PreviousWorkerStore, transitions.Worker.ReadyID, transitions.Schedule.ReadyID)
-		operations = append(operations, retention)
-	}
 	return operations
 }
 
@@ -479,6 +496,20 @@ func digest(value any) (string, error) {
 
 func OperationDigest(operation Operation) (string, error) {
 	return digest(operation)
+}
+
+// ApprovalFingerprint binds configuration, typed operations, capabilities,
+// and the adapter's explicitly relevant observation while retaining the exact
+// full observation in the Plan as audit evidence. Runtime telemetry excluded
+// by the adapter cannot race a human approval; every decision-relevant change
+// still makes the stored Plan stale.
+func ApprovalFingerprint(plan Plan) (string, error) {
+	comparable := plan
+	comparable.ID = ""
+	if comparable.Capability.DecisionObserved != nil {
+		comparable.Capability.Observed = *comparable.Capability.DecisionObserved
+	}
+	return digest(comparable)
 }
 
 func (p Plan) VerifyIdentity() error {

@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"provision/internal/config"
 	"provision/internal/rollbackwindow"
 )
 
@@ -84,11 +85,30 @@ type AsyncCapabilities struct {
 type AsyncDeploymentStatus struct {
 	Queue        *QueueStatus               `json:"queue,omitempty"`
 	ActiveWorker *WorkerGenerationStatus    `json:"activeWorker,omitempty"`
+	Candidate    *WorkerGenerationStatus    `json:"candidateWorker,omitempty"`
 	Previous     *WorkerGenerationStatus    `json:"previousWorker,omitempty"`
 	ActiveTask   *TaskGenerationStatus      `json:"activeTask,omitempty"`
 	Schedule     *ScheduleStatus            `json:"schedule,omitempty"`
 	Occurrences  []ScheduleOccurrenceStatus `json:"occurrences,omitempty"`
 	Invocations  []TaskInvocationStatus     `json:"taskInvocations,omitempty"`
+	Messages     []QueueMessageStatus       `json:"messages,omitempty"`
+}
+
+type QueueMessageStatus struct {
+	ID                          string                    `json:"id"`
+	ProducerApplicationRevision string                    `json:"producerApplicationRevision"`
+	TaskArtifactDigest          string                    `json:"taskArtifactDigest"`
+	TaskInvocationID            string                    `json:"taskInvocationId"`
+	Disposition                 string                    `json:"disposition"`
+	WorkerApplicationRevision   string                    `json:"workerApplicationRevision,omitempty"`
+	WorkerArtifactDigest        string                    `json:"workerArtifactDigest,omitempty"`
+	WorkerEvents                []QueueMessageWorkerEvent `json:"workerEvents,omitempty"`
+}
+
+type QueueMessageWorkerEvent struct {
+	Event                     string `json:"event"`
+	WorkerApplicationRevision string `json:"workerApplicationRevision"`
+	WorkerArtifactDigest      string `json:"workerArtifactDigest"`
 }
 
 type QueueStatus struct {
@@ -147,6 +167,9 @@ type WorkerGenerationStatus struct {
 	StatePath      string `json:"statePath,omitempty"`
 	GatePath       string `json:"gatePath,omitempty"`
 	EvidencePath   string `json:"evidencePath,omitempty"`
+	Health         string `json:"health,omitempty"`
+	Reason         string `json:"reason,omitempty"`
+	RecoveryAction string `json:"recoveryAction,omitempty"`
 }
 
 type TaskGenerationStatus struct {
@@ -156,20 +179,33 @@ type TaskGenerationStatus struct {
 	SystemdUnit         string `json:"systemdUnit"`
 	Queue               string `json:"queue"`
 	ConfigurationDigest string `json:"configurationDigest"`
+	Timeout             string `json:"timeout"`
 	EvidencePath        string `json:"evidencePath,omitempty"`
 }
 
 type ScheduleStatus struct {
-	Component        string `json:"component"`
-	TimerUnit        string `json:"timerUnit"`
-	TaskGenerationID string `json:"taskGenerationId"`
-	AppletDigest     string `json:"appletDigest"`
-	LedgerSchema     string `json:"ledgerSchema"`
-	LedgerDigest     string `json:"ledgerDigest"`
-	FencingToken     int64  `json:"fencingToken"`
-	Timezone         string `json:"timezone"`
-	Expression       string `json:"expression"`
-	Active           bool   `json:"active"`
+	Component        string                   `json:"component"`
+	TimerUnit        string                   `json:"timerUnit"`
+	TaskGenerationID string                   `json:"taskGenerationId"`
+	AppletDigest     string                   `json:"appletDigest"`
+	LedgerSchema     string                   `json:"ledgerSchema"`
+	LedgerDigest     string                   `json:"ledgerDigest"`
+	FencingToken     int64                    `json:"fencingToken"`
+	Timezone         string                   `json:"timezone"`
+	Expression       string                   `json:"expression"`
+	DaylightSaving   string                   `json:"daylightSaving"`
+	Overlap          string                   `json:"overlap"`
+	Retry            config.ScheduleRetry     `json:"retry"`
+	MissedRun        config.ScheduleMissedRun `json:"missedRun"`
+	Failure          string                   `json:"failure"`
+	Active           bool                     `json:"active"`
+}
+
+type WorkerVerificationChecks struct {
+	Liveness          bool `json:"liveness"`
+	QueueConnectivity bool `json:"queueConnectivity"`
+	RevisionIdentity  bool `json:"revisionIdentity"`
+	IntakeDisabled    bool `json:"intakeDisabled"`
 }
 
 type ScheduleOccurrenceStatus struct {
@@ -213,11 +249,12 @@ type AsyncTaskOperationObservation struct {
 }
 
 type AsyncWorkerOperationObservation struct {
-	Status         string                 `json:"status"`
-	Worker         WorkerGenerationStatus `json:"worker"`
-	Verified       bool                   `json:"verified"`
-	UnitDiagnostic *SystemdUnitDiagnostic `json:"unitDiagnostic,omitempty"`
-	Reason         string                 `json:"reason,omitempty"`
+	Status         string                   `json:"status"`
+	Worker         WorkerGenerationStatus   `json:"worker"`
+	Verified       bool                     `json:"verified"`
+	Checks         WorkerVerificationChecks `json:"checks"`
+	UnitDiagnostic *SystemdUnitDiagnostic   `json:"unitDiagnostic,omitempty"`
+	Reason         string                   `json:"reason,omitempty"`
 }
 
 type SystemdUnitDiagnostic struct {
@@ -323,16 +360,48 @@ func CheckBootstrap(ctx context.Context, target Target, environment, operator st
 		return BootstrapStatus{}, errors.New("host bootstrap check returned mismatched identity")
 	}
 	wantedOperations := AllowedOperations()
-	if len(status.AllowedOperations) != len(wantedOperations) {
-		return BootstrapStatus{}, errors.New("unexpected host executor operation is enabled")
-	}
-	for index := range wantedOperations {
-		if status.AllowedOperations[index] != wantedOperations[index] {
-			return BootstrapStatus{}, errors.New("unexpected host executor operation is enabled")
-		}
+	if mismatch := operationCapabilityMismatch(wantedOperations, status.AllowedOperations); mismatch != "" {
+		return BootstrapStatus{}, fmt.Errorf("host executor operation capabilities differ: %s", mismatch)
 	}
 	if status.Ready && (status.OS != "ubuntu" || status.Architecture == "" || !strings.HasPrefix(status.SystemdVersion, "systemd ") || status.SSHServerVersion == "" || status.CaddyVersion == "" || !status.CaddyActive || !status.CaddyConfigValid || !status.CaddyAdminReachable || !status.CaddyConfigDurable || !status.GenerationStorageReady || !status.JournaldActive || !strings.HasPrefix(status.ExecutorDigest, "sha256:") || !strings.HasPrefix(status.AuthorityKeyID, "sha256:") || !target.Local && !status.SSHHostKeyFingerprint.Valid() || len(status.Findings) != 0) {
 		return BootstrapStatus{}, errors.New("host bootstrap check returned incomplete readiness evidence")
 	}
 	return status, nil
+}
+
+func operationCapabilityMismatch(wanted, observed []string) string {
+	wantedSet := make(map[string]struct{}, len(wanted))
+	observedSet := make(map[string]struct{}, len(observed))
+	for _, operation := range wanted {
+		wantedSet[operation] = struct{}{}
+	}
+	for _, operation := range observed {
+		observedSet[operation] = struct{}{}
+	}
+
+	missing := make([]string, 0)
+	for _, operation := range wanted {
+		if _, ok := observedSet[operation]; !ok {
+			missing = append(missing, operation)
+		}
+	}
+	unexpected := make([]string, 0)
+	for _, operation := range observed {
+		if _, ok := wantedSet[operation]; !ok {
+			unexpected = append(unexpected, operation)
+		}
+	}
+
+	if len(missing) > 0 || len(unexpected) > 0 {
+		return fmt.Sprintf("missing=%v unexpected=%v", missing, unexpected)
+	}
+	if len(wanted) != len(observed) {
+		return fmt.Sprintf("expected=%v observed=%v", wanted, observed)
+	}
+	for index := range wanted {
+		if wanted[index] != observed[index] {
+			return fmt.Sprintf("operation order differs: expected=%v observed=%v", wanted, observed)
+		}
+	}
+	return ""
 }

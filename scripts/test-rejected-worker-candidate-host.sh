@@ -177,8 +177,10 @@ done
 ((SECONDS < deadline)) || { echo "no active-Worker acknowledgement was observed while the candidate remained gated" >&2; exit 1; }
 
 echo "[5/7] inject candidate liveness failure and reject verification"
-printf 'Authenticate once to stop only the disposable candidate unit.\n'
-ssh -tt -o StrictHostKeyChecking=yes "$target_user@$target" "sudo systemctl stop '$candidate_unit'"
+if ! ssh -o BatchMode=yes -o StrictHostKeyChecking=yes "$target_user@$target" "sudo -n systemctl stop '$candidate_unit'"; then
+  echo "candidate fault injection requires passwordless sudo for the exact systemctl stop command on the disposable acceptance Host" >&2
+  exit 1
+fi
 if "$provision" deployment execute --plan "$plan" --operation op-07 --state "$state" --signing-key "$signing_key" --lease-duration 2m > "$work_dir/op-07-failed.json" 2> "$work_dir/op-07-failed.stderr"; then
   echo "failed Worker candidate unexpectedly passed verification" >&2
   exit 1

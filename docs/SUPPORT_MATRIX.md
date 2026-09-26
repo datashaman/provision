@@ -51,6 +51,16 @@ handoff between revisions, retries or redelivery, overlap or missed-run
 behavior, crash-boundary recovery, Queue replacement, or multi-host
 availability.
 
+## Failed Worker-candidate rejection
+
+| Provision build | Host OS and runtime | Worker generations | Result |
+| --- | --- | --- | --- |
+| engine through commit `500c187`, macOS `arm64` binary `sha256:fa71c9cda478ced13591be20d44f6c8cb5a34332c225fa59bc8894399cb5c71e`; Linux `x86_64` executor `sha256:c1b98d448cfc3878e72c1a3731f62a4efab2f4dbe37b28075da6717fab200965`; harness `f94b793` | Ubuntu Server 26.04 VM, `x86_64`; systemd `259 (259.5-0ubuntu3.4)`; Podman `5.7.0+ds2-3build1`; RabbitMQ `4.3.6` at the qualified manifest | active v0.1.1 Worker `sha256:2fcb2cec1d3d899e53737b9c25579ec1b2a271b93945a604bb43d337d207df40`; gated v0.2.0 candidate `sha256:14caeac0dbdaff68a2644798b0a1b2549f82342bedbf79d9b8da4625e2080d95` | A separate immutable candidate started Queue-connected with intake closed. A normal message remained exclusively handled by the active Worker. Deliberately stopping the candidate made verification fail with structured diagnostics; every intake-handoff dependency stayed blocked, the candidate remained closed and actionable, and Queue, active Worker, retained Worker, Task, and Schedule identities stayed unchanged. See the [live evidence](evidence/2026-09-26-rejected-worker-candidate.md). |
+
+This row qualifies only rejection before Worker intake handoff. It does not
+qualify a successful handoff, old-Worker drain, retained-generation rollback,
+or interruption recovery during a Worker replacement.
+
 ## Guarantees exercised
 
 - An unverified candidate cannot receive stable traffic.
@@ -68,12 +78,13 @@ availability.
 - Over SSH, a changed or unknown host key fails before the executor is invoked.
 - An in-flight SSH disconnect and killed Artifact-stage executor produce an uncertain journal outcome. Resume removes only temporary files proven to belong to an earlier signed attempt from the same Environment before safely restaging.
 - The initial Worker cannot consume until its immutable generation, process identity, Queue connection, Revision identity, and closed admission state are verified; status requires a durable exact active-generation record after intake opens.
+- A replacement Worker starts under a separate immutable unit with intake closed. Failed candidate verification blocks every dependent intake-handoff operation, leaves the active Worker and Queue ownership unchanged, and reports the failed checks plus a recovery action without disclosing the Queue credential.
 - A stable timer invokes the digest-pinned nonresident Schedule runtime, which records the occurrence and stable Task Invocation before starting the exact generation-specific Task instance.
 - The Task's publisher-confirmed message and the Worker's processing and manual acknowledgement evidence join on the same stable message identity.
 
 ## Limits
 
-- The HTTP rows cover a single native `x86_64` HTTP component on one systemd-managed host, exercised both directly on the host and remotely from an `arm64` macOS controller over SSH. The RabbitMQ rows qualify only the exact rootless Podman/Quadlet packaging and Queue semantics stated above. The scheduled-message row qualifies only its exact initial systemd Worker, Task, and Schedule path. No row qualifies EC2, ECS, Lambda, databases, key-value stores, realtime services, asynchronous generation replacement, or multi-host asynchronous availability.
+- The HTTP rows cover a single native `x86_64` HTTP component on one systemd-managed host, exercised both directly on the host and remotely from an `arm64` macOS controller over SSH. The RabbitMQ rows qualify only the exact rootless Podman/Quadlet packaging and Queue semantics stated above. The scheduled-message row qualifies only its exact initial systemd Worker, Task, and Schedule path. The Worker-candidate row qualifies only pre-handoff rejection, not a completed asynchronous replacement. No row qualifies EC2, ECS, Lambda, databases, key-value stores, realtime services, successful asynchronous generation replacement, or multi-host asynchronous availability.
 - The Endpoint guarantee covers ordinary HTTP requests. It does not promise WebSocket or other long-lived stream draining.
 - Caddy configuration reload preserves the prior route on a rejected load. An external Caddy outage can still make the Endpoint unavailable until Caddy is restored.
 - Remote mode adds a management-transport dependency, not a workload-availability dependency. If the controller cannot authenticate the host or cannot obtain enough fresh evidence after a lost connection, the operation remains interrupted or uncertain until an operator restores access and resumes it; stable traffic continues according to the last host state.

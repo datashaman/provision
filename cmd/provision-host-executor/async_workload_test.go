@@ -78,9 +78,9 @@ func TestInitialAsyncOperationValidationPinsTaskWorkerAndScheduleIdentities(t *t
 		t.Fatal("Task with caller-selected Queue identity accepted")
 	}
 	tamperedSchedule := schedule
-	tamperedSchedule.Expression = "0 0 * * *"
+	tamperedSchedule.Expression = "0 0 * *"
 	if err := validateAsyncWorkloadOperation(planner.Operation{ID: "op-13", Kind: planner.HandoffSchedule, Input: planner.OperationInput{Async: &planner.AsyncOperationInput{Schedule: &tamperedSchedule}}}, record, paths); err == nil {
-		t.Fatal("unimplemented Schedule expression accepted")
+		t.Fatal("malformed Schedule expression accepted")
 	}
 	tamperedSchedule = schedule
 	tamperedSchedule.Retry.MaxAttempts = 11

@@ -10,7 +10,7 @@ import (
 	"provision/internal/host"
 )
 
-func TestSchedulePolicyAcceptsRetriesButRejectsCatchUp(t *testing.T) {
+func TestSchedulePolicyAcceptsRetriesAndBoundedCatchUp(t *testing.T) {
 	supported := config.ScheduleContract{
 		Retry:     config.ScheduleRetry{MaxAttempts: 1, Delay: "10s"},
 		MissedRun: config.ScheduleMissedRun{Mode: "skip"},
@@ -25,8 +25,13 @@ func TestSchedulePolicyAcceptsRetriesButRejectsCatchUp(t *testing.T) {
 	}
 	catchUp := supported
 	catchUp.MissedRun = config.ScheduleMissedRun{Mode: "bounded-catch-up", MaxOccurrences: 2}
-	if reason := InitialSchedulePolicyReason(catchUp); !strings.Contains(reason, "skip") {
-		t.Fatalf("catch-up policy did not fail closed: %q", reason)
+	if reason := InitialSchedulePolicyReason(catchUp); reason != "" {
+		t.Fatalf("bounded catch-up policy rejected: %q", reason)
+	}
+	unbounded := supported
+	unbounded.MissedRun = config.ScheduleMissedRun{Mode: "bounded-catch-up", MaxOccurrences: 101}
+	if reason := InitialSchedulePolicyReason(unbounded); !strings.Contains(reason, "bounded catch-up") {
+		t.Fatalf("unbounded catch-up policy did not fail closed: %q", reason)
 	}
 }
 

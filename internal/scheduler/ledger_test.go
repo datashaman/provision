@@ -83,7 +83,11 @@ func TestConcurrentAttemptClaimsEnforceStoredOverlapPolicy(t *testing.T) {
 				go func(index int, item struct {
 					store *Store
 					id    string
-				}) { defer wg.Done(); _, err := item.store.BeginAttempt(context.Background(), item.id, "provision-lab-publish@"+item.id+".service", now.Add(time.Duration(index)*time.Second)); results <- err }(index, item)
+				}) {
+					defer wg.Done()
+					_, err := item.store.BeginAttempt(context.Background(), item.id, "provision-lab-publish@"+item.id+".service", now.Add(time.Duration(index)*time.Second))
+					results <- err
+				}(index, item)
 			}
 			wg.Wait()
 			close(results)
@@ -114,5 +118,34 @@ func TestReadOnlyOpenDoesNotCreateALedger(t *testing.T) {
 	}
 	if _, err := os.Stat(path); !os.IsNotExist(err) {
 		t.Fatalf("read-only inspection created ledger: %v", err)
+	}
+}
+
+func TestSkippedDSTGapStoresSeparateWallClockCursor(t *testing.T) {
+	store, err := Open(filepath.Join(t.TempDir(), "ledger.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	wall := time.Date(2026, 3, 29, 2, 30, 0, 0, time.UTC)
+	input := DueInput{
+		Schedule: "daily", Task: "publish", TaskGenerationID: "revision-a-task",
+		ApplicationRevision: "revision-a", ConfigurationDigest: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+		FencingToken: 7, DueAt: wall, WallAt: wall, TaskUnit: "provision-lab-publish@.service",
+		MaxAttempts: 1, RetryDelay: 10 * time.Second, Overlap: "forbid",
+	}
+	occurrence, _, inserted, err := store.RecordSkipped(context.Background(), input, wall.Add(time.Hour), "skipped-dst-gap")
+	if err != nil || !inserted {
+		t.Fatalf("record skipped gap: inserted=%v err=%v", inserted, err)
+	}
+	if occurrence.WallDueAt != "2026-03-29T02:30" {
+		t.Fatalf("wall-clock label not reported: %+v", occurrence)
+	}
+	latest, err := store.LatestWallAt(context.Background(), "daily")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if latest == nil || !latest.Equal(wall) {
+		t.Fatalf("wall-clock cursor was not retained separately from UTC instant: %v", latest)
 	}
 }

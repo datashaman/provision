@@ -80,6 +80,7 @@ CREATE TABLE IF NOT EXISTS occurrences (
   id TEXT PRIMARY KEY,
   schedule TEXT NOT NULL,
   due_at TEXT NOT NULL,
+  due_wall TEXT,
   recorded_at TEXT NOT NULL,
   task_generation_id TEXT NOT NULL,
   fencing_token INTEGER NOT NULL,
@@ -124,6 +125,39 @@ CREATE TABLE IF NOT EXISTS attempt_launches (
   PRIMARY KEY(invocation_id, number),
   FOREIGN KEY(invocation_id, number) REFERENCES attempts(invocation_id, number)
 );`)
+	if err != nil {
+		return err
+	}
+	if err := s.ensureOccurrenceWallColumn(ctx); err != nil {
+		return err
+	}
+	_, err = s.db.ExecContext(ctx, `UPDATE occurrences SET due_wall = due_at WHERE due_wall IS NULL OR due_wall = ''`)
+	return err
+}
+
+func (s *Store) ensureOccurrenceWallColumn(ctx context.Context) error {
+	rows, err := s.db.QueryContext(ctx, `PRAGMA table_info(occurrences)`)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var cid int
+		var name, columnType string
+		var notNull int
+		var defaultValue any
+		var primaryKey int
+		if err := rows.Scan(&cid, &name, &columnType, &notNull, &defaultValue, &primaryKey); err != nil {
+			return err
+		}
+		if name == "due_wall" {
+			return nil
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	_, err = s.db.ExecContext(ctx, `ALTER TABLE occurrences ADD COLUMN due_wall TEXT`)
 	return err
 }
 
@@ -135,6 +169,7 @@ type DueInput struct {
 	ConfigurationDigest string
 	FencingToken        int64
 	DueAt               time.Time
+	WallAt              time.Time
 	TaskUnit            string
 	InputReferences     []string
 	MaxAttempts         int
@@ -143,6 +178,17 @@ type DueInput struct {
 }
 
 func (s *Store) RecordDue(ctx context.Context, input DueInput, now time.Time) (host.ScheduleOccurrenceStatus, host.TaskInvocationStatus, bool, error) {
+	return s.record(ctx, input, now, "recorded", true)
+}
+
+func (s *Store) RecordSkipped(ctx context.Context, input DueInput, now time.Time, disposition string) (host.ScheduleOccurrenceStatus, host.TaskInvocationStatus, bool, error) {
+	if disposition != "skipped-missed" && disposition != "skipped-dst-gap" {
+		return host.ScheduleOccurrenceStatus{}, host.TaskInvocationStatus{}, false, errors.New("skipped Schedule occurrence disposition is unsupported")
+	}
+	return s.record(ctx, input, now, disposition, false)
+}
+
+func (s *Store) record(ctx context.Context, input DueInput, now time.Time, disposition string, runnable bool) (host.ScheduleOccurrenceStatus, host.TaskInvocationStatus, bool, error) {
 	if input.Schedule == "" || input.Task == "" || input.TaskGenerationID == "" || input.ApplicationRevision == "" || input.ConfigurationDigest == "" || input.FencingToken < 1 || input.DueAt.IsZero() {
 		return host.ScheduleOccurrenceStatus{}, host.TaskInvocationStatus{}, false, errors.New("schedule occurrence input is incomplete")
 	}
@@ -153,8 +199,13 @@ func (s *Store) RecordDue(ctx context.Context, input DueInput, now time.Time) (h
 		return host.ScheduleOccurrenceStatus{}, host.TaskInvocationStatus{}, false, errors.New("schedule occurrence policy is unsupported")
 	}
 	due := input.DueAt.UTC().Truncate(time.Minute)
-	occurrenceID := stableID("occ", input.Schedule, due.Format(time.RFC3339))
-	invocationID := stableID("inv", input.Schedule, due.Format(time.RFC3339))
+	wall := wallMinute(input.WallAt)
+	if wall.IsZero() {
+		wall = due
+	}
+	wallKey := formatWall(wall)
+	occurrenceID := stableID("occ", input.Schedule, wallKey)
+	invocationID := stableID("inv", input.Schedule, wallKey)
 	recorded := now.UTC()
 	conn, err := s.db.Conn(ctx)
 	if err != nil {
@@ -165,21 +216,27 @@ func (s *Store) RecordDue(ctx context.Context, input DueInput, now time.Time) (h
 		return host.ScheduleOccurrenceStatus{}, host.TaskInvocationStatus{}, false, err
 	}
 	defer conn.ExecContext(context.Background(), `ROLLBACK`)
-	result, err := conn.ExecContext(ctx, `INSERT OR IGNORE INTO occurrences(id, schedule, due_at, recorded_at, task_generation_id, fencing_token, invocation_id, disposition) VALUES (?, ?, ?, ?, ?, ?, ?, 'recorded')`, occurrenceID, input.Schedule, formatTime(due), formatTime(recorded), input.TaskGenerationID, input.FencingToken, invocationID)
+	result, err := conn.ExecContext(ctx, `INSERT OR IGNORE INTO occurrences(id, schedule, due_at, due_wall, recorded_at, task_generation_id, fencing_token, invocation_id, disposition) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`, occurrenceID, input.Schedule, formatTime(due), wallKey, formatTime(recorded), input.TaskGenerationID, input.FencingToken, invocationID, disposition)
 	if err != nil {
 		return host.ScheduleOccurrenceStatus{}, host.TaskInvocationStatus{}, false, err
 	}
 	inserted, _ := result.RowsAffected()
 	if inserted == 1 {
-		if _, err := conn.ExecContext(ctx, `INSERT INTO invocations(id, task, task_generation_id, application_revision, configuration_digest, trigger_kind, created_at, outcome) VALUES (?, ?, ?, ?, ?, 'schedule', ?, 'pending')`, invocationID, input.Task, input.TaskGenerationID, input.ApplicationRevision, input.ConfigurationDigest, formatTime(recorded)); err != nil {
+		outcome := disposition
+		if runnable {
+			outcome = "pending"
+		}
+		if _, err := conn.ExecContext(ctx, `INSERT INTO invocations(id, task, task_generation_id, application_revision, configuration_digest, trigger_kind, created_at, outcome) VALUES (?, ?, ?, ?, ?, 'schedule', ?, ?)`, invocationID, input.Task, input.TaskGenerationID, input.ApplicationRevision, input.ConfigurationDigest, formatTime(recorded), outcome); err != nil {
 			return host.ScheduleOccurrenceStatus{}, host.TaskInvocationStatus{}, false, err
 		}
-		inputs, err := json.Marshal(input.InputReferences)
-		if err != nil {
-			return host.ScheduleOccurrenceStatus{}, host.TaskInvocationStatus{}, false, err
-		}
-		if _, err := conn.ExecContext(ctx, `INSERT INTO invocation_contracts(invocation_id, occurrence_id, task_unit, input_references, max_attempts, retry_delay_ns, overlap) VALUES (?, ?, ?, ?, ?, ?, ?)`, invocationID, occurrenceID, input.TaskUnit, string(inputs), input.MaxAttempts, input.RetryDelay.Nanoseconds(), input.Overlap); err != nil {
-			return host.ScheduleOccurrenceStatus{}, host.TaskInvocationStatus{}, false, err
+		if runnable {
+			inputs, err := json.Marshal(input.InputReferences)
+			if err != nil {
+				return host.ScheduleOccurrenceStatus{}, host.TaskInvocationStatus{}, false, err
+			}
+			if _, err := conn.ExecContext(ctx, `INSERT INTO invocation_contracts(invocation_id, occurrence_id, task_unit, input_references, max_attempts, retry_delay_ns, overlap) VALUES (?, ?, ?, ?, ?, ?, ?)`, invocationID, occurrenceID, input.TaskUnit, string(inputs), input.MaxAttempts, input.RetryDelay.Nanoseconds(), input.Overlap); err != nil {
+				return host.ScheduleOccurrenceStatus{}, host.TaskInvocationStatus{}, false, err
+			}
 		}
 	}
 	if _, err := conn.ExecContext(ctx, `COMMIT`); err != nil {
@@ -399,6 +456,22 @@ func (s *Store) Latest(ctx context.Context, schedule string) (*host.ScheduleOccu
 	return &occurrence, &invocation, err
 }
 
+func (s *Store) LatestWallAt(ctx context.Context, schedule string) (*time.Time, error) {
+	var wallAt string
+	err := s.db.QueryRowContext(ctx, `SELECT due_wall FROM occurrences WHERE schedule = ? ORDER BY due_wall DESC LIMIT 1`, schedule).Scan(&wallAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	parsed, err := parseWall(wallAt)
+	if err != nil {
+		return nil, err
+	}
+	return &parsed, nil
+}
+
 func (s *Store) Recent(ctx context.Context, schedule string, limit int) ([]host.ScheduleOccurrenceStatus, []host.TaskInvocationStatus, error) {
 	if limit < 1 || limit > 100 {
 		return nil, nil, errors.New("Schedule history limit must be between 1 and 100")
@@ -437,8 +510,8 @@ func (s *Store) Recent(ctx context.Context, schedule string, limit int) ([]host.
 
 func (s *Store) load(ctx context.Context, occurrenceID, invocationID string) (host.ScheduleOccurrenceStatus, host.TaskInvocationStatus, error) {
 	var occurrence host.ScheduleOccurrenceStatus
-	var dueAt, recordedAt string
-	err := s.db.QueryRowContext(ctx, `SELECT id, schedule, due_at, recorded_at, task_generation_id, fencing_token, invocation_id, disposition FROM occurrences WHERE id = ?`, occurrenceID).Scan(&occurrence.ID, &occurrence.Schedule, &dueAt, &recordedAt, &occurrence.TaskGenerationID, &occurrence.FencingToken, &occurrence.TaskInvocationID, &occurrence.Disposition)
+	var dueAt, wallAt, recordedAt string
+	err := s.db.QueryRowContext(ctx, `SELECT id, schedule, due_at, due_wall, recorded_at, task_generation_id, fencing_token, invocation_id, disposition FROM occurrences WHERE id = ?`, occurrenceID).Scan(&occurrence.ID, &occurrence.Schedule, &dueAt, &wallAt, &recordedAt, &occurrence.TaskGenerationID, &occurrence.FencingToken, &occurrence.TaskInvocationID, &occurrence.Disposition)
 	if err != nil {
 		return occurrence, host.TaskInvocationStatus{}, err
 	}
@@ -446,6 +519,7 @@ func (s *Store) load(ctx context.Context, occurrenceID, invocationID string) (ho
 	if err != nil {
 		return occurrence, host.TaskInvocationStatus{}, err
 	}
+	occurrence.WallDueAt = wallAt
 	occurrence.RecordedAt, err = parseTime(recordedAt)
 	if err != nil {
 		return occurrence, host.TaskInvocationStatus{}, err
@@ -524,3 +598,13 @@ func stableID(prefix string, values ...string) string {
 func formatTime(value time.Time) string { return value.UTC().Format(time.RFC3339Nano) }
 
 func parseTime(value string) (time.Time, error) { return time.Parse(time.RFC3339Nano, value) }
+
+func formatWall(value time.Time) string { return wallMinute(value).Format("2006-01-02T15:04") }
+
+func parseWall(value string) (time.Time, error) {
+	parsed, err := time.Parse("2006-01-02T15:04", value)
+	if err == nil {
+		return parsed, nil
+	}
+	return parseTime(value)
+}

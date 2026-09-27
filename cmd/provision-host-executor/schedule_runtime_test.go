@@ -22,7 +22,7 @@ func runtimeRecord(t *testing.T, overlap string, attempts int) installedSchedule
 		TaskGenerationID: "revision-a-task", TaskUnit: "provision-lab-publish-a@.service",
 		ApplicationRevision: "revision-a", ConfigurationDigest: "sha256:" + strings.Repeat("a", 64),
 		InputReferences: []string{"queue:provision-lab-messages"},
-		DaylightSaving:  "wall-clock", Overlap: overlap, Retry: config.ScheduleRetry{MaxAttempts: attempts, Delay: "10s"},
+		Expression:      "* * * * *", Timezone: "UTC", DaylightSaving: "wall-clock", Overlap: overlap, Retry: config.ScheduleRetry{MaxAttempts: attempts, Delay: "10s"},
 		MissedRun: config.ScheduleMissedRun{Mode: "skip"}, Failure: "record", FencingToken: 7,
 		LedgerSchema: scheduler.SchemaVersion, LedgerPath: filepath.Join(root, "ledger.db"), TaskEvidencePath: filepath.Join(root, "task.jsonl"),
 	}
@@ -330,5 +330,87 @@ func TestRetryRunningAtNextDueTimeSkipsForbiddenOverlap(t *testing.T) {
 	}
 	if starts != 2 || occurrences[0].Disposition != "skipped-overlap" || invocations[0].Outcome != "skipped-overlap" || len(invocations[0].Attempts) != 0 || len(invocations[1].Attempts) != 2 || invocations[1].Outcome != "running" {
 		t.Fatalf("retry admitted forbidden new occurrence: starts=%d occurrences=%+v invocations=%+v", starts, occurrences, invocations)
+	}
+}
+
+func TestScheduleRuntimeRecordsSkippedMissedRunsWithoutLaunchingTask(t *testing.T) {
+	record := runtimeRecord(t, "forbid", 1)
+	now := time.Date(2026, 9, 27, 10, 0, 0, 0, time.UTC)
+	starts := 0
+	run := func() error {
+		return runScheduleRuntimeWith([]string{"run", "--environment", "lab", "--schedule", "every-minute"},
+			func(_, _ string) (installedScheduleRecord, error) { return record, nil }, func() time.Time { return now },
+			func(unit string) (string, string, error) {
+				starts++
+				confirmTask(t, record.TaskEvidencePath, unit)
+				return "succeeded", "systemd-a", nil
+			}, func(string) (string, string, error) { return "running", "systemd-a", nil }, func(string) error { return nil }, &bytes.Buffer{})
+	}
+	if err := run(); err != nil {
+		t.Fatal(err)
+	}
+	now = now.Add(3 * time.Minute)
+	if err := run(); err != nil {
+		t.Fatal(err)
+	}
+	store, err := scheduler.Open(record.LedgerPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	occurrences, invocations, err := store.Recent(context.Background(), record.Component, 4)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if starts != 2 || len(occurrences) != 4 || occurrences[1].Disposition != "skipped-missed" || occurrences[2].Disposition != "skipped-missed" || len(invocations[1].Attempts) != 0 || len(invocations[2].Attempts) != 0 {
+		t.Fatalf("missed skip launched work or hid disposition: starts=%d occurrences=%+v invocations=%+v", starts, occurrences, invocations)
+	}
+}
+
+func TestScheduleRuntimeBoundedCatchUpComposesWithRetryAndOverlapIdentity(t *testing.T) {
+	record := runtimeRecord(t, "forbid", 2)
+	record.MissedRun = config.ScheduleMissedRun{Mode: "bounded-catch-up", MaxOccurrences: 2}
+	now := time.Date(2026, 9, 27, 10, 0, 0, 0, time.UTC)
+	starts := 0
+	var units []string
+	run := func() error {
+		return runScheduleRuntimeWith([]string{"run", "--environment", "lab", "--schedule", "every-minute"},
+			func(_, _ string) (installedScheduleRecord, error) { return record, nil }, func() time.Time { return now },
+			func(unit string) (string, string, error) {
+				starts++
+				units = append(units, unit)
+				if starts == 2 {
+					return "failed", "systemd-b", errors.New("injected catch-up failure")
+				}
+				confirmTask(t, record.TaskEvidencePath, unit)
+				return "succeeded", "systemd-a", nil
+			}, func(string) (string, string, error) { return "running", "systemd-a", nil }, func(string) error { return nil }, &bytes.Buffer{})
+	}
+	if err := run(); err != nil {
+		t.Fatal(err)
+	}
+	now = now.Add(5 * time.Minute)
+	if err := run(); err == nil || !strings.Contains(err.Error(), "injected catch-up failure") {
+		t.Fatalf("catch-up failure hidden: %v", err)
+	}
+	failedUnit := units[len(units)-1]
+	now = now.Add(10 * time.Second)
+	if err := run(); err != nil {
+		t.Fatal(err)
+	}
+	if units[len(units)-1] != failedUnit {
+		t.Fatalf("retry changed catch-up Task Invocation identity: %v", units)
+	}
+	store, err := scheduler.Open(record.LedgerPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	occurrences, invocations, err := store.Recent(context.Background(), record.Component, 6)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if occurrences[4].Disposition != "skipped-missed" || occurrences[3].Disposition != "skipped-missed" || occurrences[2].Disposition != "skipped-missed" || invocations[1].Outcome != "succeeded" || len(invocations[1].Attempts) != 2 || invocations[0].Outcome != "pending" || len(invocations[0].Attempts) != 0 {
+		t.Fatalf("bounded catch-up did not retain skipped and retry state: occurrences=%+v invocations=%+v", occurrences, invocations)
 	}
 }

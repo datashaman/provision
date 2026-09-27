@@ -371,6 +371,7 @@ func Load(rootPath string) (Compiled, error) {
 	if err := readDocument(resolved[2], &result.Revision); err != nil {
 		return Compiled{}, err
 	}
+	result.applyDefaults()
 	if err := result.validate(); err != nil {
 		return Compiled{}, err
 	}
@@ -453,6 +454,15 @@ func inspectNode(node *yaml.Node) error {
 		}
 	}
 	return nil
+}
+
+func (c *Compiled) applyDefaults() {
+	for name, component := range c.Application.Components {
+		if component.Role == "schedule" && component.Schedule.Timezone == "" {
+			component.Schedule.Timezone = "UTC"
+			c.Application.Components[name] = component
+		}
+	}
 }
 
 func (c Compiled) validate() error {
@@ -618,9 +628,6 @@ func (c Compiled) validateAsync() error {
 	}
 	if !validCronExpression(schedule.Expression) {
 		return fmt.Errorf("Schedule %q requires a five-field expression", scheduleName)
-	}
-	if schedule.Timezone == "" {
-		return fmt.Errorf("Schedule %q requires an explicit timezone", scheduleName)
 	}
 	if _, err := time.LoadLocation(schedule.Timezone); err != nil {
 		return fmt.Errorf("Schedule %q has unknown timezone %q", scheduleName, schedule.Timezone)

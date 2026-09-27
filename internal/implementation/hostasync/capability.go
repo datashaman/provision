@@ -21,6 +21,14 @@ type Evaluation struct {
 	Reasons         []string
 }
 
+type ReplacementMode string
+
+const (
+	InitialDeployment ReplacementMode = "initial"
+	WorkerReplacement ReplacementMode = "worker"
+	TaskReplacement   ReplacementMode = "task"
+)
+
 func Evaluate(observation host.BootstrapStatus, target config.TargetSelection) Evaluation {
 	evaluation := Evaluation{
 		Contract: "host-rabbitmq-systemd-async/v1alpha1",
@@ -118,7 +126,7 @@ func Evaluate(observation host.BootstrapStatus, target config.TargetSelection) E
 	}
 	if capability.WorkerAdmissionGate && allowsAll(observation.AllowedOperations, workerHandoffOperations...) && strings.HasPrefix(capability.ScheduleAppletDigest, "sha256:") && len(capability.ScheduleAppletDigest) == 71 && capability.ScheduleLedgerSchema == "provision.dev/schedule-ledger/v1alpha1" {
 		evaluation.Guarantees = append(evaluation.Guarantees,
-			"gated-worker-candidate", "bounded-in-flight-worker-drain", "previous-worker-generation-retention", "generation-specific-task", "stable-schedule-timer")
+			"gated-worker-candidate", "bounded-in-flight-worker-drain", "previous-worker-generation-retention", "generation-specific-task", "stable-schedule-timer", "fenced-schedule-handoff")
 		evaluation.SupportEvidence = append(evaluation.SupportEvidence,
 			"worker-admission-control-proven", "stable-message-identity", "manual-settlement-evidence", "pinned-schedule-applet", "versioned-occurrence-ledger")
 	}
@@ -209,12 +217,17 @@ func InitialSchedulePolicyReason(schedule config.ScheduleContract) string {
 }
 
 func ReplacementReason(compiled config.Compiled, async host.AsyncStatus) string {
+	_, reason := ClassifyReplacement(compiled, async)
+	return reason
+}
+
+func ClassifyReplacement(compiled config.Compiled, async host.AsyncStatus) (ReplacementMode, string) {
 	deployment := async.Deployment
 	if deployment.ActiveWorker == nil && deployment.ActiveTask == nil && deployment.Schedule == nil {
-		return ""
+		return InitialDeployment, ""
 	}
 	if deployment.ActiveWorker == nil || deployment.ActiveTask == nil || deployment.Schedule == nil {
-		return "asynchronous replacement requires exact active Worker, Task, and Schedule observations"
+		return "", "asynchronous replacement requires exact active Worker, Task, and Schedule observations"
 	}
 	roles := roleNames(compiled)
 	workerArtifact := compiled.Revision.Artifacts[roles["worker"]]
@@ -223,17 +236,19 @@ func ReplacementReason(compiled config.Compiled, async host.AsyncStatus) string 
 	scheduleComponent := compiled.Application.Components[roles["schedule"]]
 	scheduleImplementation := compiled.Environment.Implementations[roles["schedule"]]
 
-	if workerArtifact.Digest == deployment.ActiveWorker.ArtifactDigest {
-		return "Worker replacement requires a different immutable Worker Artifact"
-	}
-	if taskArtifact.Digest != deployment.ActiveTask.ArtifactDigest ||
+	workerChanged := workerArtifact.Digest != deployment.ActiveWorker.ArtifactDigest
+	taskChanged := taskArtifact.Digest != deployment.ActiveTask.ArtifactDigest ||
 		deployment.ActiveTask.Queue != "provision-"+compiled.Environment.Name+"-"+roles["queue"] ||
-		deployment.ActiveTask.Timeout != taskComponent.Task.Timeout {
-		return "current tracer supports only Worker replacement; the active Task contract or Artifact differs"
+		deployment.ActiveTask.Timeout != taskComponent.Task.Timeout
+	if !workerChanged && !taskChanged {
+		return "", "asynchronous replacement requires a different immutable Worker or Task generation"
 	}
-	expectedTaskUnit := fmt.Sprintf("provision-%s-%s-%s@.service", compiled.Environment.Name, roles["task"], strings.TrimPrefix(taskArtifact.Digest, "sha256:")[:12])
-	if deployment.ActiveTask.SystemdUnit != expectedTaskUnit {
-		return "current tracer supports only Worker replacement; the active Task generation identity differs"
+	if workerChanged && taskChanged {
+		return "", "current tracer supports only one asynchronous generation replacement per Plan"
+	}
+	activeTaskUnit := fmt.Sprintf("provision-%s-%s-%s@.service", compiled.Environment.Name, roles["task"], strings.TrimPrefix(deployment.ActiveTask.ArtifactDigest, "sha256:")[:12])
+	if deployment.ActiveTask.SystemdUnit != activeTaskUnit {
+		return "", "active Task generation identity differs from the observed immutable Task Artifact"
 	}
 	schedule := deployment.Schedule
 	contract := scheduleComponent.Schedule
@@ -242,9 +257,12 @@ func ReplacementReason(compiled config.Compiled, async host.AsyncStatus) string 
 		!strings.HasPrefix(schedule.AppletDigest, "sha256:") || schedule.LedgerSchema != scheduleImplementation.Schedule.LedgerSchema ||
 		schedule.Expression != contract.Expression || schedule.Timezone != contract.Timezone || schedule.DaylightSaving != contract.DaylightSaving ||
 		schedule.Overlap != contract.Overlap || schedule.Retry != contract.Retry || schedule.MissedRun != contract.MissedRun || schedule.Failure != contract.Failure {
-		return "current tracer supports only Worker replacement; the active Schedule contract or Task binding differs"
+		return "", "current tracer does not support Schedule contract replacement; the active Schedule contract or Task binding differs"
 	}
-	return ""
+	if taskChanged {
+		return TaskReplacement, ""
+	}
+	return WorkerReplacement, ""
 }
 
 func observed(value string) string {

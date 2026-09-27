@@ -333,7 +333,10 @@ func executeSchedule(record installedScheduleRecord, clock func() time.Time, sta
 }
 
 func readInstalledSchedule(environment, component string) (installedScheduleRecord, error) {
-	path := installedSchedulePath(environment, component)
+	return readInstalledSchedulePath(installedSchedulePath(environment, component), environment, component)
+}
+
+func readInstalledSchedulePath(path, environment, component string) (installedScheduleRecord, error) {
 	info, err := os.Lstat(path)
 	if errors.Is(err, os.ErrNotExist) {
 		return installedScheduleRecord{}, os.ErrNotExist

@@ -59,6 +59,107 @@ func TestTaskGenerationInputSurvivesDurableRoundTripWithPreviousGeneration(t *te
 	}
 }
 
+func TestTaskReplacementHandoffCommitsOnlyTheScheduleFence(t *testing.T) {
+	record, paths, task, _, schedule := asyncOperationFixture(t)
+	schedule.Previous = &host.ScheduleStatus{
+		Component: "every-minute", TimerUnit: schedule.TimerUnit,
+		TaskGenerationID: "provision-example-async-v0-eeeeeeeeeeee",
+		AppletDigest:     schedule.AppletDigest, LedgerSchema: schedule.LedgerSchema,
+		FencingToken: 7, Active: true,
+	}
+	task.Previous = &host.TaskGenerationStatus{
+		ID: schedule.Previous.TaskGenerationID, Revision: "provision-example-async-v0",
+		ArtifactDigest: "sha256:" + strings.Repeat("e", 64), SystemdUnit: "provision-lab-publish-eeeeeeeeeeee@.service",
+		Queue: task.QueueLogicalID, ConfigurationDigest: "sha256:" + strings.Repeat("e", 64), Timeout: task.Timeout,
+	}
+	previousInstalled := installedTaskGeneration{SchemaVersion: asyncGenerationSchema, Input: planner.AsyncTaskInput{
+		Component: task.Component, Queue: task.Queue, QueueLogicalID: task.QueueLogicalID,
+		GenerationID: task.Previous.ID, Revision: task.Previous.Revision, ConfigurationDigest: task.Previous.ConfigurationDigest,
+		ArtifactDigest: task.Previous.ArtifactDigest, SystemdUnit: task.Previous.SystemdUnit, Timeout: task.Previous.Timeout, Rollout: "required",
+	}, Executable: "previous-task", Verified: true}
+	candidateInstalled := installedTaskGeneration{SchemaVersion: asyncGenerationSchema, Input: task, Executable: "candidate-task", Verified: true}
+	schedulePath := filepath.Join(paths.environmentHome, "schedules", schedule.Component, "schedule.json")
+	for _, directory := range []string{filepath.Join(paths.environmentHome, "tasks"), filepath.Dir(schedulePath)} {
+		if err := os.MkdirAll(directory, 0755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := writeJSONAtomic(taskGenerationRecordPath(paths, task.Previous.ID), previousInstalled, 0444); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeJSONAtomic(filepath.Join(paths.environmentHome, "tasks", "active.json"), previousInstalled, 0444); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeJSONAtomic(taskGenerationRecordPath(paths, task.GenerationID), candidateInstalled, 0444); err != nil {
+		t.Fatal(err)
+	}
+	installedSchedule := installedScheduleRecord{
+		SchemaVersion: scheduleRecordSchema, Environment: record.Environment, Component: schedule.Component,
+		Task: schedule.Task, TaskGenerationID: schedule.TaskGenerationID, TaskUnit: schedule.TaskUnit,
+		ApplicationRevision: schedule.ApplicationRevision, ConfigurationDigest: schedule.ConfigurationDigest,
+		TimerUnit: schedule.TimerUnit, Expression: schedule.Expression, Timezone: schedule.Timezone,
+		DaylightSaving: schedule.DaylightSaving, Overlap: schedule.Overlap, Retry: schedule.Retry, MissedRun: schedule.MissedRun, Failure: schedule.Failure,
+		AppletDigest: schedule.AppletDigest, LedgerSchema: schedule.LedgerSchema, LedgerPath: filepath.Join(paths.environmentHome, "schedules", schedule.Component, "ledger.db"),
+		FencingToken: 8,
+	}
+	if err := commitScheduleTaskHandoff(schedulePath, installedSchedule); err != nil {
+		t.Fatalf("commit Schedule handoff: %v", err)
+	}
+	var active installedTaskGeneration
+	if err := readExactJSON(filepath.Join(paths.environmentHome, "tasks", "active.json"), &active); err != nil {
+		t.Fatal(err)
+	}
+	if active.Input.GenerationID != task.Previous.ID {
+		t.Fatalf("Schedule handoff rewrote the cached Task pointer instead of leaving the Schedule fence authoritative: %+v", active.Input)
+	}
+	var recorded installedScheduleRecord
+	if err := readExactJSON(schedulePath, &recorded); err != nil {
+		t.Fatal(err)
+	}
+	if recorded.TaskGenerationID != task.GenerationID || recorded.FencingToken != 8 {
+		t.Fatalf("Schedule handoff record = %+v", recorded)
+	}
+}
+
+func TestScheduleHandoffRejectsChangedPreviousFence(t *testing.T) {
+	record, paths, _, _, schedule := asyncOperationFixture(t)
+	schedule.Previous = &host.ScheduleStatus{
+		Component: schedule.Component, TimerUnit: schedule.TimerUnit,
+		TaskGenerationID: "provision-example-async-v0-eeeeeeeeeeee",
+		AppletDigest:     schedule.AppletDigest, LedgerSchema: schedule.LedgerSchema,
+		FencingToken: 7, Timezone: schedule.Timezone, Expression: schedule.Expression,
+		DaylightSaving: schedule.DaylightSaving, Overlap: schedule.Overlap,
+		Retry: schedule.Retry, MissedRun: schedule.MissedRun, Failure: schedule.Failure,
+		Active: true,
+	}
+	schedulePath := filepath.Join(paths.environmentHome, "schedules", schedule.Component, "schedule.json")
+	if err := os.MkdirAll(filepath.Dir(schedulePath), 0755); err != nil {
+		t.Fatal(err)
+	}
+	installed := installedScheduleRecord{
+		SchemaVersion: scheduleRecordSchema, Environment: record.Environment, Component: schedule.Component,
+		Task: schedule.Task, TaskGenerationID: schedule.Previous.TaskGenerationID, TaskUnit: "provision-lab-publish-eeeeeeeeeeee@.service",
+		ApplicationRevision: "provision-example-async-v0", ConfigurationDigest: "sha256:" + strings.Repeat("e", 64),
+		TimerUnit: schedule.TimerUnit, Expression: schedule.Expression, Timezone: schedule.Timezone,
+		DaylightSaving: schedule.DaylightSaving, Overlap: schedule.Overlap, Retry: schedule.Retry, MissedRun: schedule.MissedRun, Failure: schedule.Failure,
+		AppletDigest: schedule.AppletDigest, LedgerSchema: schedule.LedgerSchema, LedgerPath: filepath.Join(paths.environmentHome, "schedules", schedule.Component, "ledger.db"),
+		FencingToken: 7,
+	}
+	if err := writeJSONAtomic(schedulePath, installed, 0444); err != nil {
+		t.Fatal(err)
+	}
+	if err := validatePreviousScheduleFence(schedulePath, record.Environment, schedule); err != nil {
+		t.Fatalf("approved previous Schedule fence rejected: %v", err)
+	}
+	installed.FencingToken = 8
+	if err := writeJSONAtomic(schedulePath, installed, 0444); err != nil {
+		t.Fatal(err)
+	}
+	if err := validatePreviousScheduleFence(schedulePath, record.Environment, schedule); err == nil || !strings.Contains(err.Error(), "fencing token differs") {
+		t.Fatalf("changed previous fence accepted: %v", err)
+	}
+}
+
 func TestInitialAsyncOperationValidationPinsTaskWorkerAndScheduleIdentities(t *testing.T) {
 	record, paths, task, worker, schedule := asyncOperationFixture(t)
 	operations := []planner.Operation{

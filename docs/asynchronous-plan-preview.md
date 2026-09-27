@@ -172,8 +172,13 @@ fence. If the controller loses the completed Host response, resume observes the
 new Schedule record, timer, ledger, and Task evidence before committing success.
 Verification likewise resumes from occurrence and Task Invocation evidence
 rather than redispatching blindly. The direct-local matrix records runtime
-restart recovery by restarting the stable timer under the same Host; remote
-acceptance can additionally use the Incus-managed VM reboot path.
+restart recovery by restarting the stable timer under the same Host. The
+remote-SSH parity matrix runs the same recovery harness through strict SSH,
+injects transport loss around Queue preparation, Worker handoff, Schedule
+handoff, and Task delivery, and reboots the Incus-managed VM to prove the stable
+timer resumes without a resident Provision controller. Its live evidence is
+recorded in the
+[remote SSH asynchronous parity evidence](evidence/2026-09-27-remote-ssh-async-parity.md).
 
 This tracer does not yet implement retry/dead-letter exhaustion behavior,
 retention expiry cleanup, Queue-generation replacement, or recovery after loss

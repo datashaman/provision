@@ -1312,6 +1312,11 @@ func retainPreviousWorker(ctx context.Context, planned planner.Operation, claim 
 		observed.RecoveryAction = "retain both immutable generations and retry exact retention observation"
 		return observed, errors.New(observed.Reason)
 	}
+	if output, err := paths.systemd.Run(ctx, "disable", input.Worker.Previous.SystemdUnit); err != nil {
+		observed.Status, observed.Reason = "failed", "disable retained previous Worker autostart: "+strings.TrimSpace(string(output))
+		observed.RecoveryAction = "retain both immutable generations and disable the retained previous Worker before retrying"
+		return observed, fmt.Errorf("disable retained previous Worker autostart: %w", err)
+	}
 	return observeWorkerHandoff(ctx, claim.PlanID, planned, record, paths), nil
 }
 
@@ -2130,10 +2135,11 @@ func activeRecordShouldExist(activePath, recordsDirectory string) bool {
 }
 
 func renderTaskUnit(input planner.AsyncTaskInput, record bootstrapRecord, paths executionPaths, executable string) string {
+	queueService := "provision-" + record.Environment + "-rabbitmq.service"
 	return fmt.Sprintf(`[Unit]
 Description=Provision Task generation %s invocation %%i
-After=network-online.target
-Wants=network-online.target
+After=network-online.target %s
+Wants=network-online.target %s
 
 [Service]
 Type=oneshot
@@ -2151,14 +2157,16 @@ PrivateTmp=true
 ProtectSystem=strict
 ProtectHome=true
 ReadWritePaths=%s
-`, input.GenerationID, record.Account, record.Account, filepath.Join(paths.environmentHome, "releases", input.GenerationID), queueURLCredentialPath(record.Environment), filepath.Join(paths.environmentHome, "releases", input.GenerationID), executable, input.QueueLogicalID, input.Revision, input.ArtifactDigest, taskEvidencePath(paths), input.Timeout, filepath.Join(paths.environmentHome, "async"))
+`, input.GenerationID, queueService, queueService, record.Account, record.Account, filepath.Join(paths.environmentHome, "releases", input.GenerationID), queueURLCredentialPath(record.Environment), filepath.Join(paths.environmentHome, "releases", input.GenerationID), executable, input.QueueLogicalID, input.Revision, input.ArtifactDigest, taskEvidencePath(paths), input.Timeout, filepath.Join(paths.environmentHome, "async"))
 }
 
 func renderWorkerUnit(input planner.AsyncWorkerInput, record bootstrapRecord, paths executionPaths, executable string) string {
+	queueService := "provision-" + record.Environment + "-rabbitmq.service"
 	return fmt.Sprintf(`[Unit]
 Description=Provision Worker generation %s
-After=network-online.target
-Wants=network-online.target
+After=network-online.target %s
+Wants=network-online.target %s
+StartLimitIntervalSec=0
 
 [Service]
 Type=simple
@@ -2177,7 +2185,7 @@ ReadWritePaths=%s
 
 [Install]
 WantedBy=multi-user.target
-`, input.GenerationID, record.Account, record.Account, filepath.Join(paths.environmentHome, "releases", input.GenerationID), queueURLCredentialPath(record.Environment), filepath.Join(paths.environmentHome, "releases", input.GenerationID), executable, input.QueueLogicalID, input.Revision, input.ArtifactDigest, workerGatePath(paths, input.GenerationID), workerStatePath(paths, input.GenerationID), workerEvidencePath(paths), workerLedgerPath(paths), workerHoldPath(paths), filepath.Join(paths.environmentHome, "async"))
+`, input.GenerationID, queueService, queueService, record.Account, record.Account, filepath.Join(paths.environmentHome, "releases", input.GenerationID), queueURLCredentialPath(record.Environment), filepath.Join(paths.environmentHome, "releases", input.GenerationID), executable, input.QueueLogicalID, input.Revision, input.ArtifactDigest, workerGatePath(paths, input.GenerationID), workerStatePath(paths, input.GenerationID), workerEvidencePath(paths), workerLedgerPath(paths), workerHoldPath(paths), filepath.Join(paths.environmentHome, "async"))
 }
 
 func renderScheduleService(input planner.AsyncScheduleInput, record bootstrapRecord) string {

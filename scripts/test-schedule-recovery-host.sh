@@ -353,18 +353,30 @@ if after["activeWorker"]["id"] != before["activeWorker"]["id"] or after["queue"]
     raise SystemExit("Task/Schedule recovery unexpectedly changed Worker or Queue identity")
 if after_runtime_restart["count"] <= without_cli["count"]:
     raise SystemExit("Schedule ledger did not grow across runtime restart")
+open_invocations = set()
 for before_row, status_row in zip(after_runtime_restart["rows"], after_status["rows"]):
-    if before_row[4] == "running" or before_row[5] == "running":
-        if status_row[:4] != before_row[:4] or status_row[4] not in {"running", "succeeded"} or status_row[5] not in {"running", "succeeded"}:
+    open_occurrence = before_row[4] in {"recorded", "running"} or before_row[5] in {"pending", "running"}
+    if open_occurrence:
+        open_invocations.add(before_row[1])
+        if status_row[:4] != before_row[:4]:
+            raise SystemExit(f"management status rewrote in-flight occurrence identity: before={before_row!r} after={status_row!r}")
+        allowed_dispositions = {"recorded", "running", "succeeded"} if before_row[4] == "recorded" else {"running", "succeeded"}
+        allowed_outcomes = {"pending", "running", "succeeded"} if before_row[5] == "pending" else {"running", "succeeded"}
+        if status_row[4] not in allowed_dispositions or status_row[5] not in allowed_outcomes:
             raise SystemExit(f"management status rewrote in-flight occurrence history: before={before_row!r} after={status_row!r}")
         continue
     if status_row != before_row:
         raise SystemExit(f"management status rewrote completed occurrence history: before={before_row!r} after={status_row!r}")
-for invocation_id, attempts in after_runtime_restart["attempts"].items():
+for invocation_id in set(after_runtime_restart["attempts"]) | set(after_status["attempts"]):
+    attempts = after_runtime_restart["attempts"].get(invocation_id)
     status_attempts = after_status["attempts"].get(invocation_id)
     if attempts == status_attempts:
         continue
-    if all(attempt.get("outcome") == "running" for attempt in attempts):
+    if invocation_id in open_invocations and attempts is None:
+        if not status_attempts or any(attempt.get("outcome") not in {"running", "succeeded"} for attempt in status_attempts):
+            raise SystemExit(f"management status rewrote in-flight attempt history for {invocation_id}: before={attempts!r} after={status_attempts!r}")
+        continue
+    if invocation_id in open_invocations and all(attempt.get("outcome") == "running" for attempt in attempts):
         if not status_attempts or len(status_attempts) != len(attempts):
             raise SystemExit(f"management status rewrote in-flight attempt history for {invocation_id}: before={attempts!r} after={status_attempts!r}")
         for before_attempt, status_attempt in zip(attempts, status_attempts):

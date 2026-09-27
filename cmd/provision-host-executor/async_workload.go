@@ -1777,7 +1777,7 @@ func observeInstalledSchedule(ctx context.Context, input planner.AsyncScheduleIn
 		return result
 	}
 	result.Occurrence, result.Invocation = occurrence, invocation
-	if occurrence.TaskGenerationID != input.TaskGenerationID || occurrence.FencingToken != installed.FencingToken || invocation.TaskGenerationID != input.TaskGenerationID || invocation.ApplicationRevision != input.ApplicationRevision || invocation.ConfigurationDigest != input.ConfigurationDigest || invocation.Outcome != "succeeded" || len(invocation.Attempts) != 1 || invocation.Attempts[0].Outcome != "succeeded" {
+	if !scheduleInvocationReadyForVerification(*occurrence, *invocation, input, installed) {
 		return result
 	}
 	messageID, confirmed := taskConfirmedMessage(installed.TaskEvidencePath, invocation.ID)
@@ -1792,6 +1792,15 @@ func observeInstalledSchedule(ctx context.Context, input planner.AsyncScheduleIn
 	result.Status, result.MessageID, result.Acknowledged = "verified", messageID, true
 	result.Schedule.LedgerDigest = regularFileDigest(installed.LedgerPath)
 	return result
+}
+
+func scheduleInvocationReadyForVerification(occurrence host.ScheduleOccurrenceStatus, invocation host.TaskInvocationStatus, input planner.AsyncScheduleInput, installed installedScheduleRecord) bool {
+	return occurrence.TaskGenerationID == input.TaskGenerationID &&
+		occurrence.FencingToken == installed.FencingToken &&
+		invocation.TaskGenerationID == input.TaskGenerationID &&
+		invocation.ApplicationRevision == input.ApplicationRevision &&
+		invocation.ConfigurationDigest == input.ConfigurationDigest &&
+		scheduler.InvocationSucceeded(invocation)
 }
 
 func scheduleRecordMatchesInput(record installedScheduleRecord, input planner.AsyncScheduleInput, environment string) bool {

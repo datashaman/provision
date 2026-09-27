@@ -178,11 +178,11 @@ type DueInput struct {
 }
 
 func (s *Store) RecordDue(ctx context.Context, input DueInput, now time.Time) (host.ScheduleOccurrenceStatus, host.TaskInvocationStatus, bool, error) {
-	return s.record(ctx, input, now, "recorded", true)
+	return s.record(ctx, input, now, OccurrenceDispositionRecorded, true)
 }
 
 func (s *Store) RecordSkipped(ctx context.Context, input DueInput, now time.Time, disposition string) (host.ScheduleOccurrenceStatus, host.TaskInvocationStatus, bool, error) {
-	if disposition != "skipped-missed" && disposition != "skipped-dst-gap" {
+	if !SkippedOccurrenceDisposition(disposition) {
 		return host.ScheduleOccurrenceStatus{}, host.TaskInvocationStatus{}, false, errors.New("skipped Schedule occurrence disposition is unsupported")
 	}
 	return s.record(ctx, input, now, disposition, false)
@@ -195,7 +195,7 @@ func (s *Store) record(ctx context.Context, input DueInput, now time.Time, dispo
 	if input.TaskUnit == "" {
 		return host.ScheduleOccurrenceStatus{}, host.TaskInvocationStatus{}, false, errors.New("schedule occurrence requires an exact Task unit")
 	}
-	if input.MaxAttempts < 1 || input.MaxAttempts > 10 || input.RetryDelay < 0 || (input.Overlap != "allow" && input.Overlap != "forbid") {
+	if input.MaxAttempts < 1 || input.MaxAttempts > 10 || input.RetryDelay < 0 || (input.Overlap != OverlapAllow && input.Overlap != OverlapForbid) {
 		return host.ScheduleOccurrenceStatus{}, host.TaskInvocationStatus{}, false, errors.New("schedule occurrence policy is unsupported")
 	}
 	due := input.DueAt.UTC().Truncate(time.Minute)
@@ -207,116 +207,132 @@ func (s *Store) record(ctx context.Context, input DueInput, now time.Time, dispo
 	occurrenceID := stableID("occ", input.Schedule, wallKey)
 	invocationID := stableID("inv", input.Schedule, wallKey)
 	recorded := now.UTC()
-	conn, err := s.db.Conn(ctx)
-	if err != nil {
-		return host.ScheduleOccurrenceStatus{}, host.TaskInvocationStatus{}, false, err
-	}
-	defer conn.Close()
-	if _, err := conn.ExecContext(ctx, `BEGIN IMMEDIATE`); err != nil {
-		return host.ScheduleOccurrenceStatus{}, host.TaskInvocationStatus{}, false, err
-	}
-	defer conn.ExecContext(context.Background(), `ROLLBACK`)
-	result, err := conn.ExecContext(ctx, `INSERT OR IGNORE INTO occurrences(id, schedule, due_at, due_wall, recorded_at, task_generation_id, fencing_token, invocation_id, disposition) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`, occurrenceID, input.Schedule, formatTime(due), wallKey, formatTime(recorded), input.TaskGenerationID, input.FencingToken, invocationID, disposition)
-	if err != nil {
-		return host.ScheduleOccurrenceStatus{}, host.TaskInvocationStatus{}, false, err
-	}
-	inserted, _ := result.RowsAffected()
-	if inserted == 1 {
+	var inserted int64
+	err := s.withImmediateTransaction(ctx, func(conn *sql.Conn) error {
+		result, err := conn.ExecContext(ctx, `INSERT OR IGNORE INTO occurrences(id, schedule, due_at, due_wall, recorded_at, task_generation_id, fencing_token, invocation_id, disposition) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`, occurrenceID, input.Schedule, formatTime(due), wallKey, formatTime(recorded), input.TaskGenerationID, input.FencingToken, invocationID, disposition)
+		if err != nil {
+			return err
+		}
+		inserted, _ = result.RowsAffected()
+		if inserted != 1 {
+			return nil
+		}
 		outcome := disposition
 		if runnable {
-			outcome = "pending"
+			outcome = InvocationOutcomePending
 		}
 		if _, err := conn.ExecContext(ctx, `INSERT INTO invocations(id, task, task_generation_id, application_revision, configuration_digest, trigger_kind, created_at, outcome) VALUES (?, ?, ?, ?, ?, 'schedule', ?, ?)`, invocationID, input.Task, input.TaskGenerationID, input.ApplicationRevision, input.ConfigurationDigest, formatTime(recorded), outcome); err != nil {
-			return host.ScheduleOccurrenceStatus{}, host.TaskInvocationStatus{}, false, err
+			return err
 		}
-		if runnable {
-			inputs, err := json.Marshal(input.InputReferences)
-			if err != nil {
-				return host.ScheduleOccurrenceStatus{}, host.TaskInvocationStatus{}, false, err
-			}
-			if _, err := conn.ExecContext(ctx, `INSERT INTO invocation_contracts(invocation_id, occurrence_id, task_unit, input_references, max_attempts, retry_delay_ns, overlap) VALUES (?, ?, ?, ?, ?, ?, ?)`, invocationID, occurrenceID, input.TaskUnit, string(inputs), input.MaxAttempts, input.RetryDelay.Nanoseconds(), input.Overlap); err != nil {
-				return host.ScheduleOccurrenceStatus{}, host.TaskInvocationStatus{}, false, err
-			}
+		if !runnable {
+			return nil
 		}
-	}
-	if _, err := conn.ExecContext(ctx, `COMMIT`); err != nil {
-		return host.ScheduleOccurrenceStatus{}, host.TaskInvocationStatus{}, false, err
-	}
-	if err := conn.Close(); err != nil {
+		inputs, err := json.Marshal(input.InputReferences)
+		if err != nil {
+			return err
+		}
+		if _, err := conn.ExecContext(ctx, `INSERT INTO invocation_contracts(invocation_id, occurrence_id, task_unit, input_references, max_attempts, retry_delay_ns, overlap) VALUES (?, ?, ?, ?, ?, ?, ?)`, invocationID, occurrenceID, input.TaskUnit, string(inputs), input.MaxAttempts, input.RetryDelay.Nanoseconds(), input.Overlap); err != nil {
+			return err
+		}
+		return nil
+	})
+	if err != nil {
 		return host.ScheduleOccurrenceStatus{}, host.TaskInvocationStatus{}, false, err
 	}
 	occurrence, invocation, err := s.load(ctx, occurrenceID, invocationID)
 	return occurrence, invocation, inserted == 1, err
 }
 
+func (s *Store) withImmediateTransaction(ctx context.Context, fn func(*sql.Conn) error) (err error) {
+	conn, err := s.db.Conn(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if closeErr := conn.Close(); err == nil {
+			err = closeErr
+		}
+	}()
+	if _, err = conn.ExecContext(ctx, `BEGIN IMMEDIATE`); err != nil {
+		return err
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			_, _ = conn.ExecContext(context.Background(), `ROLLBACK`)
+		}
+	}()
+	if err = fn(conn); err != nil {
+		return err
+	}
+	if _, err = conn.ExecContext(ctx, `COMMIT`); err != nil {
+		return err
+	}
+	committed = true
+	return nil
+}
+
 func (s *Store) BeginAttempt(ctx context.Context, invocationID, systemdUnit string, now time.Time) (int, error) {
 	if invocationID == "" || systemdUnit == "" {
 		return 0, errors.New("Task attempt identity is incomplete")
 	}
-	conn, err := s.db.Conn(ctx)
-	if err != nil {
-		return 0, err
-	}
-	defer conn.Close()
-	if _, err := conn.ExecContext(ctx, `BEGIN IMMEDIATE`); err != nil {
-		return 0, err
-	}
-	defer conn.ExecContext(context.Background(), `ROLLBACK`)
-	var taskUnit, overlap, outcome, schedule string
-	var maxAttempts, retryDelayNS int64
-	err = conn.QueryRowContext(ctx, `SELECT c.task_unit, c.overlap, c.max_attempts, c.retry_delay_ns, i.outcome, o.schedule FROM invocation_contracts c JOIN invocations i ON i.id = c.invocation_id JOIN occurrences o ON o.invocation_id = i.id WHERE i.id = ?`, invocationID).Scan(&taskUnit, &overlap, &maxAttempts, &retryDelayNS, &outcome, &schedule)
-	if err != nil {
-		return 0, fmt.Errorf("read Task Invocation contract: %w", err)
-	}
-	if !unitInstanceMatches(taskUnit, systemdUnit, invocationID) {
-		return 0, errors.New("Task attempt unit differs from the recorded generation")
-	}
-	if outcome == "succeeded" || outcome == "skipped-overlap" {
-		return 0, ErrAttemptsExhausted
-	}
 	var number int
-	var lastOutcome string
-	var lastCompleted sql.NullString
-	err = conn.QueryRowContext(ctx, `SELECT number, outcome, completed_at FROM attempts WHERE invocation_id = ? ORDER BY number DESC LIMIT 1`, invocationID).Scan(&number, &lastOutcome, &lastCompleted)
-	if err != nil && !errors.Is(err, sql.ErrNoRows) {
-		return 0, err
-	}
-	if lastOutcome == "running" {
-		return 0, ErrAttemptRunning
-	}
-	if int64(number) >= maxAttempts {
-		return 0, ErrAttemptsExhausted
-	}
-	if number > 0 && lastCompleted.Valid {
-		completed, err := parseTime(lastCompleted.String)
+	err := s.withImmediateTransaction(ctx, func(conn *sql.Conn) error {
+		var taskUnit, overlap, outcome, schedule string
+		var maxAttempts, retryDelayNS int64
+		err := conn.QueryRowContext(ctx, `SELECT c.task_unit, c.overlap, c.max_attempts, c.retry_delay_ns, i.outcome, o.schedule FROM invocation_contracts c JOIN invocations i ON i.id = c.invocation_id JOIN occurrences o ON o.invocation_id = i.id WHERE i.id = ?`, invocationID).Scan(&taskUnit, &overlap, &maxAttempts, &retryDelayNS, &outcome, &schedule)
 		if err != nil {
-			return 0, err
+			return fmt.Errorf("read Task Invocation contract: %w", err)
 		}
-		if now.Before(completed.Add(time.Duration(retryDelayNS))) {
-			return 0, ErrRetryNotDue
+		if !unitInstanceMatches(taskUnit, systemdUnit, invocationID) {
+			return errors.New("Task attempt unit differs from the recorded generation")
 		}
-	}
-	if overlap == "forbid" {
-		var running int
-		err := conn.QueryRowContext(ctx, `SELECT COUNT(*) FROM invocations i JOIN occurrences o ON o.invocation_id = i.id WHERE o.schedule = ? AND i.id <> ? AND i.outcome = 'running'`, schedule, invocationID).Scan(&running)
-		if err != nil {
-			return 0, err
+		if FinishedInvocationOutcome(outcome) {
+			return ErrAttemptsExhausted
 		}
-		if running > 0 {
-			return 0, ErrOverlap
+		var lastOutcome string
+		var lastCompleted sql.NullString
+		err = conn.QueryRowContext(ctx, `SELECT number, outcome, completed_at FROM attempts WHERE invocation_id = ? ORDER BY number DESC LIMIT 1`, invocationID).Scan(&number, &lastOutcome, &lastCompleted)
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return err
 		}
-	}
-	number++
-	if _, err := conn.ExecContext(ctx, `INSERT INTO attempts(invocation_id, number, systemd_unit, started_at, outcome) VALUES (?, ?, ?, ?, 'running')`, invocationID, number, systemdUnit, formatTime(now.UTC())); err != nil {
-		return 0, err
-	}
-	if _, err := conn.ExecContext(ctx, `UPDATE invocations SET outcome = 'running' WHERE id = ?`, invocationID); err != nil {
-		return 0, err
-	}
-	if _, err := conn.ExecContext(ctx, `UPDATE occurrences SET disposition = 'running' WHERE invocation_id = ?`, invocationID); err != nil {
-		return 0, err
-	}
-	_, err = conn.ExecContext(ctx, `COMMIT`)
+		if lastOutcome == AttemptOutcomeRunning {
+			return ErrAttemptRunning
+		}
+		if int64(number) >= maxAttempts {
+			return ErrAttemptsExhausted
+		}
+		if number > 0 && lastCompleted.Valid {
+			completed, err := parseTime(lastCompleted.String)
+			if err != nil {
+				return err
+			}
+			if now.Before(completed.Add(time.Duration(retryDelayNS))) {
+				return ErrRetryNotDue
+			}
+		}
+		if overlap == OverlapForbid {
+			var running int
+			err := conn.QueryRowContext(ctx, `SELECT COUNT(*) FROM invocations i JOIN occurrences o ON o.invocation_id = i.id WHERE o.schedule = ? AND i.id <> ? AND i.outcome = ?`, schedule, invocationID, InvocationOutcomeRunning).Scan(&running)
+			if err != nil {
+				return err
+			}
+			if running > 0 {
+				return ErrOverlap
+			}
+		}
+		number++
+		if _, err := conn.ExecContext(ctx, `INSERT INTO attempts(invocation_id, number, systemd_unit, started_at, outcome) VALUES (?, ?, ?, ?, ?)`, invocationID, number, systemdUnit, formatTime(now.UTC()), AttemptOutcomeRunning); err != nil {
+			return err
+		}
+		if _, err := conn.ExecContext(ctx, `UPDATE invocations SET outcome = ? WHERE id = ?`, InvocationOutcomeRunning, invocationID); err != nil {
+			return err
+		}
+		if _, err := conn.ExecContext(ctx, `UPDATE occurrences SET disposition = ? WHERE invocation_id = ?`, OccurrenceDispositionRunning, invocationID); err != nil {
+			return err
+		}
+		return nil
+	})
 	return number, err
 }
 
@@ -328,7 +344,7 @@ func unitInstanceMatches(template, instance, invocation string) bool {
 }
 
 func (s *Store) CompleteAttempt(ctx context.Context, invocationID string, number int, outcome, evidencePath string, now time.Time) error {
-	if outcome != "succeeded" && outcome != "failed" && outcome != "timed-out" && outcome != "uncertain" {
+	if !SupportedAttemptOutcome(outcome) {
 		return errors.New("Task attempt outcome is unsupported")
 	}
 	tx, err := s.db.BeginTx(ctx, nil)
@@ -336,7 +352,7 @@ func (s *Store) CompleteAttempt(ctx context.Context, invocationID string, number
 		return err
 	}
 	defer tx.Rollback()
-	result, err := tx.ExecContext(ctx, `UPDATE attempts SET completed_at = ?, outcome = ?, evidence_path = ? WHERE invocation_id = ? AND number = ? AND outcome = 'running'`, formatTime(now.UTC()), outcome, evidencePath, invocationID, number)
+	result, err := tx.ExecContext(ctx, `UPDATE attempts SET completed_at = ?, outcome = ?, evidence_path = ? WHERE invocation_id = ? AND number = ? AND outcome = ?`, formatTime(now.UTC()), outcome, evidencePath, invocationID, number, AttemptOutcomeRunning)
 	if err != nil {
 		return err
 	}
@@ -357,7 +373,7 @@ func (s *Store) MarkLaunched(ctx context.Context, invocationID string, number in
 	if systemdInvocationID == "" {
 		return errors.New("systemd invocation identity is required")
 	}
-	result, err := s.db.ExecContext(ctx, `INSERT OR IGNORE INTO attempt_launches(invocation_id, number, systemd_invocation_id) SELECT invocation_id, number, ? FROM attempts WHERE invocation_id = ? AND number = ? AND outcome = 'running'`, systemdInvocationID, invocationID, number)
+	result, err := s.db.ExecContext(ctx, `INSERT OR IGNORE INTO attempt_launches(invocation_id, number, systemd_invocation_id) SELECT invocation_id, number, ? FROM attempts WHERE invocation_id = ? AND number = ? AND outcome = ?`, systemdInvocationID, invocationID, number, AttemptOutcomeRunning)
 	if err != nil {
 		return err
 	}
@@ -375,13 +391,13 @@ func (s *Store) MarkLaunched(ctx context.Context, invocationID string, number in
 // observe a running unit before finalizing an interrupted delivery as uncertain.
 func (s *Store) Pending(ctx context.Context, schedule string) ([]host.TaskInvocationStatus, error) {
 	var legacy int
-	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM occurrences o JOIN invocations i ON i.id = o.invocation_id LEFT JOIN invocation_contracts c ON c.invocation_id = i.id WHERE o.schedule = ? AND c.invocation_id IS NULL AND i.outcome IN ('pending', 'running')`, schedule).Scan(&legacy); err != nil {
+	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM occurrences o JOIN invocations i ON i.id = o.invocation_id LEFT JOIN invocation_contracts c ON c.invocation_id = i.id WHERE o.schedule = ? AND c.invocation_id IS NULL AND i.outcome IN (?, ?)`, schedule, InvocationOutcomePending, InvocationOutcomeRunning).Scan(&legacy); err != nil {
 		return nil, err
 	}
 	if legacy > 0 {
 		return nil, errors.New("Schedule has unfinished legacy Task Invocations without pinned retry contracts; inspect the occurrence ledger before resuming")
 	}
-	rows, err := s.db.QueryContext(ctx, `SELECT o.id, o.invocation_id FROM occurrences o JOIN invocations i ON i.id = o.invocation_id JOIN invocation_contracts c ON c.invocation_id = i.id WHERE o.schedule = ? AND i.outcome IN ('pending', 'running', 'failed', 'timed-out', 'uncertain') ORDER BY o.due_at`, schedule)
+	rows, err := s.db.QueryContext(ctx, `SELECT o.id, o.invocation_id FROM occurrences o JOIN invocations i ON i.id = o.invocation_id JOIN invocation_contracts c ON c.invocation_id = i.id WHERE o.schedule = ? AND i.outcome IN (?, ?, ?, ?, ?) ORDER BY o.due_at`, schedule, InvocationOutcomePending, InvocationOutcomeRunning, InvocationOutcomeFailed, InvocationOutcomeTimedOut, InvocationOutcomeUncertain)
 	if err != nil {
 		return nil, err
 	}
@@ -412,35 +428,27 @@ func (s *Store) Pending(ctx context.Context, schedule string) ([]host.TaskInvoca
 }
 
 func (s *Store) SkipOverlap(ctx context.Context, invocationID string) error {
-	conn, err := s.db.Conn(ctx)
-	if err != nil {
-		return err
-	}
-	defer conn.Close()
-	if _, err := conn.ExecContext(ctx, `BEGIN IMMEDIATE`); err != nil {
-		return err
-	}
-	defer conn.ExecContext(context.Background(), `ROLLBACK`)
-	var running int
-	err = conn.QueryRowContext(ctx, `SELECT COUNT(*) FROM invocations i JOIN occurrences o ON o.invocation_id = i.id WHERE o.schedule = (SELECT schedule FROM occurrences WHERE invocation_id = ?) AND i.id <> ? AND i.outcome = 'running'`, invocationID, invocationID).Scan(&running)
-	if err != nil {
-		return err
-	}
-	if running == 0 {
-		return ErrOverlap
-	}
-	result, err := conn.ExecContext(ctx, `UPDATE invocations SET outcome = 'skipped-overlap' WHERE id = ? AND outcome = 'pending'`, invocationID)
-	if err != nil {
-		return err
-	}
-	if changed, _ := result.RowsAffected(); changed != 1 {
-		return errors.New("Task Invocation is no longer pending")
-	}
-	if _, err = conn.ExecContext(ctx, `UPDATE occurrences SET disposition = 'skipped-overlap' WHERE invocation_id = ?`, invocationID); err != nil {
-		return err
-	}
-	_, err = conn.ExecContext(ctx, `COMMIT`)
-	return err
+	return s.withImmediateTransaction(ctx, func(conn *sql.Conn) error {
+		var running int
+		err := conn.QueryRowContext(ctx, `SELECT COUNT(*) FROM invocations i JOIN occurrences o ON o.invocation_id = i.id WHERE o.schedule = (SELECT schedule FROM occurrences WHERE invocation_id = ?) AND i.id <> ? AND i.outcome = ?`, invocationID, invocationID, InvocationOutcomeRunning).Scan(&running)
+		if err != nil {
+			return err
+		}
+		if running == 0 {
+			return ErrOverlap
+		}
+		result, err := conn.ExecContext(ctx, `UPDATE invocations SET outcome = ? WHERE id = ? AND outcome = ?`, InvocationOutcomeSkippedOverlap, invocationID, InvocationOutcomePending)
+		if err != nil {
+			return err
+		}
+		if changed, _ := result.RowsAffected(); changed != 1 {
+			return errors.New("Task Invocation is no longer pending")
+		}
+		if _, err = conn.ExecContext(ctx, `UPDATE occurrences SET disposition = ? WHERE invocation_id = ?`, OccurrenceDispositionSkippedOverlap, invocationID); err != nil {
+			return err
+		}
+		return nil
+	})
 }
 
 func (s *Store) Latest(ctx context.Context, schedule string) (*host.ScheduleOccurrenceStatus, *host.TaskInvocationStatus, error) {

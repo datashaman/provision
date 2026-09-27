@@ -3,6 +3,17 @@ set -eu
 
 case " $* " in
   *" /usr/local/libexec/provision-host-executor execute "*)
+    mode="${PROVISION_FAULT_MODE:-after}"
+    if [ "$mode" = before ]; then
+      : >"$PROVISION_FAULT_MARKER"
+      kill -KILL "$PPID"
+      sleep 1
+      exit 0
+    fi
+    if [ "$mode" != after ]; then
+      echo "unsupported PROVISION_FAULT_MODE: $mode" >&2
+      exit 2
+    fi
     captured="$(mktemp -t provision-local-output.XXXXXX)"
     trap 'rm -f "$captured"' EXIT
     # shellcheck disable=SC2024 # Capture the delegated command's stdout as this user.

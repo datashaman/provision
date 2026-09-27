@@ -3,11 +3,11 @@
 set -euo pipefail
 
 usage() {
-  echo "usage: $0 --provision BINARY --signing-key FILE --config ROOT.yaml --secret-file FILE --state-seed FILE --work-dir DIRECTORY --target HOST --target-user USER --scenario healthy|rollback" >&2
+  echo "usage: $0 --provision BINARY --signing-key FILE --config ROOT.yaml --secret-file FILE --state-seed FILE --work-dir DIRECTORY (--target HOST --target-user USER | --local --operator USER) --scenario healthy|rollback" >&2
   exit 2
 }
 
-provision="" signing_key="" config="" secret_file="" state_seed="" work_dir="" target="" target_user="" scenario=""
+provision="" signing_key="" config="" secret_file="" state_seed="" work_dir="" target="" target_user="" scenario="" operator="" local_target=0
 while (($#)); do
   case "$1" in
     --provision) provision="$2"; shift 2 ;;
@@ -18,6 +18,8 @@ while (($#)); do
     --work-dir) work_dir="$2"; shift 2 ;;
     --target) target="$2"; shift 2 ;;
     --target-user) target_user="$2"; shift 2 ;;
+    --local) local_target=1; shift ;;
+    --operator) operator="$2"; shift 2 ;;
     --scenario) scenario="$2"; shift 2 ;;
     *) usage ;;
   esac
@@ -25,12 +27,22 @@ done
 
 [[ -x "$provision" && -f "$signing_key" && -f "$config" && -f "$secret_file" && -f "$state_seed" ]] || usage
 [[ "$work_dir" == /* && ! -e "$work_dir" ]] || usage
-[[ "$target" =~ ^[A-Za-z0-9][A-Za-z0-9.-]*$ && "$target_user" =~ ^[a-z_][a-z0-9_-]*$ ]] || usage
+if [[ "$local_target" == 1 ]]; then
+  [[ -z "$target" && -z "$target_user" && "$operator" =~ ^[a-z_][a-z0-9_-]*$ ]] || usage
+else
+  [[ "$target" =~ ^[A-Za-z0-9][A-Za-z0-9.-]*$ && "$target_user" =~ ^[a-z_][a-z0-9_-]*$ && -z "$operator" ]] || usage
+  operator="$target_user"
+fi
 [[ "$scenario" == healthy || "$scenario" == rollback ]] || usage
 
 script_root="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-fault_bin="$script_root/remote-ssh-fault-bin"
-real_ssh="$(command -v ssh)"
+if [[ "$local_target" == 1 ]]; then
+  fault_bin="$script_root/direct-local-fault-bin"
+  [[ -x "$fault_bin/sudo" ]] || { echo "direct-local fault helper is missing" >&2; exit 1; }
+else
+  fault_bin="$script_root/remote-ssh-fault-bin"
+  real_ssh="$(command -v ssh)"
+fi
 mkdir -m 0700 "$work_dir"
 state="$work_dir/state.db"
 cp -- "$state_seed" "$state"
@@ -39,7 +51,18 @@ secret_reference="secret://lab/rabbitmq-url"
 
 plan_id() { python3 -c 'import json,sys; print(json.load(sys.stdin)["id"])' < "$1"; }
 inspect_host() {
-  "$provision" host bootstrap check --address "$target" --user "$target_user" --environment lab --operator "$target_user"
+  if [[ "$local_target" == 1 ]]; then
+    "$provision" host bootstrap check --local --environment lab --operator "$operator"
+  else
+    "$provision" host bootstrap check --address "$target" --user "$target_user" --environment lab --operator "$operator"
+  fi
+}
+host_command() {
+  if [[ "$local_target" == 1 ]]; then
+    bash -c "$1"
+  else
+    ssh -o BatchMode=yes -o StrictHostKeyChecking=yes "$target_user@$target" "$1"
+  fi
 }
 execute_operation() {
   local operation="$1"
@@ -71,8 +94,13 @@ interrupt_before_and_after() {
   local operation="$1" expected="$2"
   local before_marker="$work_dir/$operation.before-dispatch" after_marker="$work_dir/$operation.after-host-completion"
   set +e
-  PATH="$fault_bin:$PATH" PROVISION_REAL_SSH="$real_ssh" PROVISION_FAULT_MODE=before PROVISION_FAULT_MARKER="$before_marker" \
-    "$provision" deployment execute --plan "$plan" --operation "$operation" --state "$state" --signing-key "$signing_key" --lease-duration 2m >"$work_dir/$operation.before.txt" 2>&1
+  if [[ "$local_target" == 1 ]]; then
+    PATH="$fault_bin:$PATH" PROVISION_FAULT_MODE=before PROVISION_FAULT_MARKER="$before_marker" \
+      "$provision" deployment execute --plan "$plan" --operation "$operation" --state "$state" --signing-key "$signing_key" --lease-duration 2m >"$work_dir/$operation.before.txt" 2>&1
+  else
+    PATH="$fault_bin:$PATH" PROVISION_REAL_SSH="$real_ssh" PROVISION_FAULT_MODE=before PROVISION_FAULT_MARKER="$before_marker" \
+      "$provision" deployment execute --plan "$plan" --operation "$operation" --state "$state" --signing-key "$signing_key" --lease-duration 2m >"$work_dir/$operation.before.txt" 2>&1
+  fi
   local before_status=$?
   set -e
   [[ $before_status -ne 0 && -f "$before_marker" ]] || { echo "$operation was not interrupted before Host dispatch" >&2; exit 1; }
@@ -81,8 +109,13 @@ interrupt_before_and_after() {
   expire_test_lease
 
   set +e
-  PATH="$fault_bin:$PATH" PROVISION_REAL_SSH="$real_ssh" PROVISION_FAULT_MODE=after PROVISION_FAULT_MARKER="$after_marker" \
-    "$provision" deployment resume --plan "$plan" --state "$state" --signing-key "$signing_key" --lease-duration 2m >"$work_dir/$operation.after.txt" 2>&1
+  if [[ "$local_target" == 1 ]]; then
+    PATH="$fault_bin:$PATH" PROVISION_FAULT_MODE=after PROVISION_FAULT_MARKER="$after_marker" \
+      "$provision" deployment resume --plan "$plan" --state "$state" --signing-key "$signing_key" --lease-duration 2m >"$work_dir/$operation.after.txt" 2>&1
+  else
+    PATH="$fault_bin:$PATH" PROVISION_REAL_SSH="$real_ssh" PROVISION_FAULT_MODE=after PROVISION_FAULT_MARKER="$after_marker" \
+      "$provision" deployment resume --plan "$plan" --state "$state" --signing-key "$signing_key" --lease-duration 2m >"$work_dir/$operation.after.txt" 2>&1
+  fi
   local after_status=$?
   set -e
   [[ $after_status -ne 0 && -f "$after_marker" ]] || { echo "$operation was not interrupted after Host completion" >&2; exit 1; }
@@ -109,8 +142,7 @@ PY
 
 echo "[1/8] inspect exact asynchronous baseline and inventory"
 inspect_host >"$work_dir/bootstrap-before.json"
-ssh -o BatchMode=yes -o StrictHostKeyChecking=yes "$target_user@$target" \
-  "sudo -n find /etc/systemd/system -maxdepth 1 -type f -name 'provision-lab-consumer-*.service' -printf '%f\\n' | sort; sudo -n find /var/lib/provision/environments/lab/releases -mindepth 1 -maxdepth 1 -type d -printf '%f\\n' | sort; sudo -n find /var/lib/provision/artifacts/sha256 -maxdepth 1 -type f -printf '%f\\n' | sort" >"$work_dir/inventory-before.txt"
+host_command "sudo -n find /etc/systemd/system -maxdepth 1 -type f -name 'provision-lab-consumer-*.service' -printf '%f\\n' | sort; sudo -n find /var/lib/provision/environments/lab/releases -mindepth 1 -maxdepth 1 -type d -printf '%f\\n' | sort; sudo -n find /var/lib/provision/artifacts/sha256 -maxdepth 1 -type f -printf '%f\\n' | sort" >"$work_dir/inventory-before.txt"
 "$provision" config validate --file "$config" >"$work_dir/configuration.json"
 
 echo "[2/8] preview and approve exact Worker replacement"
@@ -136,7 +168,7 @@ interrupt_before_and_after op-10 succeeded
 candidate_unit="$(python3 -c 'import json,sys; p=json.load(open(sys.argv[1])); print(next(o for o in p["operations"] if o["kind"]=="verifyWorkerActive")["input"]["async"]["workerHandoff"]["worker"]["systemdUnit"])' "$work_dir/plan.json")"
 if [[ "$scenario" == rollback ]]; then
   echo "[5/8] fail candidate and recover a completed rollback without replay"
-  ssh -o BatchMode=yes -o StrictHostKeyChecking=yes "$target_user@$target" "sudo -n systemctl stop '$candidate_unit'"
+  host_command "sudo -n systemctl stop '$candidate_unit'"
   interrupt_before_and_after op-11 failed
 else
   echo "[5/8] recover completed post-activation verification without replay"
@@ -178,8 +210,7 @@ PY
 
 echo "[8/8] verify exact Queue, Artifact, unit, and retained-Generation inventory"
 inspect_host >"$work_dir/bootstrap-after.json"
-ssh -o BatchMode=yes -o StrictHostKeyChecking=yes "$target_user@$target" \
-  "sudo -n find /etc/systemd/system -maxdepth 1 -type f -name 'provision-lab-consumer-*.service' -printf '%f\\n' | sort; sudo -n find /var/lib/provision/environments/lab/releases -mindepth 1 -maxdepth 1 -type d -printf '%f\\n' | sort; sudo -n find /var/lib/provision/artifacts/sha256 -maxdepth 1 -type f -printf '%f\\n' | sort" >"$work_dir/inventory-after.txt"
+host_command "sudo -n find /etc/systemd/system -maxdepth 1 -type f -name 'provision-lab-consumer-*.service' -printf '%f\\n' | sort; sudo -n find /var/lib/provision/environments/lab/releases -mindepth 1 -maxdepth 1 -type d -printf '%f\\n' | sort; sudo -n find /var/lib/provision/artifacts/sha256 -maxdepth 1 -type f -printf '%f\\n' | sort" >"$work_dir/inventory-after.txt"
 python3 - "$work_dir/bootstrap-before.json" "$work_dir/bootstrap-after.json" "$work_dir/plan.json" "$work_dir/inventory-before.txt" "$work_dir/inventory-after.txt" "$scenario" <<'PY'
 import json, sys
 before = json.load(open(sys.argv[1], encoding="utf-8"))["async"]["deployment"]

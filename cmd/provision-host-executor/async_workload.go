@@ -393,7 +393,13 @@ func observeAsyncWorkloadOperation(ctx context.Context, planID string, planned p
 	case planner.HandoffSchedule:
 		observed := observeInstalledSchedule(ctx, *planned.Input.Async.Schedule, record, paths, false)
 		evidence = observed
-		state = asyncObservationState(observed.Status, "active")
+		if observed.Status == "active" {
+			state = "satisfied"
+		} else if schedulePreviousFenceStillActive(ctx, *planned.Input.Async.Schedule, record, paths) {
+			state = "pending"
+		} else {
+			state = asyncObservationState(observed.Status, "active")
+		}
 	case planner.VerifySchedule:
 		observed := observeInstalledSchedule(ctx, *planned.Input.Async.Schedule, record, paths, true)
 		evidence = observed
@@ -537,11 +543,21 @@ func verifyTaskGeneration(ctx context.Context, input planner.AsyncTaskInput, rec
 	if err != nil {
 		return observed, err
 	}
-	installed.Verified = true
-	if err := writeJSONAtomic(recordPath, installed, 0444); err != nil {
+	if err := persistVerifiedTaskGeneration(recordPath, installed); err != nil {
 		return observed, err
 	}
 	return observeTaskGeneration(ctx, input, record, paths), nil
+}
+
+func persistVerifiedTaskGeneration(recordPath string, installed installedTaskGeneration) error {
+	installed.Verified = true
+	if err := writeJSONAtomic(recordPath, installed, 0444); err != nil {
+		return err
+	}
+	if installed.Input.Previous == nil {
+		return writeJSONAtomic(filepath.Join(filepath.Dir(recordPath), "active.json"), installed, 0444)
+	}
+	return nil
 }
 
 func installWorkerGeneration(ctx context.Context, input planner.AsyncWorkerInput, record bootstrapRecord, paths executionPaths, attempt string) (host.AsyncWorkerOperationObservation, error) {
@@ -1846,6 +1862,37 @@ func scheduleInvocationReadyForVerification(occurrence host.ScheduleOccurrenceSt
 
 func scheduleRecordMatchesInput(record installedScheduleRecord, input planner.AsyncScheduleInput, environment string) bool {
 	return record.SchemaVersion == scheduleRecordSchema && record.Environment == environment && record.Component == input.Component && record.Task == input.Task && record.TaskGenerationID == input.TaskGenerationID && record.TaskUnit == input.TaskUnit && record.ApplicationRevision == input.ApplicationRevision && record.ConfigurationDigest == input.ConfigurationDigest && record.TimerUnit == input.TimerUnit && record.Expression == input.Expression && record.Timezone == input.Timezone && record.DaylightSaving == input.DaylightSaving && record.Overlap == input.Overlap && record.Retry == input.Retry && record.MissedRun == input.MissedRun && record.Failure == input.Failure && record.AppletDigest == input.AppletDigest && record.LedgerSchema == input.LedgerSchema && record.FencingToken > 0
+}
+
+func schedulePreviousFenceStillActive(ctx context.Context, input planner.AsyncScheduleInput, record bootstrapRecord, paths executionPaths) bool {
+	if input.Previous == nil {
+		return false
+	}
+	installed, err := readInstalledSchedule(record.Environment, input.Component)
+	if err != nil || !scheduleRecordMatchesPreviousFence(installed, *input.Previous, record.Environment) {
+		return false
+	}
+	active, err := paths.systemd.Run(ctx, "is-active", input.TimerUnit)
+	return err == nil && strings.TrimSpace(string(active)) == "active"
+}
+
+func scheduleRecordMatchesPreviousFence(record installedScheduleRecord, previous host.ScheduleStatus, environment string) bool {
+	return record.SchemaVersion == scheduleRecordSchema &&
+		record.Environment == environment &&
+		record.Component == previous.Component &&
+		record.TimerUnit == previous.TimerUnit &&
+		record.TaskGenerationID == previous.TaskGenerationID &&
+		record.AppletDigest == previous.AppletDigest &&
+		record.LedgerSchema == previous.LedgerSchema &&
+		record.FencingToken == previous.FencingToken &&
+		record.Expression == previous.Expression &&
+		record.Timezone == previous.Timezone &&
+		record.DaylightSaving == previous.DaylightSaving &&
+		record.Overlap == previous.Overlap &&
+		record.Retry == previous.Retry &&
+		record.MissedRun == previous.MissedRun &&
+		record.Failure == previous.Failure &&
+		record.FencingToken > 0
 }
 
 func inspectAsyncDeployment(ctx context.Context, environment, account string, paths executionPaths) (host.AsyncDeploymentStatus, []string) {

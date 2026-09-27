@@ -4,7 +4,7 @@
 set -euo pipefail
 
 usage() {
-  echo "usage: $0 --provision BINARY --signing-key FILE --config ROOT.yaml --secret-file FILE --work-dir DIRECTORY --target HOST --target-user USER" >&2
+  echo "usage: $0 --provision BINARY --signing-key FILE --config ROOT.yaml --secret-file FILE --work-dir DIRECTORY (--target HOST --target-user USER | --local --operator USER)" >&2
   exit 2
 }
 
@@ -15,6 +15,8 @@ secret_file=""
 work_dir=""
 target=""
 target_user=""
+local_target=0
+operator=""
 while (($#)); do
   case "$1" in
     --provision) (($# >= 2)) || usage; provision="$2"; shift 2 ;;
@@ -24,14 +26,25 @@ while (($#)); do
     --work-dir) (($# >= 2)) || usage; work_dir="$2"; shift 2 ;;
     --target) (($# >= 2)) || usage; target="$2"; shift 2 ;;
     --target-user) (($# >= 2)) || usage; target_user="$2"; shift 2 ;;
+    --local) local_target=1; shift ;;
+    --operator) (($# >= 2)) || usage; operator="$2"; shift 2 ;;
     *) usage ;;
   esac
 done
 
 [[ -x "$provision" && -f "$signing_key" && -f "$config" && -f "$secret_file" ]] || usage
 [[ "$work_dir" == /* && ! -e "$work_dir" ]] || usage
-[[ "$target" =~ ^[A-Za-z0-9][A-Za-z0-9.-]*$ && "$target_user" =~ ^[a-z_][a-z0-9_-]*$ ]] || usage
-[[ "$(stat -f '%Lp' "$secret_file" 2>/dev/null || stat -c '%a' "$secret_file")" =~ ^[46]00$ ]] || {
+if [[ "$local_target" == 1 ]]; then
+  [[ -z "$target" && -z "$target_user" && "$operator" =~ ^[a-z_][a-z0-9_-]*$ ]] || usage
+else
+  [[ "$target" =~ ^[A-Za-z0-9][A-Za-z0-9.-]*$ && "$target_user" =~ ^[a-z_][a-z0-9_-]*$ && -z "$operator" ]] || usage
+  operator="$target_user"
+fi
+file_mode() {
+  stat -c '%a' "$1" 2>/dev/null || stat -f '%Lp' "$1"
+}
+
+[[ "$(file_mode "$secret_file")" =~ ^[46]00$ ]] || {
   echo "secret file must be private (0400 or 0600)" >&2
   exit 1
 }
@@ -42,6 +55,13 @@ secret_reference="secret://lab/rabbitmq-url"
 
 plan_id() {
   python3 -c 'import json,sys; print(json.load(sys.stdin)["id"])' < "$1"
+}
+inspect_host() {
+  if [[ "$local_target" == 1 ]]; then
+    "$provision" host bootstrap check --local --environment lab --operator "$operator"
+  else
+    "$provision" host bootstrap check --address "$target" --user "$target_user" --environment lab --operator "$operator"
+  fi
 }
 
 assert_secret_absent() {
@@ -55,9 +75,7 @@ assert_secret_absent() {
 }
 
 echo "[1/6] inspect clean asynchronous Host capability"
-"$provision" host bootstrap check \
-  --address "$target" --user "$target_user" --environment lab --operator "$target_user" \
-  > "$work_dir/bootstrap-before.json"
+inspect_host > "$work_dir/bootstrap-before.json"
 
 echo "[2/6] preview and approve complete asynchronous Plan"
 "$provision" config validate --file "$config" > "$work_dir/configuration.json"
@@ -85,9 +103,7 @@ echo "[5/6] observe one recorded occurrence, confirmed message, and Worker ackno
   --plan "$plan" --operation op-14 --state "$state" --signing-key "$signing_key" --lease-duration 2m \
   > "$work_dir/op-14.json"
 "$provision" deployment status --plan "$plan" --state "$state" > "$work_dir/deployment-status.json"
-"$provision" host bootstrap check \
-  --address "$target" --user "$target_user" --environment lab --operator "$target_user" \
-  > "$work_dir/bootstrap-after.json"
+inspect_host > "$work_dir/bootstrap-after.json"
 
 python3 - "$work_dir/op-14.json" "$work_dir/bootstrap-after.json" <<'PY'
 import json

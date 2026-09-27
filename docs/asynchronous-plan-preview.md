@@ -164,8 +164,18 @@ harness injects controller death before dispatch and after Host completion at
 each boundary. Its qualified run is recorded in the
 [Worker handoff recovery evidence](evidence/2026-09-26-worker-handoff-recovery.md).
 
-This tracer does not yet implement Schedule handoff between revisions, general
-retry/dead-letter policy acceptance, overlap behavior, missed-run catch-up,
+Schedule handoff between Task generations is a Plan-owned transition. The
+handoff installs and verifies the candidate Task generation first, then fences
+the stable timer to the new exact Task generation. If the controller dies
+before dispatch, the operation remains pending against the previous Schedule
+fence. If the controller loses the completed Host response, resume observes the
+new Schedule record, timer, ledger, and Task evidence before committing success.
+Verification likewise resumes from occurrence and Task Invocation evidence
+rather than redispatching blindly. The direct-local matrix records runtime
+restart recovery by restarting the stable timer under the same Host; remote
+acceptance can additionally use the Incus-managed VM reboot path.
+
+This tracer does not yet implement retry/dead-letter exhaustion behavior,
 retention expiry cleanup, Queue-generation replacement, or recovery after loss
-of the Host or RabbitMQ data. Those remain explicit later
-transitions rather than implied guarantees.
+of the Host or RabbitMQ data. Those remain explicit later transitions rather
+than implied guarantees.

@@ -59,6 +59,56 @@ func TestTaskGenerationInputSurvivesDurableRoundTripWithPreviousGeneration(t *te
 	}
 }
 
+func TestInitialVerifiedTaskGenerationBecomesDurableActiveTask(t *testing.T) {
+	_, paths, input, _, _ := asyncOperationFixture(t)
+	recordPath := taskGenerationRecordPath(paths, input.GenerationID)
+	if err := os.MkdirAll(filepath.Dir(recordPath), 0755); err != nil {
+		t.Fatal(err)
+	}
+	installed := installedTaskGeneration{SchemaVersion: asyncGenerationSchema, Input: input, Executable: "provision-example-async-task"}
+	if err := persistVerifiedTaskGeneration(recordPath, installed); err != nil {
+		t.Fatal(err)
+	}
+	var active installedTaskGeneration
+	if err := readExactJSON(filepath.Join(filepath.Dir(recordPath), "active.json"), &active); err != nil {
+		t.Fatal(err)
+	}
+	if !active.Verified || active.Input.GenerationID != input.GenerationID {
+		t.Fatalf("initial verified Task was not recorded as active: %+v", active)
+	}
+}
+
+func TestReplacementVerifiedTaskGenerationDoesNotRewriteDurableActiveTask(t *testing.T) {
+	_, paths, input, _, _ := asyncOperationFixture(t)
+	recordPath := taskGenerationRecordPath(paths, input.GenerationID)
+	if err := os.MkdirAll(filepath.Dir(recordPath), 0755); err != nil {
+		t.Fatal(err)
+	}
+	previous := installedTaskGeneration{SchemaVersion: asyncGenerationSchema, Input: input, Executable: "previous-task", Verified: true}
+	previous.Input.GenerationID = "provision-example-async-v0-eeeeeeeeeeee"
+	previous.Input.Revision = "provision-example-async-v0"
+	previous.Input.ArtifactDigest = "sha256:" + strings.Repeat("e", 64)
+	if err := writeJSONAtomic(filepath.Join(filepath.Dir(recordPath), "active.json"), previous, 0444); err != nil {
+		t.Fatal(err)
+	}
+	input.Previous = &host.TaskGenerationStatus{
+		ID: previous.Input.GenerationID, Revision: previous.Input.Revision, ArtifactDigest: previous.Input.ArtifactDigest,
+		SystemdUnit: previous.Input.SystemdUnit, Queue: previous.Input.QueueLogicalID, ConfigurationDigest: previous.Input.ConfigurationDigest,
+		Timeout: previous.Input.Timeout,
+	}
+	candidate := installedTaskGeneration{SchemaVersion: asyncGenerationSchema, Input: input, Executable: "candidate-task"}
+	if err := persistVerifiedTaskGeneration(recordPath, candidate); err != nil {
+		t.Fatal(err)
+	}
+	var active installedTaskGeneration
+	if err := readExactJSON(filepath.Join(filepath.Dir(recordPath), "active.json"), &active); err != nil {
+		t.Fatal(err)
+	}
+	if active.Input.GenerationID != previous.Input.GenerationID {
+		t.Fatalf("replacement Task verification rewrote active pointer: %+v", active.Input)
+	}
+}
+
 func TestTaskReplacementHandoffCommitsOnlyTheScheduleFence(t *testing.T) {
 	record, paths, task, _, schedule := asyncOperationFixture(t)
 	schedule.Previous = &host.ScheduleStatus{
@@ -157,6 +207,35 @@ func TestScheduleHandoffRejectsChangedPreviousFence(t *testing.T) {
 	}
 	if err := validatePreviousScheduleFence(schedulePath, record.Environment, schedule); err == nil || !strings.Contains(err.Error(), "fencing token differs") {
 		t.Fatalf("changed previous fence accepted: %v", err)
+	}
+}
+
+func TestSchedulePreviousFenceMatchDistinguishesPendingFromDrift(t *testing.T) {
+	record, paths, _, _, schedule := asyncOperationFixture(t)
+	schedule.Previous = &host.ScheduleStatus{
+		Component: schedule.Component, TimerUnit: schedule.TimerUnit,
+		TaskGenerationID: "provision-example-async-v0-eeeeeeeeeeee",
+		AppletDigest:     schedule.AppletDigest, LedgerSchema: schedule.LedgerSchema,
+		FencingToken: 7, Timezone: schedule.Timezone, Expression: schedule.Expression,
+		DaylightSaving: schedule.DaylightSaving, Overlap: schedule.Overlap,
+		Retry: schedule.Retry, MissedRun: schedule.MissedRun, Failure: schedule.Failure,
+		Active: true,
+	}
+	installed := installedScheduleRecord{
+		SchemaVersion: scheduleRecordSchema, Environment: record.Environment, Component: schedule.Component,
+		Task: schedule.Task, TaskGenerationID: schedule.Previous.TaskGenerationID, TaskUnit: "provision-lab-publish-eeeeeeeeeeee@.service",
+		ApplicationRevision: "provision-example-async-v0", ConfigurationDigest: "sha256:" + strings.Repeat("e", 64),
+		TimerUnit: schedule.TimerUnit, Expression: schedule.Expression, Timezone: schedule.Timezone,
+		DaylightSaving: schedule.DaylightSaving, Overlap: schedule.Overlap, Retry: schedule.Retry, MissedRun: schedule.MissedRun, Failure: schedule.Failure,
+		AppletDigest: schedule.AppletDigest, LedgerSchema: schedule.LedgerSchema, LedgerPath: filepath.Join(paths.environmentHome, "schedules", schedule.Component, "ledger.db"),
+		FencingToken: schedule.Previous.FencingToken,
+	}
+	if !scheduleRecordMatchesPreviousFence(installed, *schedule.Previous, record.Environment) {
+		t.Fatalf("approved previous Schedule fence did not match: %+v", installed)
+	}
+	installed.FencingToken++
+	if scheduleRecordMatchesPreviousFence(installed, *schedule.Previous, record.Environment) {
+		t.Fatalf("changed previous Schedule fence matched: %+v", installed)
 	}
 }
 

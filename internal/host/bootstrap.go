@@ -222,22 +222,28 @@ type ScheduleOccurrenceStatus struct {
 }
 
 type TaskAttemptStatus struct {
-	Number       int        `json:"number"`
-	SystemdUnit  string     `json:"systemdUnit"`
-	StartedAt    time.Time  `json:"startedAt"`
-	CompletedAt  *time.Time `json:"completedAt,omitempty"`
-	Outcome      string     `json:"outcome"`
-	EvidencePath string     `json:"evidencePath,omitempty"`
+	Number              int        `json:"number"`
+	SystemdUnit         string     `json:"systemdUnit"`
+	SystemdInvocationID string     `json:"systemdInvocationId,omitempty"`
+	StartedAt           time.Time  `json:"startedAt"`
+	CompletedAt         *time.Time `json:"completedAt,omitempty"`
+	Outcome             string     `json:"outcome"`
+	EvidencePath        string     `json:"evidencePath,omitempty"`
 }
 
 type TaskInvocationStatus struct {
 	ID                  string              `json:"id"`
+	OccurrenceID        string              `json:"occurrenceId"`
 	Task                string              `json:"task"`
 	TaskGenerationID    string              `json:"taskGenerationId"`
+	TaskUnit            string              `json:"taskUnit,omitempty"`
 	ApplicationRevision string              `json:"applicationRevision"`
 	ConfigurationDigest string              `json:"configurationDigest"`
+	InputReferences     []string            `json:"inputReferences,omitempty"`
 	Trigger             string              `json:"trigger"`
+	DeliverySemantics   string              `json:"deliverySemantics"`
 	CreatedAt           time.Time           `json:"createdAt"`
+	CompletedAt         *time.Time          `json:"completedAt,omitempty"`
 	Outcome             string              `json:"outcome"`
 	Attempts            []TaskAttemptStatus `json:"attempts"`
 }

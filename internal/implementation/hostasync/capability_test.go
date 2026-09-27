@@ -10,7 +10,7 @@ import (
 	"provision/internal/host"
 )
 
-func TestInitialSchedulePolicyFailsClosedAroundFutureSemantics(t *testing.T) {
+func TestSchedulePolicyAcceptsRetriesButRejectsCatchUp(t *testing.T) {
 	supported := config.ScheduleContract{
 		Retry:     config.ScheduleRetry{MaxAttempts: 1, Delay: "10s"},
 		MissedRun: config.ScheduleMissedRun{Mode: "skip"},
@@ -20,8 +20,8 @@ func TestInitialSchedulePolicyFailsClosedAroundFutureSemantics(t *testing.T) {
 	}
 	retrying := supported
 	retrying.Retry.MaxAttempts = 3
-	if reason := InitialSchedulePolicyReason(retrying); !strings.Contains(reason, "exactly one") {
-		t.Fatalf("retrying policy did not fail closed: %q", reason)
+	if reason := InitialSchedulePolicyReason(retrying); reason != "" {
+		t.Fatalf("supported retry policy rejected: %q", reason)
 	}
 	catchUp := supported
 	catchUp.MissedRun = config.ScheduleMissedRun{Mode: "bounded-catch-up", MaxOccurrences: 2}

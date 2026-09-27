@@ -83,9 +83,9 @@ func TestInitialAsyncOperationValidationPinsTaskWorkerAndScheduleIdentities(t *t
 		t.Fatal("unimplemented Schedule expression accepted")
 	}
 	tamperedSchedule = schedule
-	tamperedSchedule.Retry.MaxAttempts = 3
+	tamperedSchedule.Retry.MaxAttempts = 11
 	if err := validateAsyncWorkloadOperation(planner.Operation{ID: "op-13", Kind: planner.HandoffSchedule, Input: planner.OperationInput{Async: &planner.AsyncOperationInput{Schedule: &tamperedSchedule}}}, record, paths); err == nil {
-		t.Fatal("unimplemented Schedule retry policy accepted")
+		t.Fatal("unbounded Schedule retry policy accepted")
 	}
 }
 
@@ -100,6 +100,9 @@ func TestRenderedAsyncUnitsAreGenerationBoundAndSecretFree(t *testing.T) {
 	}
 	if !strings.Contains(taskUnit, "--invocation %i") || !strings.Contains(taskUnit, task.ArtifactDigest) || !strings.Contains(workerUnit, "--gate-file ") || !strings.Contains(workerUnit, worker.ArtifactDigest) {
 		t.Fatal("rendered units are not bound to generation-specific runtime inputs")
+	}
+	if !strings.Contains(taskUnit, "RemainAfterExit=yes") {
+		t.Fatal("completed Task unit loses its systemd Invocation ID before the Schedule records the outcome")
 	}
 	scheduleService := renderScheduleService(schedule, record)
 	scheduleTimer := renderScheduleTimer(schedule, record)

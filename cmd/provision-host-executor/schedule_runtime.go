@@ -74,7 +74,7 @@ func runScheduleRuntimeWith(args []string, read func(string, string) (installedS
 	if record.DaylightSaving != "wall-clock" || (record.Overlap != "forbid" && record.Overlap != "allow") || record.Retry.MaxAttempts < 1 || record.Retry.MaxAttempts > 10 || record.Failure != "record" {
 		return errors.New("installed Schedule policy exceeds the initial runtime contract")
 	}
-	if _, err := scheduler.Evaluate(scheduler.EvaluationInput{Expression: record.Expression, Timezone: record.Timezone, DaylightSaving: record.DaylightSaving, MissedRun: record.MissedRun, Now: time.Now()}); err != nil {
+	if _, err := scheduler.Evaluate(scheduler.EvaluationInput{Expression: record.Expression, Timezone: record.Timezone, DaylightSaving: record.DaylightSaving, MissedRun: record.MissedRun, Now: clock().UTC()}); err != nil {
 		return fmt.Errorf("installed Schedule timing policy is invalid: %w", err)
 	}
 	retryDelay, err := time.ParseDuration(record.Retry.Delay)

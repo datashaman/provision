@@ -149,6 +149,35 @@ func TestScheduleVerificationRejectsDecisionDuplicateAndWrongWorkerEvidence(t *t
 	}
 }
 
+func TestScheduleVerificationAcceptsRetriedSuccessfulInvocation(t *testing.T) {
+	_, _, _, _, schedule := asyncOperationFixture(t)
+	installed := installedScheduleRecord{FencingToken: 7}
+	dueAt := time.Date(2026, 9, 27, 10, 15, 0, 0, time.UTC)
+	completedAt := dueAt.Add(20 * time.Second)
+	occurrence := host.ScheduleOccurrenceStatus{
+		TaskGenerationID: schedule.TaskGenerationID,
+		FencingToken:     installed.FencingToken,
+	}
+	invocation := host.TaskInvocationStatus{
+		TaskGenerationID:    schedule.TaskGenerationID,
+		ApplicationRevision: schedule.ApplicationRevision,
+		ConfigurationDigest: schedule.ConfigurationDigest,
+		Outcome:             "succeeded",
+		Attempts: []host.TaskAttemptStatus{
+			{Number: 1, Outcome: "timed-out", CompletedAt: &completedAt},
+			{Number: 2, Outcome: "succeeded", CompletedAt: &completedAt},
+		},
+	}
+	if !scheduleInvocationReadyForVerification(occurrence, invocation, schedule, installed) {
+		t.Fatalf("retried successful invocation was not verification-ready: %+v", invocation)
+	}
+	invocation.Attempts[1].Outcome = "failed"
+	invocation.Outcome = "failed"
+	if scheduleInvocationReadyForVerification(occurrence, invocation, schedule, installed) {
+		t.Fatal("failed latest attempt was verification-ready")
+	}
+}
+
 func TestQueueMessageInspectionJoinsConfirmedMessagesOnlyToDurableSettlement(t *testing.T) {
 	root := t.TempDir()
 	paths := executionPaths{environmentHome: root}

@@ -35,15 +35,16 @@ func TestSchedulePolicyAcceptsRetriesAndBoundedCatchUp(t *testing.T) {
 	}
 }
 
-func TestReplacementAllowsOnlyAChangedWorkerCandidateAgainstExactActiveDependencies(t *testing.T) {
+func TestReplacementAllowsChangedWorkerOrChangedTaskAgainstExactActiveDependencies(t *testing.T) {
 	compiled, err := config.Load(filepath.Join("..", "..", "..", "examples", "host-async", "root.yaml"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	observation := qualifiedAsyncObservation()
+	workerDigest := compiled.Revision.Artifacts["consumer"].Digest
 	observation.Async.Deployment.ActiveWorker = &host.WorkerGenerationStatus{
-		ID: "revision-a-aaaaaaaaaaaa", ArtifactDigest: "sha256:" + strings.Repeat("a", 64),
-		Revision: "revision-a", SystemdUnit: "provision-lab-consumer-aaaaaaaaaaaa.service", Active: true, UnitActive: true, QueueConnected: true, Gate: "open",
+		ID: "revision-a-" + strings.TrimPrefix(workerDigest, "sha256:")[:12], ArtifactDigest: workerDigest,
+		Revision: "revision-a", SystemdUnit: "provision-lab-consumer-" + strings.TrimPrefix(workerDigest, "sha256:")[:12] + ".service", Active: true, UnitActive: true, QueueConnected: true, Gate: "open",
 	}
 	taskDigest := compiled.Revision.Artifacts["publish"].Digest
 	observation.Async.Deployment.ActiveTask = &host.TaskGenerationStatus{
@@ -56,15 +57,39 @@ func TestReplacementAllowsOnlyAChangedWorkerCandidateAgainstExactActiveDependenc
 		Timezone: "Africa/Johannesburg", Expression: "* * * * *", DaylightSaving: "wall-clock", Overlap: "forbid",
 		Retry: config.ScheduleRetry{MaxAttempts: 1, Delay: "10s"}, MissedRun: config.ScheduleMissedRun{Mode: "skip"}, Failure: "record", Active: true,
 	}
-	if reason := ReplacementReason(compiled, *observation.Async); reason != "" {
+	if reason := ReplacementReason(compiled, *observation.Async); !strings.Contains(reason, "requires a different immutable Worker or Task generation") {
+		t.Fatalf("no-op replacement did not fail closed: %q", reason)
+	}
+	changedWorker, err := config.Load(filepath.Join("..", "..", "..", "examples", "host-async", "root.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	workerArtifact := changedWorker.Revision.Artifacts["consumer"]
+	workerArtifact.Digest = "sha256:" + strings.Repeat("a", 64)
+	changedWorker.Revision.Artifacts["consumer"] = workerArtifact
+	if reason := ReplacementReason(changedWorker, *observation.Async); reason != "" {
 		t.Fatalf("exact Worker-only replacement rejected: %q", reason)
 	}
-	changedTask := compiled
+	changedTask, err := config.Load(filepath.Join("..", "..", "..", "examples", "host-async", "root.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
 	artifact := changedTask.Revision.Artifacts["publish"]
 	artifact.Digest = "sha256:" + strings.Repeat("b", 64)
 	changedTask.Revision.Artifacts["publish"] = artifact
-	if reason := ReplacementReason(changedTask, *observation.Async); !strings.Contains(reason, "only Worker replacement") {
-		t.Fatalf("Task replacement did not fail closed: %q", reason)
+	if reason := ReplacementReason(changedTask, *observation.Async); reason != "" {
+		t.Fatalf("exact Task-only replacement rejected: %q", reason)
+	}
+	changedBoth, err := config.Load(filepath.Join("..", "..", "..", "examples", "host-async", "root.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	artifact = changedBoth.Revision.Artifacts["publish"]
+	artifact.Digest = "sha256:" + strings.Repeat("b", 64)
+	changedBoth.Revision.Artifacts["publish"] = artifact
+	changedBoth.Revision.Artifacts["consumer"] = workerArtifact
+	if reason := ReplacementReason(changedBoth, *observation.Async); !strings.Contains(reason, "one asynchronous generation replacement") {
+		t.Fatalf("multi-generation replacement did not fail closed: %q", reason)
 	}
 	evaluation := Evaluate(observation, config.TargetSelection{Target: config.Target{Local: true}})
 	for _, guarantee := range []string{"gated-worker-candidate", "bounded-in-flight-worker-drain", "previous-worker-generation-retention"} {
@@ -72,8 +97,8 @@ func TestReplacementAllowsOnlyAChangedWorkerCandidateAgainstExactActiveDependenc
 			t.Fatalf("implemented guarantee omitted: %s", guarantee)
 		}
 	}
-	if slices.Contains(evaluation.Guarantees, "fenced-schedule-handoff") {
-		t.Fatal("unimplemented Schedule replacement guarantee advertised")
+	if !slices.Contains(evaluation.Guarantees, "fenced-schedule-handoff") {
+		t.Fatal("implemented Schedule replacement guarantee omitted")
 	}
 }
 

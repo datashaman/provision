@@ -325,13 +325,21 @@ func composeAsyncOperations(adapterPlan hostasync.PlanningOutput) []Operation {
 	}
 	workerArtifact := withDependencies(transitions.WorkerArtifact, transitions.QueuePreparation.ID)
 	workerOperations := withExternalDependencies(transitions.Worker.Operations, transitions.Worker.EntryID, workerArtifact.ID, transitions.QueuePreparation.ID)
-	if adapterPlan.WorkerOnly {
+	if adapterPlan.Mode == hostasync.WorkerReplacement {
 		operations := []Operation{transitions.QueuePreparation, workerArtifact}
 		operations = append(operations, workerOperations...)
 		return operations
 	}
 	taskArtifact := withDependencies(transitions.TaskArtifact, transitions.QueuePreparation.ID)
 	taskOperations := withExternalDependencies(transitions.Task.Operations, transitions.Task.EntryID, taskArtifact.ID)
+	if adapterPlan.Mode == hostasync.TaskReplacement {
+		scheduleOperations := withExternalDependencies(transitions.Schedule.Operations, transitions.Schedule.RuntimeID, transitions.Task.ReadyID)
+		scheduleOperations = withExternalDependencies(scheduleOperations, transitions.Schedule.ActivationID, transitions.Task.ReadyID)
+		operations := []Operation{transitions.QueuePreparation, taskArtifact}
+		operations = append(operations, taskOperations...)
+		operations = append(operations, scheduleOperations...)
+		return operations
+	}
 	scheduleOperations := withExternalDependencies(transitions.Schedule.Operations, transitions.Schedule.RuntimeID, transitions.Task.ReadyID)
 	scheduleOperations = withExternalDependencies(scheduleOperations, transitions.Schedule.ActivationID, transitions.Worker.ReadyID, transitions.Task.ReadyID)
 

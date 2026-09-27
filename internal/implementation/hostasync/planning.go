@@ -13,7 +13,7 @@ type PlanningOutput struct {
 	Transitions              TransitionSet
 	SensitiveValueReferences []string
 	QueueOnly                bool
-	WorkerOnly               bool
+	Mode                     ReplacementMode
 }
 
 type TransitionSet struct {
@@ -76,6 +76,7 @@ func Plan(compiled config.Compiled, observation host.BootstrapStatus) PlanningOu
 	scheduleImplementation := compiled.Environment.Implementations[scheduleName]
 	workerArtifact := compiled.Revision.Artifacts[workerName]
 	taskArtifact := compiled.Revision.Artifacts[taskName]
+	mode, _ := ClassifyReplacement(compiled, *async)
 	workerDigestID := strings.TrimPrefix(workerArtifact.Digest, "sha256:")[:12]
 	taskDigestID := strings.TrimPrefix(taskArtifact.Digest, "sha256:")[:12]
 	workerGenerationID := compiled.Revision.Name + "-" + workerDigestID
@@ -119,6 +120,20 @@ func Plan(compiled config.Compiled, observation host.BootstrapStatus) PlanningOu
 	if scheduleInput.Previous != nil {
 		previousSchedule = scheduleInput.Previous.TaskGenerationID
 	}
+	scheduleRuntimeAlreadyInstalled := scheduleInput.Previous != nil &&
+		scheduleInput.Previous.AppletDigest == runtimeInput.AppletDigest &&
+		scheduleInput.Previous.LedgerSchema == runtimeInput.LedgerSchema
+	scheduleOperations := []planmodel.Operation{
+		{ID: "op-12", Kind: planmodel.InstallScheduleRuntime, DependsOn: []string{}, Input: planmodel.OperationInput{Async: &planmodel.AsyncOperationInput{Runtime: runtimeInput}}, Preconditions: conditions("runtime-asset", runtimeInput.AppletDigest, "verified"), ExpectedObservations: conditions("schedule-runtime", runtimeInput.AppletDigest, "installed"), Recovery: planmodel.RetainQueue},
+		{ID: "op-13", Kind: planmodel.HandoffSchedule, DependsOn: []string{"op-12"}, Input: planmodel.OperationInput{Async: &planmodel.AsyncOperationInput{Schedule: scheduleInput}}, Preconditions: scheduleHandoffPreconditions(previousSchedule, scheduleInput.Previous), ExpectedObservations: conditions("schedule-task-generation", taskGenerationID, "active-with-new-fence"), Recovery: planmodel.RestorePreviousScheduleFence},
+		{ID: "op-14", Kind: planmodel.VerifySchedule, DependsOn: []string{"op-13"}, Input: planmodel.OperationInput{Async: &planmodel.AsyncOperationInput{Schedule: scheduleInput}}, Preconditions: conditions("schedule-task-generation", taskGenerationID, "active"), ExpectedObservations: []planmodel.TypedCondition{{Kind: "schedule-occurrence", Subject: scheduleName, Expected: "recorded-before-invocation"}, {Kind: "schedule-occurrence-task-generation", Subject: taskGenerationID, Expected: "bound-by-active-fence"}}, Recovery: planmodel.RestorePreviousScheduleFence},
+	}
+	scheduleRuntimeID := "op-12"
+	if scheduleRuntimeAlreadyInstalled {
+		scheduleOperations = scheduleOperations[1:]
+		scheduleOperations[0].DependsOn = []string{}
+		scheduleRuntimeID = ""
+	}
 
 	transitions := TransitionSet{
 		QueuePreparation: queueOperation,
@@ -133,14 +148,10 @@ func Plan(compiled config.Compiled, observation host.BootstrapStatus) PlanningOu
 			},
 		},
 		Schedule: ScheduleTransitionChain{
-			RuntimeID:    "op-12",
+			RuntimeID:    scheduleRuntimeID,
 			ActivationID: "op-13",
 			ReadyID:      "op-14",
-			Operations: []planmodel.Operation{
-				{ID: "op-12", Kind: planmodel.InstallScheduleRuntime, DependsOn: []string{}, Input: planmodel.OperationInput{Async: &planmodel.AsyncOperationInput{Runtime: runtimeInput}}, Preconditions: conditions("runtime-asset", runtimeInput.AppletDigest, "verified"), ExpectedObservations: conditions("schedule-runtime", runtimeInput.AppletDigest, "installed"), Recovery: planmodel.RetainQueue},
-				{ID: "op-13", Kind: planmodel.HandoffSchedule, DependsOn: []string{"op-12"}, Input: planmodel.OperationInput{Async: &planmodel.AsyncOperationInput{Schedule: scheduleInput}}, Preconditions: conditions("previous-schedule-generation", previousSchedule, "fenced-or-absent"), ExpectedObservations: conditions("schedule-task-generation", taskGenerationID, "active-with-new-fence"), Recovery: planmodel.RestorePreviousScheduleFence},
-				{ID: "op-14", Kind: planmodel.VerifySchedule, DependsOn: []string{"op-13"}, Input: planmodel.OperationInput{Async: &planmodel.AsyncOperationInput{Schedule: scheduleInput}}, Preconditions: conditions("schedule-task-generation", taskGenerationID, "active"), ExpectedObservations: conditions("schedule-occurrence", scheduleName, "recorded-before-invocation"), Recovery: planmodel.RestorePreviousScheduleFence},
-			},
+			Operations:   scheduleOperations,
 		},
 	}
 	workerOperations := []planmodel.Operation{
@@ -172,7 +183,7 @@ func Plan(compiled config.Compiled, observation host.BootstrapStatus) PlanningOu
 		Transitions:              transitions,
 		SensitiveValueReferences: []string{queueImplementation.Credential},
 		QueueOnly:                false,
-		WorkerOnly:               workerInput.Previous != nil,
+		Mode:                     mode,
 	}
 }
 
@@ -186,6 +197,14 @@ func roleNames(compiled config.Compiled) map[string]string {
 
 func conditions(kind, subject, expected string) []planmodel.TypedCondition {
 	return []planmodel.TypedCondition{{Kind: kind, Subject: subject, Expected: expected}}
+}
+
+func scheduleHandoffPreconditions(previousSchedule string, previous *host.ScheduleStatus) []planmodel.TypedCondition {
+	preconditions := conditions("previous-schedule-generation", previousSchedule, "fenced-or-absent")
+	if previous != nil {
+		preconditions = append(preconditions, planmodel.TypedCondition{Kind: "previous-schedule-fencing-token", Subject: fmt.Sprint(previous.FencingToken), Expected: "current"})
+	}
+	return preconditions
 }
 
 // DecisionObservation projects the exact Host observation onto the state that

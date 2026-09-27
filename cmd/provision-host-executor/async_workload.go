@@ -291,7 +291,10 @@ func plannedWorkerInput(planned planner.Operation) planner.AsyncWorkerInput {
 
 func validateAsyncScheduleInput(input planner.AsyncScheduleInput, record bootstrapRecord) error {
 	if !deploymentIdentifier.MatchString(input.Component) || !deploymentIdentifier.MatchString(input.Task) || !deploymentIdentifier.MatchString(input.TaskGenerationID) || !deploymentIdentifier.MatchString(input.ApplicationRevision) || !digestPattern.MatchString(input.ConfigurationDigest) || !taskTemplateUnit.MatchString(input.TaskUnit) || input.TimerUnit != fmt.Sprintf("provision-%s-%s.timer", record.Environment, input.Component) || input.Timezone == "" || input.DaylightSaving != "wall-clock" || (input.Overlap != "forbid" && input.Overlap != "allow") || input.Retry.MaxAttempts < 1 || input.Retry.MaxAttempts > 10 || input.Failure != "record" || input.Rollout != "required" || !digestPattern.MatchString(input.AppletDigest) || input.LedgerSchema != scheduler.SchemaVersion {
-		return errors.New("Schedule input does not match the supported initial runtime contract")
+		return errors.New("Schedule input does not match the supported runtime contract")
+	}
+	if input.Previous != nil && (input.Previous.Component != input.Component || input.Previous.TimerUnit != input.TimerUnit || input.Previous.FencingToken < 1 || input.Previous.TaskGenerationID == "" || input.Previous.TaskGenerationID == input.TaskGenerationID || input.Previous.LedgerSchema != input.LedgerSchema) {
+		return errors.New("Schedule handoff requires an exact previous Schedule generation and fencing token")
 	}
 	if _, err := scheduler.Evaluate(scheduler.EvaluationInput{Expression: input.Expression, Timezone: input.Timezone, DaylightSaving: input.DaylightSaving, MissedRun: input.MissedRun, Now: time.Now()}); err != nil {
 		return fmt.Errorf("Schedule input timing policy is unsupported: %w", err)
@@ -536,9 +539,6 @@ func verifyTaskGeneration(ctx context.Context, input planner.AsyncTaskInput, rec
 	}
 	installed.Verified = true
 	if err := writeJSONAtomic(recordPath, installed, 0444); err != nil {
-		return observed, err
-	}
-	if err := writeJSONAtomic(filepath.Join(filepath.Dir(recordPath), "active.json"), installed, 0444); err != nil {
 		return observed, err
 	}
 	return observeTaskGeneration(ctx, input, record, paths), nil
@@ -1685,7 +1685,11 @@ func handoffInitialSchedule(ctx context.Context, input planner.AsyncScheduleInpu
 	if err != nil || !task.Verified || task.Input.SystemdUnit != input.TaskUnit {
 		return host.AsyncScheduleOperationObservation{Status: "failed", Reason: "target Task generation is not verified"}, errors.New("target Task generation is not verified")
 	}
-	scheduleDir := filepath.Dir(installedSchedulePath(record.Environment, input.Component))
+	schedulePath := installedSchedulePath(record.Environment, input.Component)
+	if err := validatePreviousScheduleFence(schedulePath, record.Environment, input); err != nil {
+		return host.AsyncScheduleOperationObservation{Status: "failed", Reason: err.Error()}, err
+	}
+	scheduleDir := filepath.Dir(schedulePath)
 	if err := ensureDirectory(filepath.Dir(scheduleDir), 0755, 0, 0); err != nil && !strings.Contains(err.Error(), "unsafe") {
 		return host.AsyncScheduleOperationObservation{Status: "failed", Reason: err.Error()}, err
 	}
@@ -1703,7 +1707,7 @@ func handoffInitialSchedule(ctx context.Context, input planner.AsyncScheduleInpu
 		TaskEvidencePath: taskEvidencePath(paths), WorkerEvidencePath: workerEvidencePath(paths), FencingToken: fencingToken,
 		InputReferences: []string{"queue:" + task.Input.QueueLogicalID},
 	}
-	if err := writeJSONAtomic(installedSchedulePath(record.Environment, input.Component), installed, 0444); err != nil {
+	if err := commitScheduleTaskHandoff(schedulePath, installed); err != nil {
 		return host.AsyncScheduleOperationObservation{Status: "failed", Reason: err.Error()}, err
 	}
 	serviceName := strings.TrimSuffix(input.TimerUnit, ".timer") + ".service"
@@ -1724,6 +1728,43 @@ func handoffInitialSchedule(ctx context.Context, input planner.AsyncScheduleInpu
 		return observed, errors.New("stable Schedule timer failed exact verification")
 	}
 	return observed, nil
+}
+
+func commitScheduleTaskHandoff(schedulePath string, schedule installedScheduleRecord) error {
+	return writeJSONAtomic(schedulePath, schedule, 0444)
+}
+
+func validatePreviousScheduleFence(schedulePath, environment string, input planner.AsyncScheduleInput) error {
+	if input.Previous == nil {
+		if _, err := readInstalledSchedulePath(schedulePath, environment, input.Component); err == nil {
+			return errors.New("initial Schedule handoff found an existing Schedule generation")
+		} else if errors.Is(err, os.ErrNotExist) {
+			return nil
+		} else {
+			return err
+		}
+	}
+	installed, err := readInstalledSchedulePath(schedulePath, environment, input.Component)
+	if err != nil {
+		return errors.New("previous Schedule generation cannot be verified")
+	}
+	previous := input.Previous
+	if installed.Component != previous.Component ||
+		installed.TimerUnit != previous.TimerUnit ||
+		installed.TaskGenerationID != previous.TaskGenerationID ||
+		installed.AppletDigest != previous.AppletDigest ||
+		installed.LedgerSchema != previous.LedgerSchema ||
+		installed.FencingToken != previous.FencingToken ||
+		installed.Expression != previous.Expression ||
+		installed.Timezone != previous.Timezone ||
+		installed.DaylightSaving != previous.DaylightSaving ||
+		installed.Overlap != previous.Overlap ||
+		installed.Retry != previous.Retry ||
+		installed.MissedRun != previous.MissedRun ||
+		installed.Failure != previous.Failure {
+		return errors.New("previous Schedule generation or fencing token differs from the approved Plan")
+	}
+	return nil
 }
 
 func verifyInitialSchedule(ctx context.Context, input planner.AsyncScheduleInput, record bootstrapRecord, paths executionPaths) (host.AsyncScheduleOperationObservation, error) {
@@ -1915,6 +1956,14 @@ func inspectAsyncDeployment(ctx context.Context, environment, account string, pa
 				active, _ := paths.systemd.Run(ctx, "is-active", installed.TimerUnit)
 				status := host.ScheduleStatus{Component: installed.Component, TimerUnit: installed.TimerUnit, TaskGenerationID: installed.TaskGenerationID, AppletDigest: installed.AppletDigest, LedgerSchema: installed.LedgerSchema, LedgerDigest: regularFileDigest(installed.LedgerPath), FencingToken: installed.FencingToken, Timezone: installed.Timezone, Expression: installed.Expression, DaylightSaving: installed.DaylightSaving, Overlap: installed.Overlap, Retry: installed.Retry, MissedRun: installed.MissedRun, Failure: installed.Failure, Active: strings.TrimSpace(string(active)) == "active"}
 				deployment.Schedule = &status
+				if scheduledTask, taskErr := readTaskGenerationRecord(taskGenerationRecordPath(paths, installed.TaskGenerationID)); taskErr != nil {
+					findings = append(findings, "active Schedule Task generation record is unreadable")
+				} else if observed := observeTaskGeneration(ctx, scheduledTask.Input, record, paths); observed.Status != "installed" || !observed.Verified {
+					findings = append(findings, "active Schedule Task generation is not an exact verified observation")
+				} else {
+					taskStatus := observed.Task
+					deployment.ActiveTask = &taskStatus
+				}
 				if store, openErr := scheduler.OpenReadOnly(installed.LedgerPath); openErr == nil {
 					occurrences, invocations, latestErr := store.Recent(ctx, component, 20)
 					_ = store.Close()

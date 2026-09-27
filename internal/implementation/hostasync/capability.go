@@ -193,9 +193,6 @@ func allowsAll(observed []string, required ...string) bool {
 }
 
 func InitialSchedulePolicyReason(schedule config.ScheduleContract) string {
-	if schedule.Retry.MaxAttempts != 1 {
-		return "initial Schedule runtime supports exactly one Task attempt"
-	}
 	if schedule.MissedRun.Mode != "skip" || schedule.MissedRun.MaxOccurrences != 0 {
 		return "initial Schedule runtime supports only missed-run skip policy"
 	}

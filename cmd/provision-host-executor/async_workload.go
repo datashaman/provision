@@ -290,7 +290,7 @@ func plannedWorkerInput(planned planner.Operation) planner.AsyncWorkerInput {
 }
 
 func validateAsyncScheduleInput(input planner.AsyncScheduleInput, record bootstrapRecord) error {
-	if !deploymentIdentifier.MatchString(input.Component) || !deploymentIdentifier.MatchString(input.Task) || !deploymentIdentifier.MatchString(input.TaskGenerationID) || !deploymentIdentifier.MatchString(input.ApplicationRevision) || !digestPattern.MatchString(input.ConfigurationDigest) || !taskTemplateUnit.MatchString(input.TaskUnit) || input.TimerUnit != fmt.Sprintf("provision-%s-%s.timer", record.Environment, input.Component) || input.Expression != "* * * * *" || input.Timezone == "" || input.DaylightSaving != "wall-clock" || input.Overlap != "forbid" || input.Retry.MaxAttempts != 1 || input.MissedRun.Mode != "skip" || input.MissedRun.MaxOccurrences != 0 || input.Failure != "record" || input.Rollout != "required" || !digestPattern.MatchString(input.AppletDigest) || input.LedgerSchema != scheduler.SchemaVersion {
+	if !deploymentIdentifier.MatchString(input.Component) || !deploymentIdentifier.MatchString(input.Task) || !deploymentIdentifier.MatchString(input.TaskGenerationID) || !deploymentIdentifier.MatchString(input.ApplicationRevision) || !digestPattern.MatchString(input.ConfigurationDigest) || !taskTemplateUnit.MatchString(input.TaskUnit) || input.TimerUnit != fmt.Sprintf("provision-%s-%s.timer", record.Environment, input.Component) || input.Expression != "* * * * *" || input.Timezone == "" || input.DaylightSaving != "wall-clock" || (input.Overlap != "forbid" && input.Overlap != "allow") || input.Retry.MaxAttempts < 1 || input.Retry.MaxAttempts > 10 || input.MissedRun.Mode != "skip" || input.MissedRun.MaxOccurrences != 0 || input.Failure != "record" || input.Rollout != "required" || !digestPattern.MatchString(input.AppletDigest) || input.LedgerSchema != scheduler.SchemaVersion {
 		return errors.New("Schedule input does not match the supported initial runtime contract")
 	}
 	return nil
@@ -1698,6 +1698,7 @@ func handoffInitialSchedule(ctx context.Context, input planner.AsyncScheduleInpu
 		DaylightSaving: input.DaylightSaving, Overlap: input.Overlap, Retry: input.Retry, MissedRun: input.MissedRun, Failure: input.Failure,
 		AppletDigest: input.AppletDigest, LedgerSchema: input.LedgerSchema, LedgerPath: ledgerPath,
 		TaskEvidencePath: taskEvidencePath(paths), WorkerEvidencePath: workerEvidencePath(paths), FencingToken: fencingToken,
+		InputReferences: []string{"queue:" + task.Input.QueueLogicalID},
 	}
 	if err := writeJSONAtomic(installedSchedulePath(record.Environment, input.Component), installed, 0444); err != nil {
 		return host.AsyncScheduleOperationObservation{Status: "failed", Reason: err.Error()}, err
@@ -1903,11 +1904,11 @@ func inspectAsyncDeployment(ctx context.Context, environment, account string, pa
 				status := host.ScheduleStatus{Component: installed.Component, TimerUnit: installed.TimerUnit, TaskGenerationID: installed.TaskGenerationID, AppletDigest: installed.AppletDigest, LedgerSchema: installed.LedgerSchema, LedgerDigest: regularFileDigest(installed.LedgerPath), FencingToken: installed.FencingToken, Timezone: installed.Timezone, Expression: installed.Expression, DaylightSaving: installed.DaylightSaving, Overlap: installed.Overlap, Retry: installed.Retry, MissedRun: installed.MissedRun, Failure: installed.Failure, Active: strings.TrimSpace(string(active)) == "active"}
 				deployment.Schedule = &status
 				if store, openErr := scheduler.OpenReadOnly(installed.LedgerPath); openErr == nil {
-					occurrence, invocation, latestErr := store.Latest(ctx, component)
+					occurrences, invocations, latestErr := store.Recent(ctx, component, 20)
 					_ = store.Close()
-					if latestErr == nil && occurrence != nil && invocation != nil {
-						deployment.Occurrences = []host.ScheduleOccurrenceStatus{*occurrence}
-						deployment.Invocations = []host.TaskInvocationStatus{*invocation}
+					if latestErr == nil {
+						deployment.Occurrences = occurrences
+						deployment.Invocations = invocations
 					}
 				}
 			}
@@ -2028,6 +2029,7 @@ Wants=network-online.target
 
 [Service]
 Type=oneshot
+RemainAfterExit=yes
 User=%s
 Group=%s
 WorkingDirectory=%s

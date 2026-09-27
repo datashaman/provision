@@ -625,7 +625,7 @@ func (c Compiled) validateAsync() error {
 	if _, err := time.LoadLocation(schedule.Timezone); err != nil {
 		return fmt.Errorf("Schedule %q has unknown timezone %q", scheduleName, schedule.Timezone)
 	}
-	if schedule.DaylightSaving != "wall-clock" || schedule.Overlap != "forbid" || schedule.Failure != "record" {
+	if schedule.DaylightSaving != "wall-clock" || (schedule.Overlap != "forbid" && schedule.Overlap != "allow") || schedule.Failure != "record" {
 		return fmt.Errorf("Schedule %q has incomplete daylight-saving, overlap, or failure policy", scheduleName)
 	}
 	if schedule.Retry.MaxAttempts < 1 || schedule.Retry.MaxAttempts > 10 || validateCanonicalDuration(schedule.Retry.Delay, time.Second, time.Hour) != nil {

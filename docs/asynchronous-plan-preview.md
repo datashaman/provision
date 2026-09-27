@@ -54,8 +54,21 @@ The schedule applet commits the due occurrence and stable Task Invocation to a
 SQLite ledger before starting the Task instance. Its record binds the
 Application Revision, Environment Configuration digest, Task generation,
 fencing token, attempt, timing, outcome, and non-secret evidence path. Status
-reports the Queue, active Worker, active Task, Schedule, occurrence, and Task
-Invocation separately.
+reports the Queue, active Worker, active Task, Schedule, recent occurrences,
+Task Invocations, and each Invocation's ordered attempts separately.
+
+The ledger keeps the exact Task unit, referenced Queue, retry limit, delay,
+and overlap policy selected for each occurrence. A retry uses the same
+Invocation identity and generation; failed and timed-out attempts remain
+visible. A running Task leaves the stable timer service free after a short
+launch check, so the next occurrence may run concurrently when overlap is
+allowed or is recorded as skipped when overlap is forbidden. A recovered
+attempt is matched to systemd's Invocation ID and publisher-confirmation
+evidence. If the applet died before it recorded the launch identity, the
+outcome is uncertain and any retry keeps the original Invocation identity.
+Execution is at least once. The minute timer checks delayed retries on its
+next tick; the configured delay is the earliest retry time, not a promise to
+retry at that exact second.
 
 The checked-in black-box harness is
 [`scripts/test-first-scheduled-message-host.sh`](../scripts/test-first-scheduled-message-host.sh).

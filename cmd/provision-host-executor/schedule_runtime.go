@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"provision/internal/config"
+	"provision/internal/host"
 	"provision/internal/scheduler"
 )
 
@@ -70,8 +71,11 @@ func runScheduleRuntimeWith(args []string, read func(string, string) (installedS
 	if record.LedgerSchema != scheduler.SchemaVersion {
 		return errors.New("installed Schedule ledger schema is unsupported")
 	}
-	if record.DaylightSaving != "wall-clock" || (record.Overlap != "forbid" && record.Overlap != "allow") || record.Retry.MaxAttempts < 1 || record.Retry.MaxAttempts > 10 || record.MissedRun.Mode != "skip" || record.MissedRun.MaxOccurrences != 0 || record.Failure != "record" {
+	if record.DaylightSaving != "wall-clock" || (record.Overlap != "forbid" && record.Overlap != "allow") || record.Retry.MaxAttempts < 1 || record.Retry.MaxAttempts > 10 || record.Failure != "record" {
 		return errors.New("installed Schedule policy exceeds the initial runtime contract")
+	}
+	if _, err := scheduler.Evaluate(scheduler.EvaluationInput{Expression: record.Expression, Timezone: record.Timezone, DaylightSaving: record.DaylightSaving, MissedRun: record.MissedRun, Now: time.Now()}); err != nil {
+		return fmt.Errorf("installed Schedule timing policy is invalid: %w", err)
 	}
 	retryDelay, err := time.ParseDuration(record.Retry.Delay)
 	if err != nil || retryDelay < time.Second || retryDelay > time.Hour {
@@ -179,15 +183,49 @@ func executeSchedule(record installedScheduleRecord, clock func() time.Time, sta
 	defer store.Close()
 	now := clock().UTC()
 	retryDelay, _ := time.ParseDuration(record.Retry.Delay)
-	occurrence, invocation, inserted, err := store.RecordDue(context.Background(), scheduler.DueInput{
+	lastWall, err := store.LatestWallAt(context.Background(), record.Component)
+	if err != nil {
+		return fmt.Errorf("read latest Schedule occurrence: %w", err)
+	}
+	decisions, err := scheduler.Evaluate(scheduler.EvaluationInput{
+		Expression: record.Expression, Timezone: record.Timezone, DaylightSaving: record.DaylightSaving,
+		MissedRun: record.MissedRun, LastWallAt: lastWall, Now: now,
+	})
+	if err != nil {
+		return fmt.Errorf("evaluate Schedule policy: %w", err)
+	}
+	input := scheduler.DueInput{
 		Schedule: record.Component, Task: record.Task, TaskGenerationID: record.TaskGenerationID,
 		ApplicationRevision: record.ApplicationRevision, ConfigurationDigest: record.ConfigurationDigest,
-		FencingToken: record.FencingToken, DueAt: now, TaskUnit: record.TaskUnit,
+		FencingToken: record.FencingToken, TaskUnit: record.TaskUnit,
 		InputReferences: record.InputReferences, MaxAttempts: record.Retry.MaxAttempts,
 		RetryDelay: retryDelay, Overlap: record.Overlap,
-	}, now)
-	if err != nil {
-		return fmt.Errorf("record due occurrence: %w", err)
+	}
+	var occurrence host.ScheduleOccurrenceStatus
+	var invocation host.TaskInvocationStatus
+	inserted := false
+	if len(decisions) == 0 {
+		latestOccurrence, latestInvocation, err := store.Latest(context.Background(), record.Component)
+		if err != nil {
+			return fmt.Errorf("read latest Schedule status: %w", err)
+		}
+		if latestOccurrence != nil && latestInvocation != nil {
+			occurrence = *latestOccurrence
+			invocation = *latestInvocation
+		}
+	} else {
+		for _, decision := range decisions {
+			input.DueAt = decision.DueAt
+			input.WallAt = decision.WallAt
+			if decision.Disposition == "recorded" {
+				occurrence, invocation, inserted, err = store.RecordDue(context.Background(), input, now)
+			} else {
+				occurrence, invocation, inserted, err = store.RecordSkipped(context.Background(), input, now, decision.Disposition)
+			}
+			if err != nil {
+				return fmt.Errorf("record %s Schedule occurrence: %w", decision.Disposition, err)
+			}
+		}
 	}
 	if !inserted && (invocation.Outcome == "succeeded" || invocation.Outcome == "skipped-overlap") {
 		return writeRuntimeResultTo(output, occurrence.ID, invocation.ID, invocation.Outcome)

@@ -65,6 +65,36 @@ func TestLoadAsyncExampleDeterministically(t *testing.T) {
 	}
 }
 
+func TestScheduleTimezoneDefaultsToUTCAndPreservesNamedZones(t *testing.T) {
+	dir := copyAsyncExample(t)
+	path := filepath.Join(dir, "application.yaml")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	withoutTimezone := strings.Replace(string(data), "      timezone: Africa/Johannesburg\n", "", 1)
+	if withoutTimezone == string(data) {
+		t.Fatal("timezone substitution did not match")
+	}
+	if err := os.WriteFile(path, []byte(withoutTimezone), 0600); err != nil {
+		t.Fatal(err)
+	}
+	compiled, err := Load(filepath.Join(dir, "root.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := compiled.Application.Components["every-minute"].Schedule.Timezone; got != "UTC" {
+		t.Fatalf("default timezone = %q, want UTC", got)
+	}
+	named, err := Load(filepath.Join("..", "..", "examples", "host-async", "root.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := named.Application.Components["every-minute"].Schedule.Timezone; got != "Africa/Johannesburg" {
+		t.Fatalf("named timezone was not preserved: %q", got)
+	}
+}
+
 func TestLoadAsyncWorkerReplacementBindsOnlyANewWorkerArtifact(t *testing.T) {
 	root := filepath.Join("..", "..", "examples", "host-async")
 	initial, err := Load(filepath.Join(root, "root.yaml"))
@@ -247,6 +277,21 @@ func copyExample(t *testing.T) string {
 	dir := t.TempDir()
 	for _, name := range []string{"root.yaml", "application.yaml", "environment.yaml", "revision.yaml"} {
 		data, err := os.ReadFile(filepath.Join("..", "..", "examples", "host-http", name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, name), data, 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return dir
+}
+
+func copyAsyncExample(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	for _, name := range []string{"root.yaml", "application.yaml", "environment.yaml", "revision.yaml"} {
+		data, err := os.ReadFile(filepath.Join("..", "..", "examples", "host-async", name))
 		if err != nil {
 			t.Fatal(err)
 		}

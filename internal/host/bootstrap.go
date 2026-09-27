@@ -214,6 +214,7 @@ type ScheduleOccurrenceStatus struct {
 	ID               string    `json:"id"`
 	Schedule         string    `json:"schedule"`
 	DueAt            time.Time `json:"dueAt"`
+	WallDueAt        string    `json:"wallDueAt,omitempty"`
 	RecordedAt       time.Time `json:"recordedAt"`
 	TaskGenerationID string    `json:"taskGenerationId"`
 	FencingToken     int64     `json:"fencingToken"`

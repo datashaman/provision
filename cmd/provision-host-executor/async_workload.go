@@ -290,8 +290,11 @@ func plannedWorkerInput(planned planner.Operation) planner.AsyncWorkerInput {
 }
 
 func validateAsyncScheduleInput(input planner.AsyncScheduleInput, record bootstrapRecord) error {
-	if !deploymentIdentifier.MatchString(input.Component) || !deploymentIdentifier.MatchString(input.Task) || !deploymentIdentifier.MatchString(input.TaskGenerationID) || !deploymentIdentifier.MatchString(input.ApplicationRevision) || !digestPattern.MatchString(input.ConfigurationDigest) || !taskTemplateUnit.MatchString(input.TaskUnit) || input.TimerUnit != fmt.Sprintf("provision-%s-%s.timer", record.Environment, input.Component) || input.Expression != "* * * * *" || input.Timezone == "" || input.DaylightSaving != "wall-clock" || (input.Overlap != "forbid" && input.Overlap != "allow") || input.Retry.MaxAttempts < 1 || input.Retry.MaxAttempts > 10 || input.MissedRun.Mode != "skip" || input.MissedRun.MaxOccurrences != 0 || input.Failure != "record" || input.Rollout != "required" || !digestPattern.MatchString(input.AppletDigest) || input.LedgerSchema != scheduler.SchemaVersion {
+	if !deploymentIdentifier.MatchString(input.Component) || !deploymentIdentifier.MatchString(input.Task) || !deploymentIdentifier.MatchString(input.TaskGenerationID) || !deploymentIdentifier.MatchString(input.ApplicationRevision) || !digestPattern.MatchString(input.ConfigurationDigest) || !taskTemplateUnit.MatchString(input.TaskUnit) || input.TimerUnit != fmt.Sprintf("provision-%s-%s.timer", record.Environment, input.Component) || input.Timezone == "" || input.DaylightSaving != "wall-clock" || (input.Overlap != "forbid" && input.Overlap != "allow") || input.Retry.MaxAttempts < 1 || input.Retry.MaxAttempts > 10 || input.Failure != "record" || input.Rollout != "required" || !digestPattern.MatchString(input.AppletDigest) || input.LedgerSchema != scheduler.SchemaVersion {
 		return errors.New("Schedule input does not match the supported initial runtime contract")
+	}
+	if _, err := scheduler.Evaluate(scheduler.EvaluationInput{Expression: input.Expression, Timezone: input.Timezone, DaylightSaving: input.DaylightSaving, MissedRun: input.MissedRun, Now: time.Now()}); err != nil {
+		return fmt.Errorf("Schedule input timing policy is unsupported: %w", err)
 	}
 	return nil
 }
@@ -2093,14 +2096,14 @@ func renderScheduleTimer(input planner.AsyncScheduleInput, record bootstrapRecor
 Description=Provision stable Schedule %s
 
 [Timer]
-OnCalendar=*-*-* *:*:00 %s
+OnCalendar=*-*-* *:*:00
 Persistent=false
 AccuracySec=1s
 Unit=%s
 
 [Install]
 WantedBy=timers.target
-`, input.Component, input.Timezone, strings.TrimSuffix(input.TimerUnit, ".timer")+".service")
+`, input.Component, strings.TrimSuffix(input.TimerUnit, ".timer")+".service")
 }
 
 func ensureAsyncDataRoots(record bootstrapRecord, paths executionPaths, uid, gid int) error {

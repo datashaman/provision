@@ -193,8 +193,17 @@ func allowsAll(observed []string, required ...string) bool {
 }
 
 func InitialSchedulePolicyReason(schedule config.ScheduleContract) string {
-	if schedule.MissedRun.Mode != "skip" || schedule.MissedRun.MaxOccurrences != 0 {
-		return "initial Schedule runtime supports only missed-run skip policy"
+	switch schedule.MissedRun.Mode {
+	case "skip":
+		if schedule.MissedRun.MaxOccurrences != 0 {
+			return "skip missed-run policy cannot declare catch-up occurrences"
+		}
+	case "bounded-catch-up":
+		if schedule.MissedRun.MaxOccurrences < 1 || schedule.MissedRun.MaxOccurrences > 100 {
+			return "bounded catch-up policy must declare maxOccurrences from 1 through 100"
+		}
+	default:
+		return "initial Schedule runtime requires an explicit missed-run policy"
 	}
 	return ""
 }

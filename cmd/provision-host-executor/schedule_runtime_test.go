@@ -205,6 +205,101 @@ func TestScheduleRuntimeRecoversAmbiguousDeliveryWithSameInvocation(t *testing.T
 	}
 }
 
+func TestScheduleRuntimeRecoversRecordedOccurrenceAfterCrashBeforeLaunch(t *testing.T) {
+	record := runtimeRecord(t, "forbid", 2)
+	now := time.Date(2026, 9, 27, 10, 15, 0, 0, time.UTC)
+	store, err := scheduler.Open(record.LedgerPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	occurrence, invocation, inserted, err := store.RecordDue(context.Background(), scheduler.DueInput{
+		Schedule: record.Component, Task: record.Task, TaskGenerationID: record.TaskGenerationID, TaskUnit: record.TaskUnit,
+		ApplicationRevision: record.ApplicationRevision, ConfigurationDigest: record.ConfigurationDigest,
+		FencingToken: record.FencingToken, DueAt: now, WallAt: now, InputReferences: record.InputReferences,
+		MaxAttempts: record.Retry.MaxAttempts, RetryDelay: 10 * time.Second, Overlap: record.Overlap,
+	}, now)
+	if err != nil || !inserted {
+		t.Fatalf("record crash-boundary occurrence: inserted=%v err=%v", inserted, err)
+	}
+	store.Close()
+
+	starts := 0
+	var output bytes.Buffer
+	err = runScheduleRuntimeWith([]string{"run", "--environment", "lab", "--schedule", "every-minute"},
+		func(_, _ string) (installedScheduleRecord, error) { return record, nil }, func() time.Time { return now },
+		func(unit string) (string, string, error) {
+			starts++
+			confirmTask(t, record.TaskEvidencePath, unit)
+			return "succeeded", "systemd-recovered", nil
+		}, func(string) (string, string, error) { return "running", "systemd-recovered", nil }, func(string) error { return nil }, &output)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if starts != 1 || !strings.Contains(output.String(), invocation.ID) || !strings.Contains(output.String(), occurrence.ID) {
+		t.Fatalf("runtime did not resume the pre-recorded invocation: starts=%d output=%s", starts, output.String())
+	}
+	store, err = scheduler.Open(record.LedgerPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	occurrences, invocations, err := store.Recent(context.Background(), record.Component, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(occurrences) != 1 || len(invocations) != 1 || invocations[0].ID != invocation.ID || invocations[0].Outcome != "succeeded" || len(invocations[0].Attempts) != 1 {
+		t.Fatalf("crash-boundary recovery created a second identity or lost history: %+v %+v", occurrences, invocations)
+	}
+}
+
+func TestScheduleRuntimeReconcilesLostResponseAfterResultRecording(t *testing.T) {
+	record := runtimeRecord(t, "forbid", 1)
+	now := time.Date(2026, 9, 27, 10, 15, 0, 0, time.UTC)
+	starts := 0
+	run := func(output *bytes.Buffer) error {
+		return runScheduleRuntimeWith([]string{"run", "--environment", "lab", "--schedule", "every-minute"},
+			func(_, _ string) (installedScheduleRecord, error) { return record, nil }, func() time.Time { return now },
+			func(unit string) (string, string, error) {
+				starts++
+				confirmTask(t, record.TaskEvidencePath, unit)
+				return "succeeded", "systemd-complete", nil
+			}, func(string) (string, string, error) { return "running", "systemd-complete", nil }, func(string) error { return nil }, output)
+	}
+	var first bytes.Buffer
+	if err := run(&first); err != nil {
+		t.Fatal(err)
+	}
+	store, err := scheduler.Open(record.LedgerPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	occurrence, invocation, err := store.Latest(context.Background(), record.Component)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store.Close()
+
+	var replay bytes.Buffer
+	if err := run(&replay); err != nil {
+		t.Fatal(err)
+	}
+	if starts != 1 || !strings.Contains(replay.String(), invocation.ID) || !strings.Contains(replay.String(), occurrence.ID) {
+		t.Fatalf("lost response was not reconciled from the ledger: starts=%d output=%s", starts, replay.String())
+	}
+	store, err = scheduler.Open(record.LedgerPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	occurrences, invocations, err := store.Recent(context.Background(), record.Component, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(occurrences) != 1 || len(invocations) != 1 || invocations[0].ID != invocation.ID || len(invocations[0].Attempts) != 1 {
+		t.Fatalf("lost-response reconciliation rewrote occurrence history: %+v %+v", occurrences, invocations)
+	}
+}
+
 func TestScheduleRuntimeCompletesLongTaskFromRecordedSystemdLaunch(t *testing.T) {
 	record := runtimeRecord(t, "forbid", 2)
 	now := time.Date(2026, 9, 27, 10, 15, 0, 0, time.UTC)
@@ -244,6 +339,53 @@ func TestScheduleRuntimeCompletesLongTaskFromRecordedSystemdLaunch(t *testing.T)
 	}
 	if invocation.Outcome != "succeeded" || len(invocation.Attempts) != 1 || invocation.Attempts[0].SystemdInvocationID != "systemd-a" {
 		t.Fatalf("recorded launch was not reconciled: %+v", invocation)
+	}
+}
+
+func TestScheduleRuntimeObservesRecordedLaunchBeforeRetryAfterRestart(t *testing.T) {
+	record := runtimeRecord(t, "forbid", 2)
+	now := time.Date(2026, 9, 27, 10, 15, 0, 0, time.UTC)
+	starts := 0
+	run := func(observed string) error {
+		return runScheduleRuntimeWith([]string{"run", "--environment", "lab", "--schedule", "every-minute"},
+			func(_, _ string) (installedScheduleRecord, error) { return record, nil }, func() time.Time { return now },
+			func(string) (string, string, error) {
+				starts++
+				if starts == 1 {
+					return "running", "systemd-a", nil
+				}
+				return "running", "systemd-b", nil
+			},
+			func(string) (string, string, error) { return observed, "systemd-a", nil }, func(string) error { return nil }, &bytes.Buffer{})
+	}
+	if err := run("running"); err != nil {
+		t.Fatal(err)
+	}
+	now = now.Add(10 * time.Second)
+	if err := run("failed"); err != nil {
+		t.Fatal(err)
+	}
+	if starts != 1 {
+		t.Fatalf("runtime retried before reconciling recorded systemd launch: starts=%d", starts)
+	}
+	now = now.Add(10 * time.Second)
+	if err := run("failed"); err != nil {
+		t.Fatal(err)
+	}
+	if starts != 2 {
+		t.Fatalf("runtime did not retry after reconciling failed launch and retry delay: starts=%d", starts)
+	}
+	store, err := scheduler.Open(record.LedgerPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	_, invocation, err := store.Latest(context.Background(), record.Component)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if invocation.Outcome != "running" || len(invocation.Attempts) != 2 || invocation.Attempts[0].Outcome != "failed" || invocation.Attempts[0].SystemdInvocationID != "systemd-a" || invocation.Attempts[1].Outcome != "running" {
+		t.Fatalf("recorded launch was not reconciled before retry: %+v", invocation)
 	}
 }
 

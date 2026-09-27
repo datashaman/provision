@@ -119,6 +119,61 @@ inspections = [json.loads(path.read_text(encoding="utf-8")) for path in inspecti
 latest = inspections[-1]
 async_status = latest.get("async", {})
 capabilities = async_status.get("capabilities", {})
+deployment = async_status.get("deployment", {})
+
+def generation(record, kind):
+    if not record:
+        return None
+    return {
+        "kind": kind,
+        "id": record.get("generationId") or record.get("id"),
+        "revision": record.get("revision"),
+        "artifactDigest": record.get("artifactDigest"),
+        "systemdUnit": record.get("systemdUnit") or record.get("timerUnit"),
+        "health": record.get("health"),
+        "active": record.get("active"),
+        "restartable": record.get("restartable"),
+    }
+
+def compact(value):
+    if value is None:
+        return None
+    if isinstance(value, dict):
+        return {key: compact(val) for key, val in sorted(value.items()) if val is not None}
+    if isinstance(value, list):
+        return [compact(item) for item in value]
+    return value
+
+queue = deployment.get("queue") or {}
+active_generations = compact({
+    "queue": generation(queue, "queue"),
+    "worker": generation(deployment.get("activeWorker"), "worker"),
+    "task": generation(deployment.get("activeTask"), "task"),
+    "schedule": generation(deployment.get("schedule"), "schedule"),
+})
+retained_generations = compact({
+    "previousWorker": generation(deployment.get("previousWorker"), "worker"),
+    "candidateWorker": generation(deployment.get("candidateWorker"), "worker"),
+})
+owned_resources = sorted(queue.get("ownedResources") or [])
+artifact_versions = sorted({
+    value
+    for record in (
+        queue,
+        deployment.get("activeWorker") or {},
+        deployment.get("previousWorker") or {},
+        deployment.get("candidateWorker") or {},
+        deployment.get("activeTask") or {},
+        deployment.get("schedule") or {},
+    )
+    for value in (
+        record.get("artifactDigest"),
+        record.get("imageManifest"),
+        record.get("appletDigest"),
+        record.get("ledgerSchema"),
+    )
+    if value
+})
 
 observed_messages = []
 observed_occurrences = []
@@ -197,6 +252,10 @@ destination.write_text(json.dumps({
         "workerRollback": "worker-rollback",
         "scheduleRecovery": "schedule-recovery",
     },
+    "activeGenerationAccounting": active_generations,
+    "retainedGenerationAccounting": retained_generations,
+    "ownedResourceInventory": owned_resources,
+    "artifactVersions": artifact_versions,
     "operationResults": operation_results,
     "messageAccounting": observed_messages,
     "messageIdentityOccurrences": message_occurrences,

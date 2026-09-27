@@ -277,9 +277,15 @@ func TestRenderedAsyncUnitsAreGenerationBoundAndSecretFree(t *testing.T) {
 		if !strings.Contains(unit, "LoadCredentialEncrypted=rabbitmq-url:") || !strings.Contains(unit, "NoNewPrivileges=true") || !strings.Contains(unit, "ProtectSystem=strict") || strings.Contains(unit, "amqp://") {
 			t.Fatalf("%s unit omitted hardening or exposed connection material:\n%s", name, unit)
 		}
+		if !strings.Contains(unit, "After=network-online.target provision-lab-rabbitmq.service") || !strings.Contains(unit, "Wants=network-online.target provision-lab-rabbitmq.service") {
+			t.Fatalf("%s unit can race the managed Queue service after reboot:\n%s", name, unit)
+		}
 	}
 	if !strings.Contains(taskUnit, "--invocation %i") || !strings.Contains(taskUnit, task.ArtifactDigest) || !strings.Contains(workerUnit, "--gate-file ") || !strings.Contains(workerUnit, worker.ArtifactDigest) {
 		t.Fatal("rendered units are not bound to generation-specific runtime inputs")
+	}
+	if !strings.Contains(workerUnit, "StartLimitIntervalSec=0") {
+		t.Fatal("Worker unit can hit systemd start-limit before the managed Queue becomes reachable after reboot")
 	}
 	if !strings.Contains(taskUnit, "RemainAfterExit=yes") {
 		t.Fatal("completed Task unit loses its systemd Invocation ID before the Schedule records the outcome")

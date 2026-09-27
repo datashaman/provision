@@ -94,6 +94,18 @@ conflicting Queue, gate, unit, message, or authority evidence still pauses. It
 does not qualify Host/data loss, retention expiry cleanup, multi-host consumers,
 or Queue replacement.
 
+## Complete asynchronous direct-local and remote SSH parity
+
+| Provision build | Controller and transport | Host OS and runtime | Async topology | Result |
+| --- | --- | --- | --- | --- |
+| source evidence `506bd3e03f2f91f207b1cbddc45c8173fbb7b697-dirty-3bde0f05c37df4cd1dc3367f1c3d4f64fff7c2560b00b60c3942bd1782ffd7ee`; macOS `arm64` controller binary `sha256:5f6b4a090d49bf810ca0ecdc18f2700dcecbf510a10178894e90e1a9c1828bc2`; Linux `x86_64` direct-local binary `sha256:6fde40576b06e61c2131afc5e137d1254f976063287a0e4f986899a1631be5c7`; Linux executor and schedule applet `sha256:0b62d993842142e894acc52c5b7810cb4f5cb91c958ac51d255c2379d77a9607` | direct-local inside the VM and strict OpenSSH from Darwin `24.6.0` `arm64`; pinned host key `SHA256:3jl37pF+Utxxbic8EUHRQ5qshhP6SdxOX6SnXHjg+Qs`; password authentication disabled | Ubuntu Server 26.04 VM, `x86_64`; systemd `259 (259.5-0ubuntu3.4)`; OpenSSH `10.2p1 Ubuntu-2ubuntu3.6`; Podman `5.7.0+ds2-3build1`; RabbitMQ `4.3.6` at manifest `sha256:34fc91a9de04d612a340507b8e7e19c0ee1ec9839e09dc5fc98f54991633ce91` | one managed Queue, one systemd Worker, one systemd Task, one stable Schedule, schedule ledger `provision.dev/schedule-ledger/v1alpha1` | The direct-local and remote SSH matrices passed from clean VM restores with the same configuration, planner, approval, operation sequence, application artifacts, recovery harnesses, and final accounting. Both transports matched Host OS/version/arch, systemd, executor digest, RabbitMQ manifest, schedule applet digest, message and occurrence behavior, Task Invocation identity accounting, active/retained Generation accounting, owned-resource inventory, and artifact/runtime versions. Remote SSH injected loss around Queue preparation, Worker fence/drain/activation/verification/retention, Schedule handoff/verification, and Task delivery, then proved the stable Schedule resumed after Host reboot. See the [parity evidence](evidence/2026-09-27-remote-ssh-async-parity.md). |
+
+This row qualifies remote-management parity for the complete asynchronous
+single-Host tracer. It does not qualify Queue generation migration,
+exactly-once delivery or processing, autoscaling, other Host OS or dependency
+versions, AWS, ECS, Lambda, realtime servers, databases, caches, store
+transitions, Host data-loss recovery, or RabbitMQ data-loss recovery.
+
 ## Guarantees exercised
 
 - An unverified candidate cannot receive stable traffic.
@@ -118,10 +130,15 @@ or Queue replacement.
 - Worker handoff resume takes a higher fence and re-observes Queue, gates, units, message settlement, durable active authority, and the operation-specific drain, verification, or retention record before deciding satisfied, pending, or uncertain. Completed mutations with lost responses are journaled without replay; a completed rollback remains a known failed candidate outcome rather than being rewritten as success. Lower-fence late results are rejected and retained only as diagnostic evidence.
 - A stable timer invokes the digest-pinned nonresident Schedule runtime, which records the occurrence and stable Task Invocation before starting the exact generation-specific Task instance.
 - The Task's publisher-confirmed message and the Worker's processing and manual acknowledgement evidence join on the same stable message identity.
+- The complete asynchronous tracer has equivalent direct-local and remote-SSH
+  management behavior for the qualified single-Host path: the same Plans and
+  operation handlers survive controller loss around Queue preparation, Worker
+  handoff, Schedule handoff, and Task delivery, and the remote Host continues
+  its stable Schedule after reboot without a resident Provision controller.
 
 ## Limits
 
-- The HTTP rows cover a single native `x86_64` HTTP component on one systemd-managed host, exercised both directly on the host and remotely from an `arm64` macOS controller over SSH. The RabbitMQ rows qualify only the exact rootless Podman/Quadlet packaging and Queue semantics stated above. The scheduled-message row qualifies only its exact initial systemd Worker, Task, and Schedule path. The Worker rows qualify pre-handoff rejection, completed replacement, message-level activation, supported rollback, and controller-interruption recovery only for the stated single-host examples. No row qualifies EC2, ECS, Lambda, databases, key-value stores, realtime services, Schedule replacement, Queue replacement, Host/data-loss recovery, or multi-host asynchronous availability.
+- The HTTP rows cover a single native `x86_64` HTTP component on one systemd-managed host, exercised both directly on the host and remotely from an `arm64` macOS controller over SSH. The RabbitMQ rows qualify only the exact rootless Podman/Quadlet packaging and Queue semantics stated above. The scheduled-message row qualifies only its exact initial systemd Worker, Task, and Schedule path. The Worker rows qualify pre-handoff rejection, completed replacement, message-level activation, supported rollback, and controller-interruption recovery only for the stated single-host examples. The asynchronous parity row qualifies only direct-local and strict-SSH management parity for the exact single-Host Queue, Worker, Task, and Schedule tracer. No row qualifies EC2, ECS, Lambda, databases, key-value stores, realtime services, Queue replacement, Queue migration, Host/data-loss recovery, RabbitMQ data-loss recovery, or multi-host asynchronous availability.
 - The Endpoint guarantee covers ordinary HTTP requests. It does not promise WebSocket or other long-lived stream draining.
 - Caddy configuration reload preserves the prior route on a rejected load. An external Caddy outage can still make the Endpoint unavailable until Caddy is restored.
 - Remote mode adds a management-transport dependency, not a workload-availability dependency. If the controller cannot authenticate the host or cannot obtain enough fresh evidence after a lost connection, the operation remains interrupted or uncertain until an operator restores access and resumes it; stable traffic continues according to the last host state.

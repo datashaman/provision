@@ -296,16 +296,27 @@ func resolvedValuesForOperation(plan planner.Plan, operationID string, available
 		if planned.ID != operationID {
 			continue
 		}
-		if planned.Kind != planner.PrepareQueue {
+		if planned.Kind != planner.PrepareQueue && planned.Kind != planner.PrepareDatabase {
 			return nil, nil
 		}
-		if planned.Input.Async == nil || planned.Input.Async.Queue == nil || planned.Input.Async.Queue.CredentialReference == "" {
-			return nil, errors.New("prepareQueue has no Queue credential Secret Reference")
+		if planned.Kind == planner.PrepareQueue {
+			if planned.Input.Async == nil || planned.Input.Async.Queue == nil || planned.Input.Async.Queue.CredentialReference == "" {
+				return nil, errors.New("prepareQueue has no Queue credential Secret Reference")
+			}
+			reference := planned.Input.Async.Queue.CredentialReference
+			value, ok := available[reference]
+			if !ok || value == "" {
+				return nil, fmt.Errorf("resolved value is required for Queue Secret Reference %s", reference)
+			}
+			return map[string]string{reference: value}, nil
 		}
-		reference := planned.Input.Async.Queue.CredentialReference
+		if planned.Input.Database == nil || planned.Input.Database.CredentialReference == "" {
+			return nil, errors.New("prepareDatabase has no Database credential Secret Reference")
+		}
+		reference := planned.Input.Database.CredentialReference
 		value, ok := available[reference]
 		if !ok || value == "" {
-			return nil, fmt.Errorf("resolved value is required for Queue Secret Reference %s", reference)
+			return nil, fmt.Errorf("resolved value is required for Database Secret Reference %s", reference)
 		}
 		return map[string]string{reference: value}, nil
 	}

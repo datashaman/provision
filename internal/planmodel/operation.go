@@ -38,6 +38,7 @@ const (
 	HandoffSchedule         OperationKind = "handoffSchedule"
 	VerifySchedule          OperationKind = "verifySchedule"
 	RetainWorkerPrevious    OperationKind = "retainWorkerPrevious"
+	PrepareDatabase         OperationKind = "prepareDatabase"
 )
 
 type RecoveryMode string
@@ -58,6 +59,7 @@ const (
 	ReleaseInflight              RecoveryMode = "release-in-flight"
 	RestorePreviousScheduleFence RecoveryMode = "restore-previous-schedule-fence"
 	RetainBothWorkerGenerations  RecoveryMode = "retain-both-worker-generations"
+	RetainDatabase               RecoveryMode = "retain-database"
 )
 
 type Operation struct {

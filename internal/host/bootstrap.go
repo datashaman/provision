@@ -16,7 +16,7 @@ import (
 const ExecutorPath = "/usr/local/libexec/provision-host-executor"
 
 func AllowedOperations() []string {
-	return []string{"inspect", "stageArtifact", "installGeneration", "startCandidate", "verifyCandidate", "switchEndpoint", "verifyActive", "drainPrevious", "retainPrevious", "prepareQueue", "installTaskGeneration", "verifyTaskGeneration", "installWorkerGeneration", "startWorkerCandidate", "verifyWorkerCandidate", "fenceWorkerIntake", "drainWorkerPrevious", "activateWorkerIntake", "verifyWorkerActive", "installScheduleRuntime", "handoffSchedule", "verifySchedule", "retainWorkerPrevious"}
+	return []string{"inspect", "stageArtifact", "installGeneration", "startCandidate", "verifyCandidate", "switchEndpoint", "verifyActive", "drainPrevious", "retainPrevious", "prepareQueue", "installTaskGeneration", "verifyTaskGeneration", "installWorkerGeneration", "startWorkerCandidate", "verifyWorkerCandidate", "fenceWorkerIntake", "drainWorkerPrevious", "activateWorkerIntake", "verifyWorkerActive", "installScheduleRuntime", "handoffSchedule", "verifySchedule", "retainWorkerPrevious", "prepareDatabase"}
 }
 
 var environmentPattern = regexp.MustCompile(`^[a-z][a-z0-9-]{0,19}$`)
@@ -94,21 +94,42 @@ type DatabaseDeploymentStatus struct {
 }
 
 type DatabaseGenerationStatus struct {
-	ID                string `json:"id"`
-	LogicalID         string `json:"logicalId"`
-	Ready             bool   `json:"ready"`
-	PostgreSQLVersion string `json:"postgresqlVersion,omitempty"`
-	ImageManifest     string `json:"imageManifest"`
-	ServiceUnit       string `json:"serviceUnit"`
-	Container         string `json:"container"`
-	Account           string `json:"account"`
-	DataPath          string `json:"dataPath"`
-	QuadletPath       string `json:"quadletPath"`
-	Database          string `json:"database,omitempty"`
-	Connectivity      bool   `json:"connectivity"`
-	DurableRestart    bool   `json:"durableRestart"`
-	Reason            string `json:"reason,omitempty"`
-	RecoveryAction    string `json:"recoveryAction,omitempty"`
+	ID                  string   `json:"id"`
+	LogicalID           string   `json:"logicalId"`
+	Ready               bool     `json:"ready"`
+	PostgreSQLVersion   string   `json:"postgresqlVersion,omitempty"`
+	ImageManifest       string   `json:"imageManifest"`
+	ServiceUnit         string   `json:"serviceUnit"`
+	Container           string   `json:"container"`
+	Account             string   `json:"account"`
+	DataPath            string   `json:"dataPath"`
+	QuadletPath         string   `json:"quadletPath"`
+	Database            string   `json:"database,omitempty"`
+	Connectivity        bool     `json:"connectivity"`
+	DurableRestart      bool     `json:"durableRestart"`
+	Health              string   `json:"health,omitempty"`
+	Reason              string   `json:"reason,omitempty"`
+	RecoveryAction      string   `json:"recoveryAction,omitempty"`
+	SupportedGuarantees []string `json:"supportedGuarantees,omitempty"`
+	OwnedResources      []string `json:"ownedResources,omitempty"`
+}
+
+type DatabaseVerificationChecks struct {
+	ServiceHealth      bool `json:"serviceHealth"`
+	SQLConnectivity    bool `json:"sqlConnectivity"`
+	DatabaseIdentity   bool `json:"databaseIdentity"`
+	GenerationIdentity bool `json:"generationIdentity"`
+	CredentialBoundary bool `json:"credentialBoundary"`
+}
+
+type DatabaseOperationObservation struct {
+	Status          string                     `json:"status"`
+	Database        DatabaseGenerationStatus   `json:"database"`
+	Verified        bool                       `json:"verified"`
+	Checks          DatabaseVerificationChecks `json:"checks"`
+	FailureCategory string                     `json:"failureCategory,omitempty"`
+	Reason          string                     `json:"reason,omitempty"`
+	RecoveryAction  string                     `json:"recoveryAction,omitempty"`
 }
 
 type AsyncStatus struct {

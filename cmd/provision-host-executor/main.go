@@ -239,6 +239,7 @@ func inspect(environment, operator string) host.BootstrapStatus {
 	if data, err := os.ReadFile("/etc/provision/bootstrap/" + environment + ".json"); err != nil || json.Unmarshal(data, &record) != nil || record.SchemaVersion != "provision.dev/bootstrap/v2" || record.Environment != environment || record.Operator != operator || record.Account != account || record.ExecutorDigest != result.ExecutorDigest || record.AuthorityKeyID != result.AuthorityKeyID {
 		result.Findings = append(result.Findings, "bootstrap record differs from installed executor or identities")
 	}
+	result.Database = inspectDatabase(environment, account)
 	result.Async = inspectAsync(environment, account)
 	result.Ready = len(result.Findings) == 0
 	return result

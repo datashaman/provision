@@ -44,10 +44,68 @@ type BootstrapStatus struct {
 	CaddyConfigDurable     bool                  `json:"caddyConfigDurable,omitempty"`
 	ListeningTCPPorts      []int                 `json:"listeningTcpPorts,omitempty"`
 	Deployment             DeploymentStatus      `json:"deployment,omitempty"`
+	Database               *DatabaseStatus       `json:"database,omitempty"`
 	Async                  *AsyncStatus          `json:"async,omitempty"`
 	AllowedOperations      []string              `json:"allowedOperations"`
 	Ready                  bool                  `json:"ready"`
 	Findings               []string              `json:"findings"`
+}
+
+type DatabaseStatus struct {
+	SchemaVersion       string                   `json:"schemaVersion"`
+	ObservationComplete bool                     `json:"observationComplete"`
+	Findings            []string                 `json:"findings"`
+	Capabilities        DatabaseCapabilities     `json:"capabilities"`
+	Deployment          DatabaseDeploymentStatus `json:"deployment"`
+}
+
+type DatabaseCapabilities struct {
+	PodmanVersion                 string `json:"podmanVersion"`
+	Quadlet                       bool   `json:"quadlet"`
+	RootlessEnvironmentAccount    bool   `json:"rootlessEnvironmentAccount"`
+	SystemdCredentials            bool   `json:"systemdCredentials"`
+	SubordinateIDs                bool   `json:"subordinateIds"`
+	LingeringUserManager          bool   `json:"lingeringUserManager"`
+	QuadletDefinitionRootOwned    bool   `json:"quadletDefinitionRootOwned"`
+	GenerationDataPathOwned       bool   `json:"generationDataPathOwned"`
+	EncryptedCredentialObserved   bool   `json:"encryptedCredentialObserved"`
+	PostgreSQLQualificationDigest string `json:"postgresqlQualificationDigest"`
+	PostgreSQLVersion             string `json:"postgresqlVersion"`
+	PostgreSQLImageIndex          string `json:"postgresqlImageIndex"`
+	PostgreSQLImageManifest       string `json:"postgresqlImageManifest"`
+	PostgreSQLImageReference      string `json:"postgresqlImageReference"`
+	PostgreSQLServiceUnit         string `json:"postgresqlServiceUnit"`
+	PostgreSQLContainer           string `json:"postgresqlContainer"`
+	PostgreSQLAccount             string `json:"postgresqlAccount"`
+	PostgreSQLGeneration          string `json:"postgresqlGeneration"`
+	PostgreSQLGenerationDataPath  string `json:"postgresqlGenerationDataPath"`
+	PostgreSQLQuadletPath         string `json:"postgresqlQuadletPath"`
+	PostgreSQLCredentialReference string `json:"postgresqlCredentialReference"`
+	StoreRollbackGuarantee        string `json:"storeRollbackGuarantee"`
+	ForwardCutoverGuarantee       string `json:"forwardCutoverGuarantee"`
+	SupportedTransitionMechanism  string `json:"supportedTransitionMechanism"`
+}
+
+type DatabaseDeploymentStatus struct {
+	Active *DatabaseGenerationStatus `json:"active,omitempty"`
+}
+
+type DatabaseGenerationStatus struct {
+	ID                string `json:"id"`
+	LogicalID         string `json:"logicalId"`
+	Ready             bool   `json:"ready"`
+	PostgreSQLVersion string `json:"postgresqlVersion,omitempty"`
+	ImageManifest     string `json:"imageManifest"`
+	ServiceUnit       string `json:"serviceUnit"`
+	Container         string `json:"container"`
+	Account           string `json:"account"`
+	DataPath          string `json:"dataPath"`
+	QuadletPath       string `json:"quadletPath"`
+	Database          string `json:"database,omitempty"`
+	Connectivity      bool   `json:"connectivity"`
+	DurableRestart    bool   `json:"durableRestart"`
+	Reason            string `json:"reason,omitempty"`
+	RecoveryAction    string `json:"recoveryAction,omitempty"`
 }
 
 type AsyncStatus struct {

@@ -39,6 +39,21 @@ dead-letter delivery, TTL expiry, ordering, and deduplication remain
 unqualified runtime behavior. Alarm, feature, and health fields are observed
 state rather than broader guarantees.
 
+## Managed PostgreSQL Host packaging
+
+| Acceptance client | Host OS | Runtime identity | Service and topology | Result |
+| --- | --- | --- | --- | --- |
+| proof harness `sha256:b1fd8d285ba3ab14a6b906eecc0f6f436f4ed97b46a0fb472d056bf402d051f3`; controller harness `sha256:e578c193fed177289933f7da803df8db046004c03d8e435ef9fe5dfae278ee70`; approval record `sha256:4addc32b3819a23d4fc16a6ce13128b1715baee047eca22d1092fb0168e797fe` | Ubuntu Server 26.04 VM, kernel `7.0.0-34-generic`, `x86_64`; systemd `259 (259.5-0ubuntu3.4)` | Podman `5.7.0+ds2-3build1`; PostgreSQL `17.6`; image `docker.io/library/postgres@sha256:b86568d3e0fe1dfaeff52714f9da36f206a30e4c49131b82bf96982d78627409`; image index `sha256:00bc86618629af00d2937fdc5a5d63db3ff8450acf52f0636ec813c7f4902929` | Rootless Environment account `provision-lab`; user unit `provision-lab-postgresql.service`; container `provision-lab-postgresql`; generation `postgresql-17-6-b86568d3e0fe`; owned data path `/var/lib/provision/environments/lab/services/postgresql/generations/postgresql-17-6-b86568d3e0fe/data`; loopback listener `127.0.0.1:25432` | Exact digest/config, service identity, loopback-only listener, SQL connectivity, non-secret credential reference, owned generation data path, automatic restart after full Host reboot, and durable row survival passed from a clean disposable VM snapshot. The controller also proved the VM restored clean afterward. See the [packaging evidence](evidence/2026-09-28-postgresql-packaging-comparison.md). |
+
+This row qualifies the packaging choice for the first managed Host-local
+Database tracer. It is not a production Database lifecycle claim. It does not
+qualify backups, restores, host-loss recovery, multi-node availability,
+side-by-side store transitions, automatic rollback after candidate writes,
+external PostgreSQL, RDS, or other PostgreSQL/image/Podman/OS versions. The
+credential proof covers systemd encrypted credential delivery scoped to the
+Environment user unit; it does not assert that the VM's backing media is
+encrypted.
+
 ## First scheduled-message Host path
 
 | Provision build | Host OS and runtime | Application generations | Result |
@@ -135,10 +150,15 @@ transitions, Host data-loss recovery, or RabbitMQ data-loss recovery.
   operation handlers survive controller loss around Queue preparation, Worker
   handoff, Schedule handoff, and Task delivery, and the remote Host continues
   its stable Schedule after reboot without a resident Provision controller.
+- The managed PostgreSQL packaging proof starts an exact digest-pinned
+  rootless Quadlet generation, proves SQL connectivity and loopback-only
+  exposure, records a non-secret credential reference, stores data in the
+  generation-owned path, and proves the same database data is present after a
+  full Host reboot.
 
 ## Limits
 
-- The HTTP rows cover a single native `x86_64` HTTP component on one systemd-managed host, exercised both directly on the host and remotely from an `arm64` macOS controller over SSH. The RabbitMQ rows qualify only the exact rootless Podman/Quadlet packaging and Queue semantics stated above. The scheduled-message row qualifies only its exact initial systemd Worker, Task, and Schedule path. The Worker rows qualify pre-handoff rejection, completed replacement, message-level activation, supported rollback, and controller-interruption recovery only for the stated single-host examples. The asynchronous parity row qualifies only direct-local and strict-SSH management parity for the exact single-Host Queue, Worker, Task, and Schedule tracer. No row qualifies EC2, ECS, Lambda, databases, key-value stores, realtime services, Queue replacement, Queue migration, Host/data-loss recovery, RabbitMQ data-loss recovery, or multi-host asynchronous availability.
+- The HTTP rows cover a single native `x86_64` HTTP component on one systemd-managed host, exercised both directly on the host and remotely from an `arm64` macOS controller over SSH. The RabbitMQ rows qualify only the exact rootless Podman/Quadlet packaging and Queue semantics stated above. The PostgreSQL row qualifies only the exact Host-local packaging and restart proof stated above, not Database transitions or production durability. The scheduled-message row qualifies only its exact initial systemd Worker, Task, and Schedule path. The Worker rows qualify pre-handoff rejection, completed replacement, message-level activation, supported rollback, and controller-interruption recovery only for the stated single-host examples. The asynchronous parity row qualifies only direct-local and strict-SSH management parity for the exact single-Host Queue, Worker, Task, and Schedule tracer. No row qualifies EC2, ECS, Lambda, key-value stores, realtime services, Queue replacement, Queue migration, Host/data-loss recovery, RabbitMQ data-loss recovery, PostgreSQL host-loss recovery, or multi-host asynchronous availability.
 - The Endpoint guarantee covers ordinary HTTP requests. It does not promise WebSocket or other long-lived stream draining.
 - Caddy configuration reload preserves the prior route on a rejected load. An external Caddy outage can still make the Endpoint unavailable until Caddy is restored.
 - Remote mode adds a management-transport dependency, not a workload-availability dependency. If the controller cannot authenticate the host or cannot obtain enough fresh evidence after a lost connection, the operation remains interrupted or uncertain until an operator restores access and resumes it; stable traffic continues according to the last host state.

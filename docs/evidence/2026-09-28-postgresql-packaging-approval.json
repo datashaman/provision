@@ -1,0 +1,23 @@
+{
+  "schemaVersion": "provision.dev/postgresql-packaging-approval/v1alpha1",
+  "issue": 68,
+  "decision": "digest-pinned-rootless-oci-quadlet",
+  "environment": "lab",
+  "operator": "marlinf",
+  "product": {
+    "name": "PostgreSQL",
+    "version": "17.6"
+  },
+  "image": "docker.io/library/postgres@sha256:b86568d3e0fe1dfaeff52714f9da36f206a30e4c49131b82bf96982d78627409",
+  "imageIndex": "sha256:00bc86618629af00d2937fdc5a5d63db3ff8450acf52f0636ec813c7f4902929",
+  "imageManifest": "sha256:b86568d3e0fe1dfaeff52714f9da36f206a30e4c49131b82bf96982d78627409",
+  "topology": {
+    "databaseNodes": 1,
+    "hostFailureTolerance": 0,
+    "managedGeneration": "one-physical-store-generation"
+  },
+  "source": {
+    "kind": "github-issue",
+    "context": "https://github.com/datashaman/provision/issues/68"
+  }
+}

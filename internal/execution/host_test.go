@@ -104,6 +104,34 @@ func TestVerifyEndpointResultBindsActiveAndPreviousGenerations(t *testing.T) {
 	}
 }
 
+func TestVerifyCandidateResultRequiresDatabaseBindingEvidence(t *testing.T) {
+	reference := planner.GenerationReference{
+		ID: "provision-example-database-http-v1-bbbbbbbbbbbb", Revision: "provision-example-database-http-v1",
+		ArtifactDigest: "sha256:" + strings.Repeat("b", 64), Account: "provision-lab",
+		ReleaseDirectory: "/var/lib/provision/environments/lab/releases/provision-example-database-http-v1-bbbbbbbbbbbb",
+		DatabaseBindings: []planner.DatabaseBindingInput{databaseBindingInputFixture()},
+	}
+	health := planner.HealthInput{GenerationReference: reference, Unit: "provision-lab-web-bbbbbbbbbbbb.service", LivenessPath: "/live", ReadinessPath: "/ready", CandidateVerifyPath: "/verify", Port: 28082}
+	planned := planner.Operation{ID: "op-05", Kind: planner.VerifyCandidate, Input: planner.OperationInput{Health: &health}}
+	envelope := operation.Envelope{Authorization: authority.Proof{Claim: authority.Claim{PlanID: "sha256:" + strings.Repeat("c", 64), OperationID: "op-05", AttemptID: "attempt-11111111111111111111111111111111", FencingToken: 5}}, Operation: planned}
+	result := operation.Result{SchemaVersion: operation.ResultSchemaVersion, PlanID: envelope.Authorization.Claim.PlanID, OperationID: "op-05", AttemptID: envelope.Authorization.Claim.AttemptID, FencingToken: 5, Outcome: operation.OutcomeSucceeded}
+	observed := host.HealthObservation{
+		Status: host.CandidateHealthy, GenerationID: reference.ID, Revision: reference.Revision, ArtifactDigest: reference.ArtifactDigest,
+		ReleaseDirectory: reference.ReleaseDirectory, Unit: health.Unit, Port: health.Port, CandidateActive: true, SwitchEligible: true,
+		Checks: databaseBoundHealthyChecks(),
+	}
+	result.Observation = mustJSON(t, observed)
+	if err := verifyHostResult(envelope, result); err != nil {
+		t.Fatalf("Database-bound candidate health evidence rejected: %v", err)
+	}
+
+	observed.Checks[2].DatabaseBinding = nil
+	result.Observation = mustJSON(t, observed)
+	if err := verifyHostResult(envelope, result); err == nil || !strings.Contains(err.Error(), "Database binding evidence") {
+		t.Fatalf("candidate health without Database binding evidence accepted: %v", err)
+	}
+}
+
 func TestVerifyActiveResultDistinguishesHealthyRollbackAndUncertain(t *testing.T) {
 	reference := planner.GenerationReference{
 		ID: "provision-example-http-v2-bbbbbbbbbbbb", Revision: "provision-example-http-v2",
@@ -170,6 +198,39 @@ func TestVerifyActiveResultDistinguishesHealthyRollbackAndUncertain(t *testing.T
 	}
 }
 
+func TestVerifyActiveResultRequiresDatabaseBindingEvidence(t *testing.T) {
+	reference := planner.GenerationReference{
+		ID: "provision-example-database-http-v1-bbbbbbbbbbbb", Revision: "provision-example-database-http-v1",
+		ArtifactDigest: "sha256:" + strings.Repeat("b", 64), Account: "provision-lab",
+		ReleaseDirectory: "/var/lib/provision/environments/lab/releases/provision-example-database-http-v1-bbbbbbbbbbbb",
+		DatabaseBindings: []planner.DatabaseBindingInput{databaseBindingInputFixture()},
+	}
+	endpoint := planner.EndpointInput{
+		GenerationReference: reference, Unit: "provision-lab-web-bbbbbbbbbbbb.service",
+		RouteID: "provision-lab-web", ListenPort: 18080, Upstream: "127.0.0.1:28082", UpstreamPort: 28082, DrainPolicy: "caddy-graceful-config-reload",
+	}
+	health := planner.HealthInput{GenerationReference: reference, Unit: endpoint.Unit, LivenessPath: "/live", ReadinessPath: "/ready", CandidateVerifyPath: "/verify", Port: endpoint.ListenPort}
+	candidate := host.GenerationStatus{
+		ID: endpoint.ID, Revision: endpoint.Revision, ArtifactDigest: endpoint.ArtifactDigest,
+		SystemdUnit: endpoint.Unit, ReleaseDirectory: endpoint.ReleaseDirectory, Port: endpoint.UpstreamPort,
+		RouteID: endpoint.RouteID, UnitActive: true, UnitMatches: true, RouteObserved: true, RouteMatches: true, RouteUpstream: endpoint.Upstream,
+	}
+	planned := planner.Operation{ID: "op-07", Kind: planner.VerifyActive, Input: planner.OperationInput{Health: &health, Endpoint: &endpoint}}
+	envelope := operation.Envelope{Authorization: authority.Proof{Claim: authority.Claim{PlanID: "sha256:" + strings.Repeat("c", 64), OperationID: "op-07", AttemptID: "attempt-11111111111111111111111111111111", FencingToken: 7}}, Operation: planned}
+	result := operation.Result{SchemaVersion: operation.ResultSchemaVersion, PlanID: envelope.Authorization.Claim.PlanID, OperationID: "op-07", AttemptID: envelope.Authorization.Claim.AttemptID, FencingToken: 7, Outcome: operation.OutcomeSucceeded}
+	observed := host.ActiveVerificationObservation{Status: host.ActiveVerificationHealthy, Candidate: candidate, ActiveChecks: databaseBoundHealthyChecks(), ObservedUpstream: endpoint.Upstream}
+	result.Observation = mustJSON(t, observed)
+	if err := verifyHostResult(envelope, result); err != nil {
+		t.Fatalf("Database-bound active health evidence rejected: %v", err)
+	}
+
+	observed.ActiveChecks[2].DatabaseBinding = nil
+	result.Observation = mustJSON(t, observed)
+	if err := verifyHostResult(envelope, result); err == nil || !strings.Contains(err.Error(), "active verification success") {
+		t.Fatalf("active health without Database binding evidence accepted: %v", err)
+	}
+}
+
 func TestVerifyDrainResultBindsBoundPolicyAndExactGenerations(t *testing.T) {
 	reference := planner.GenerationReference{
 		ID: "provision-example-http-v2-bbbbbbbbbbbb", Revision: "provision-example-http-v2",
@@ -227,6 +288,32 @@ func TestVerifyDrainResultBindsBoundPolicyAndExactGenerations(t *testing.T) {
 	result.Observation = mustJSON(t, observed)
 	if err := verifyHostResult(envelope, result); err != nil {
 		t.Fatalf("valid uncertain HTTP drain result rejected: %v", err)
+	}
+}
+
+func databaseBindingInputFixture() planner.DatabaseBindingInput {
+	namespace := "provision-lab-data/provision-example-database-http-v1"
+	return planner.DatabaseBindingInput{
+		Component: "data", LogicalID: "provision-lab-data", GenerationID: "postgresql-17-6-b86568d3e0fe",
+		Reference: "secret://lab/postgresql-url", Protocol: "postgresql", Host: "127.0.0.1", Port: 25432, Database: "app",
+		EnvironmentVariable: "PROVISION_DATABASE_URL_FILE", ApplicationHealth: "http-candidate", BindingState: "database-bound",
+		DeterministicRecordNamespace: namespace,
+		DeterministicRecordIDs:       []string{namespace + "/record-0001"},
+	}
+}
+
+func databaseBoundHealthyChecks() []host.HealthCheckObservation {
+	binding := databaseBindingInputFixture()
+	return []host.HealthCheckObservation{
+		{Name: "liveness", Path: "/live", StatusCode: 204, Healthy: true},
+		{Name: "readiness", Path: "/ready", StatusCode: 204, Healthy: true},
+		{Name: "candidateVerification", Path: "/verify", StatusCode: 200, Healthy: true, DatabaseBinding: &host.DatabaseBindingObservation{
+			LogicalID: binding.LogicalID, GenerationID: binding.GenerationID, Status: "verified",
+			Records: []host.DeterministicDatabaseRecordStatus{{
+				ID:        binding.DeterministicRecordNamespace + "/record-0001",
+				Namespace: binding.DeterministicRecordNamespace,
+			}},
+		}},
 	}
 }
 

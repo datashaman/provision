@@ -1,0 +1,26 @@
+schemaVersion: provision.dev/v1alpha1
+kind: Environment
+name: lab
+application: provision-example-database-http
+rollbackWindow: 30m0s
+targets:
+  base:
+    kind: host
+    address: base.local
+    user: marlinf
+implementations:
+  data:
+    kind: postgresql-quadlet
+    target: base
+    lifecycle: managed
+    credential: secret://lab/postgresql-url
+    rollout: required
+  web:
+    kind: systemd
+    target: base
+    rollout: required
+    endpoint:
+      port: 18080
+      drain:
+        mode: bounded-http
+        maxDuration: 2s

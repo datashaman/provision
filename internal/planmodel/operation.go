@@ -244,11 +244,19 @@ type DatabaseOperationInput struct {
 }
 
 type DatabaseBindingInput struct {
-	Reference string `json:"reference"`
-	Protocol  string `json:"protocol"`
-	Host      string `json:"host"`
-	Port      int    `json:"port"`
-	Database  string `json:"database"`
+	Component                    string   `json:"component,omitempty"`
+	LogicalID                    string   `json:"logicalId,omitempty"`
+	GenerationID                 string   `json:"generationId,omitempty"`
+	Reference                    string   `json:"reference"`
+	Protocol                     string   `json:"protocol"`
+	Host                         string   `json:"host"`
+	Port                         int      `json:"port"`
+	Database                     string   `json:"database"`
+	EnvironmentVariable          string   `json:"environmentVariable,omitempty"`
+	ApplicationHealth            string   `json:"applicationHealth,omitempty"`
+	BindingState                 string   `json:"bindingState,omitempty"`
+	DeterministicRecordNamespace string   `json:"deterministicRecordNamespace,omitempty"`
+	DeterministicRecordIDs       []string `json:"deterministicRecordIds,omitempty"`
 }
 
 type DatabaseStoreConsequences struct {
@@ -270,11 +278,12 @@ type ArtifactInput struct {
 }
 
 type GenerationReference struct {
-	ID               string `json:"id"`
-	Revision         string `json:"revision"`
-	ArtifactDigest   string `json:"artifactDigest"`
-	Account          string `json:"account"`
-	ReleaseDirectory string `json:"releaseDirectory"`
+	ID               string                 `json:"id"`
+	Revision         string                 `json:"revision"`
+	ArtifactDigest   string                 `json:"artifactDigest"`
+	Account          string                 `json:"account"`
+	ReleaseDirectory string                 `json:"releaseDirectory"`
+	DatabaseBindings []DatabaseBindingInput `json:"databaseBindings,omitempty"`
 }
 
 type GenerationInput struct {

@@ -171,6 +171,8 @@ func inspect(environment, operator string) host.BootstrapStatus {
 		active.UnitActive = command("systemctl", "is-active", active.SystemdUnit) == "active"
 		workingDirectory := command("systemctl", "show", active.SystemdUnit, "--property=WorkingDirectory", "--value")
 		unitEnvironment := strings.Fields(command("systemctl", "show", active.SystemdUnit, "--property=Environment", "--value"))
+		unitCredentials := strings.Fields(command("systemctl", "show", active.SystemdUnit, "--property=LoadCredentialEncrypted", "--value"))
+		active.DatabaseBinding = observedHTTPDatabaseBinding(environment, unitEnvironment, unitCredentials)
 		active.UnitMatches = workingDirectory == active.ReleaseDirectory && contains(unitEnvironment, fmt.Sprintf("PROVISION_HTTP_LISTEN=127.0.0.1:%d", active.Port)) && contains(unitEnvironment, "PROVISION_REVISION="+active.Revision)
 		route, routeOK := caddyAdminRead("/id/" + url.PathEscape(active.RouteID))
 		active.RouteObserved = routeOK
@@ -193,6 +195,8 @@ func inspect(environment, operator string) host.BootstrapStatus {
 			previous.UnitActive = command("systemctl", "is-active", previous.SystemdUnit) == "active"
 			previousDirectory := command("systemctl", "show", previous.SystemdUnit, "--property=WorkingDirectory", "--value")
 			previousEnvironment := strings.Fields(command("systemctl", "show", previous.SystemdUnit, "--property=Environment", "--value"))
+			previousCredentials := strings.Fields(command("systemctl", "show", previous.SystemdUnit, "--property=LoadCredentialEncrypted", "--value"))
+			previous.DatabaseBinding = observedHTTPDatabaseBinding(environment, previousEnvironment, previousCredentials)
 			previous.UnitMatches = previousDirectory == previous.ReleaseDirectory && contains(previousEnvironment, fmt.Sprintf("PROVISION_HTTP_LISTEN=127.0.0.1:%d", previous.Port)) && contains(previousEnvironment, "PROVISION_REVISION="+previous.Revision)
 			if !previous.UnitMatches || !previous.UnitActive && activeRecord.PreviousDrainedAt == nil {
 				result.Findings = append(result.Findings, "retained previous Generation is not runnable")
@@ -449,6 +453,37 @@ func contains(values []string, wanted string) bool {
 		}
 	}
 	return false
+}
+
+func observedHTTPDatabaseBinding(environment string, unitEnvironment, unitCredentials []string) *host.HTTPDatabaseBindingStatus {
+	values := map[string]string{}
+	for _, entry := range unitEnvironment {
+		key, value, ok := strings.Cut(entry, "=")
+		if ok {
+			values[key] = value
+		}
+	}
+	if values["PROVISION_DATABASE_LOGICAL_ID"] == "" && values["PROVISION_DATABASE_GENERATION"] == "" && values["PROVISION_DATABASE_URL_FILE"] == "" {
+		return nil
+	}
+	status := &host.HTTPDatabaseBindingStatus{
+		Component:           values["PROVISION_DATABASE_COMPONENT"],
+		LogicalID:           values["PROVISION_DATABASE_LOGICAL_ID"],
+		GenerationID:        values["PROVISION_DATABASE_GENERATION"],
+		Database:            values["PROVISION_DATABASE_NAME"],
+		EnvironmentVariable: "PROVISION_DATABASE_URL_FILE",
+		BindingState:        "declared",
+	}
+	if status.Component == "" || status.LogicalID == "" || status.GenerationID == "" || status.Database == "" || values["PROVISION_DATABASE_URL_FILE"] == "" {
+		status.BindingState = "incomplete"
+		return status
+	}
+	credentialName := strings.TrimPrefix(values["PROVISION_DATABASE_URL_FILE"], "%d/")
+	credentialPath := filepath.Join("/var/lib/provision/runtime", environment, ".config", "credstore.encrypted", credentialName)
+	if deploymentIdentifier.MatchString(credentialName) && contains(unitCredentials, credentialName+":"+credentialPath) && commandSucceeded("test", "-s", credentialPath) {
+		status.BindingState = "database-bound"
+	}
+	return status
 }
 
 func readActiveGeneration(environment string) (*host.ActiveGenerationRecord, error) {

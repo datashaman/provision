@@ -121,7 +121,7 @@ func validateActiveVerificationInput(health planner.HealthInput, endpoint planne
 	if err := validateEndpointInput(endpoint, previous, record, paths); err != nil {
 		return err
 	}
-	if health.GenerationReference != endpoint.GenerationReference || health.Unit != endpoint.Unit || health.Port != endpoint.ListenPort {
+	if !generationReferenceEqual(health.GenerationReference, endpoint.GenerationReference) || health.Unit != endpoint.Unit || health.Port != endpoint.ListenPort {
 		return errors.New("post-switch Health Contract does not identify the planned stable Endpoint")
 	}
 	for _, path := range []string{health.LivenessPath, health.ReadinessPath, health.CandidateVerifyPath} {
@@ -930,11 +930,64 @@ func successfulDependencyAuthorizations(paths executionPaths, claim authority.Cl
 }
 
 func endpointInputMatches(left, right *planner.EndpointInput) bool {
-	return left != nil && right != nil && *left == *right
+	return left != nil && right != nil &&
+		generationReferenceEqual(left.GenerationReference, right.GenerationReference) &&
+		left.Unit == right.Unit &&
+		left.RouteID == right.RouteID &&
+		left.ListenPort == right.ListenPort &&
+		left.Upstream == right.Upstream &&
+		left.UpstreamPort == right.UpstreamPort &&
+		left.DrainPolicy == right.DrainPolicy
 }
 
 func healthMatchesEndpoint(health planner.HealthInput, endpoint planner.EndpointInput) bool {
-	return health.GenerationReference == endpoint.GenerationReference && health.Unit == endpoint.Unit && health.Port == endpoint.UpstreamPort
+	return generationReferenceEqual(health.GenerationReference, endpoint.GenerationReference) && health.Unit == endpoint.Unit && health.Port == endpoint.UpstreamPort
+}
+
+func generationReferenceEqual(left, right planner.GenerationReference) bool {
+	return left.ID == right.ID &&
+		left.Revision == right.Revision &&
+		left.ArtifactDigest == right.ArtifactDigest &&
+		left.Account == right.Account &&
+		left.ReleaseDirectory == right.ReleaseDirectory &&
+		databaseBindingsEqual(left.DatabaseBindings, right.DatabaseBindings)
+}
+
+func databaseBindingsEqual(left, right []planner.DatabaseBindingInput) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for index := range left {
+		l, r := left[index], right[index]
+		if l.Component != r.Component ||
+			l.LogicalID != r.LogicalID ||
+			l.GenerationID != r.GenerationID ||
+			l.Reference != r.Reference ||
+			l.Protocol != r.Protocol ||
+			l.Host != r.Host ||
+			l.Port != r.Port ||
+			l.Database != r.Database ||
+			l.EnvironmentVariable != r.EnvironmentVariable ||
+			l.ApplicationHealth != r.ApplicationHealth ||
+			l.BindingState != r.BindingState ||
+			l.DeterministicRecordNamespace != r.DeterministicRecordNamespace ||
+			!stringSlicesEqual(l.DeterministicRecordIDs, r.DeterministicRecordIDs) {
+			return false
+		}
+	}
+	return true
+}
+
+func stringSlicesEqual(left, right []string) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for index := range left {
+		if left[index] != right[index] {
+			return false
+		}
+	}
+	return true
 }
 
 func activeMatchesPlannedPrevious(ctx context.Context, paths executionPaths, record bootstrapRecord, current *host.ActiveGenerationRecord, planned *host.GenerationStatus, routeID string) error {

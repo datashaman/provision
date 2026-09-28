@@ -50,11 +50,25 @@ type SystemdObservation struct {
 }
 
 type HealthCheckObservation struct {
-	Name       string `json:"name"`
-	Path       string `json:"path"`
-	StatusCode int    `json:"statusCode,omitempty"`
-	Healthy    bool   `json:"healthy"`
-	Reason     string `json:"reason,omitempty"`
+	Name            string                      `json:"name"`
+	Path            string                      `json:"path"`
+	StatusCode      int                         `json:"statusCode,omitempty"`
+	Healthy         bool                        `json:"healthy"`
+	DatabaseBinding *DatabaseBindingObservation `json:"databaseBinding,omitempty"`
+	Reason          string                      `json:"reason,omitempty"`
+}
+
+type DatabaseBindingObservation struct {
+	LogicalID    string                              `json:"logicalId"`
+	GenerationID string                              `json:"generationId"`
+	Status       string                              `json:"status"`
+	Records      []DeterministicDatabaseRecordStatus `json:"records,omitempty"`
+	Reason       string                              `json:"reason,omitempty"`
+}
+
+type DeterministicDatabaseRecordStatus struct {
+	ID        string `json:"id"`
+	Namespace string `json:"namespace"`
 }
 
 type HealthObservation struct {

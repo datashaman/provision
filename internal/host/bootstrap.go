@@ -81,6 +81,8 @@ type DatabaseCapabilities struct {
 	PostgreSQLGenerationDataPath  string `json:"postgresqlGenerationDataPath"`
 	PostgreSQLQuadletPath         string `json:"postgresqlQuadletPath"`
 	PostgreSQLCredentialReference string `json:"postgresqlCredentialReference"`
+	PostgreSQLListenAddress       string `json:"postgresqlListenAddress"`
+	PostgreSQLPort                int    `json:"postgresqlPort"`
 	StoreRollbackGuarantee        string `json:"storeRollbackGuarantee"`
 	ForwardCutoverGuarantee       string `json:"forwardCutoverGuarantee"`
 	SupportedTransitionMechanism  string `json:"supportedTransitionMechanism"`
@@ -442,18 +444,28 @@ type DeploymentStatus struct {
 }
 
 type GenerationStatus struct {
-	ID               string `json:"id"`
-	Revision         string `json:"revision"`
-	ArtifactDigest   string `json:"artifactDigest"`
-	SystemdUnit      string `json:"systemdUnit"`
-	ReleaseDirectory string `json:"releaseDirectory"`
-	Port             int    `json:"port"`
-	RouteID          string `json:"routeId"`
-	UnitActive       bool   `json:"unitActive"`
-	UnitMatches      bool   `json:"unitMatches"`
-	RouteObserved    bool   `json:"routeObserved"`
-	RouteUpstream    string `json:"routeUpstream,omitempty"`
-	RouteMatches     bool   `json:"routeMatches"`
+	ID               string                     `json:"id"`
+	Revision         string                     `json:"revision"`
+	ArtifactDigest   string                     `json:"artifactDigest"`
+	SystemdUnit      string                     `json:"systemdUnit"`
+	ReleaseDirectory string                     `json:"releaseDirectory"`
+	Port             int                        `json:"port"`
+	RouteID          string                     `json:"routeId"`
+	DatabaseBinding  *HTTPDatabaseBindingStatus `json:"databaseBinding,omitempty"`
+	UnitActive       bool                       `json:"unitActive"`
+	UnitMatches      bool                       `json:"unitMatches"`
+	RouteObserved    bool                       `json:"routeObserved"`
+	RouteUpstream    string                     `json:"routeUpstream,omitempty"`
+	RouteMatches     bool                       `json:"routeMatches"`
+}
+
+type HTTPDatabaseBindingStatus struct {
+	Component           string `json:"component"`
+	LogicalID           string `json:"logicalId"`
+	GenerationID        string `json:"generationId"`
+	Database            string `json:"database"`
+	EnvironmentVariable string `json:"environmentVariable"`
+	BindingState        string `json:"bindingState"`
 }
 
 type RollbackWindowRecord struct {

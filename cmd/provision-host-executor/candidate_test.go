@@ -175,6 +175,159 @@ func TestAuthorizedCandidateLifecyclePreservesActiveAndCleansFailedCandidate(t *
 	}
 }
 
+func TestDatabaseBoundCandidateUnitUsesCredentialFileWithoutSecretValue(t *testing.T) {
+	_, _, _, _, generation, systemd := authorizedCandidateFixture(t)
+	binding := databaseBindingFixture(generation.Revision)
+	generation.DatabaseBindings = []planner.DatabaseBindingInput{binding}
+	systemd.DatabaseBindings = []planner.DatabaseBindingInput{binding}
+	unit := systemdCandidateUnit(systemd, "provision-example-http")
+	for _, want := range []string{
+		"LoadCredentialEncrypted=postgresql-url:/var/lib/provision/runtime/lab/.config/credstore.encrypted/postgresql-url",
+		"Environment=PROVISION_DATABASE_COMPONENT=data",
+		"Environment=PROVISION_DATABASE_LOGICAL_ID=provision-lab-data",
+		"Environment=PROVISION_DATABASE_GENERATION=postgresql-17-6-b86568d3e0fe",
+		"Environment=PROVISION_DATABASE_URL_FILE=%d/postgresql-url",
+	} {
+		if !strings.Contains(unit, want) {
+			t.Fatalf("database-bound unit omitted %s:\n%s", want, unit)
+		}
+	}
+	for _, forbidden := range []string{"postgresql://", "LongRandomPassword", "PGPASSWORD"} {
+		if strings.Contains(unit, forbidden) {
+			t.Fatalf("database-bound unit exposed a resolved credential %q:\n%s", forbidden, unit)
+		}
+	}
+}
+
+func TestDatabaseBoundCandidateRejectsBindingThatDiffersFromPreparedDatabase(t *testing.T) {
+	paths, record, _, _, generation, _ := authorizedCandidateFixture(t)
+	binding := databaseBindingFixture(generation.Revision)
+	writePreparedDatabaseGenerationFixture(t, paths, record, binding)
+	if err := validateGenerationReference(planner.GenerationReference{
+		ID:               generation.ID,
+		Revision:         generation.Revision,
+		ArtifactDigest:   generation.ArtifactDigest,
+		Account:          generation.Account,
+		ReleaseDirectory: generation.ReleaseDirectory,
+		DatabaseBindings: []planner.DatabaseBindingInput{binding},
+	}, record, paths); err != nil {
+		t.Fatalf("valid prepared Database binding rejected: %v", err)
+	}
+
+	tampered := binding
+	tampered.Reference = "secret://lab/other"
+	if err := validateGenerationReference(planner.GenerationReference{
+		ID:               generation.ID,
+		Revision:         generation.Revision,
+		ArtifactDigest:   generation.ArtifactDigest,
+		Account:          generation.Account,
+		ReleaseDirectory: generation.ReleaseDirectory,
+		DatabaseBindings: []planner.DatabaseBindingInput{tampered},
+	}, record, paths); err == nil || !strings.Contains(err.Error(), "verified prepared Database generation") {
+		t.Fatalf("tampered Database binding accepted: %v", err)
+	}
+
+	tampered = binding
+	tampered.Host = "example.invalid"
+	if err := validateGenerationReference(planner.GenerationReference{
+		ID:               generation.ID,
+		Revision:         generation.Revision,
+		ArtifactDigest:   generation.ArtifactDigest,
+		Account:          generation.Account,
+		ReleaseDirectory: generation.ReleaseDirectory,
+		DatabaseBindings: []planner.DatabaseBindingInput{tampered},
+	}, record, paths); err == nil || !strings.Contains(err.Error(), "verified prepared Database generation") {
+		t.Fatalf("tampered Database listener accepted: %v", err)
+	}
+}
+
+func TestDatabaseBoundCandidateVerificationRequiresDeterministicRecordEvidence(t *testing.T) {
+	_, _, _, _, generation, systemd := authorizedCandidateFixture(t)
+	binding := databaseBindingFixture(generation.Revision)
+	health := planner.HealthInput{
+		GenerationReference: planner.GenerationReference{
+			ID: generation.ID, Revision: generation.Revision, ArtifactDigest: generation.ArtifactDigest,
+			Account: generation.Account, ReleaseDirectory: generation.ReleaseDirectory, DatabaseBindings: []planner.DatabaseBindingInput{binding},
+		},
+		Unit: systemd.Unit, LivenessPath: "/live", ReadinessPath: "/ready", CandidateVerifyPath: "/verify", Port: systemd.Port,
+	}
+	listener, err := net.Listen("tcp4", fmt.Sprintf("127.0.0.1:%d", systemd.Port))
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := httptest.NewUnstartedServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		switch request.URL.Path {
+		case "/live", "/ready":
+			response.WriteHeader(http.StatusNoContent)
+		case "/verify":
+			_ = json.NewEncoder(response).Encode(map[string]any{
+				"revision": generation.Revision,
+				"databaseBinding": map[string]any{
+					"logicalId":    binding.LogicalID,
+					"generationId": binding.GenerationID,
+					"status":       "verified",
+					"records": []map[string]string{{
+						"id":        binding.DeterministicRecordNamespace + "/record-0001",
+						"namespace": binding.DeterministicRecordNamespace,
+					}},
+				},
+			})
+		default:
+			http.NotFound(response, request)
+		}
+	}))
+	server.Listener = listener
+	server.Start()
+	defer server.Close()
+
+	checks, reason := checkHTTPHealth(context.Background(), health, "private candidate endpoint is unavailable")
+	if reason != "" {
+		t.Fatalf("database-bound candidate health failed: %s %+v", reason, checks)
+	}
+	candidate := checks[len(checks)-1]
+	if candidate.DatabaseBinding == nil || candidate.DatabaseBinding.Status != "verified" || candidate.DatabaseBinding.LogicalID != binding.LogicalID || len(candidate.DatabaseBinding.Records) != 1 {
+		t.Fatalf("candidate verification omitted deterministic Database evidence: %+v", candidate)
+	}
+
+	server.Config.Handler = http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		switch request.URL.Path {
+		case "/live", "/ready":
+			response.WriteHeader(http.StatusNoContent)
+		case "/verify":
+			_ = json.NewEncoder(response).Encode(map[string]any{
+				"revision": generation.Revision,
+				"databaseBinding": map[string]any{
+					"logicalId":    binding.LogicalID,
+					"generationId": binding.GenerationID,
+					"status":       "verified",
+					"records": []map[string]string{{
+						"id":        binding.DeterministicRecordNamespace + "/random",
+						"namespace": binding.DeterministicRecordNamespace,
+					}},
+				},
+			})
+		default:
+			http.NotFound(response, request)
+		}
+	})
+	checks, reason = checkHTTPHealth(context.Background(), health, "private candidate endpoint is unavailable")
+	if reason == "" || !strings.Contains(reason, "candidateVerification check failed") || checks[len(checks)-1].DatabaseBinding == nil || checks[len(checks)-1].DatabaseBinding.Status != "failed" {
+		t.Fatalf("wrong deterministic Database record identity was accepted: reason=%q checks=%+v", reason, checks)
+	}
+
+	server.Config.Handler = http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		if request.URL.Path == "/verify" {
+			_ = json.NewEncoder(response).Encode(map[string]string{"revision": generation.Revision})
+			return
+		}
+		response.WriteHeader(http.StatusNoContent)
+	})
+	checks, reason = checkHTTPHealth(context.Background(), health, "private candidate endpoint is unavailable")
+	if reason == "" || !strings.Contains(reason, "candidateVerification check failed") || checks[len(checks)-1].DatabaseBinding == nil || checks[len(checks)-1].DatabaseBinding.Status != "missing" {
+		t.Fatalf("missing Database evidence was accepted: reason=%q checks=%+v", reason, checks)
+	}
+}
+
 func TestAuthorizedCandidateOperationRejectsPlanTampering(t *testing.T) {
 	paths, record, signer, publicKey, generation, _ := authorizedCandidateFixture(t)
 	planned := planner.Operation{ID: "op-02", Kind: planner.InstallGeneration, DependsOn: []string{"op-01"}, Input: planner.OperationInput{Generation: &generation}}
@@ -189,6 +342,43 @@ func TestAuthorizedCandidateOperationRejectsPlanTampering(t *testing.T) {
 	tampered.Operation.Input.Generation.ReleaseDirectory = filepath.Join(paths.environmentHome, "elsewhere", generation.ID)
 	if _, err := executeAuthorized(context.Background(), tampered, record, publicKey, paths, now); err == nil || !strings.Contains(err.Error(), "digest does not match") {
 		t.Fatalf("tampered candidate operation accepted: %v", err)
+	}
+}
+
+func databaseBindingFixture(revision string) planner.DatabaseBindingInput {
+	namespace := "provision-lab-data/" + revision
+	return planner.DatabaseBindingInput{
+		Component: "data", LogicalID: "provision-lab-data", GenerationID: "postgresql-17-6-b86568d3e0fe",
+		Reference: "secret://lab/postgresql-url", Protocol: "postgresql", Host: "127.0.0.1", Port: 25432, Database: "app",
+		EnvironmentVariable: "PROVISION_DATABASE_URL_FILE", ApplicationHealth: "http-candidate", BindingState: "database-bound",
+		DeterministicRecordNamespace: namespace,
+		DeterministicRecordIDs:       []string{namespace + "/record-0001"},
+	}
+}
+
+func writePreparedDatabaseGenerationFixture(t *testing.T, paths executionPaths, record bootstrapRecord, binding planner.DatabaseBindingInput) {
+	t.Helper()
+	generationRoot := filepath.Join(paths.environmentHome, "services", "postgresql", "generations", binding.GenerationID)
+	if err := os.MkdirAll(generationRoot, 0755); err != nil {
+		t.Fatal(err)
+	}
+	data, err := json.Marshal(postgresqlPackagingRecord{
+		SchemaVersion:       postgresqlGenerationSchema,
+		LogicalID:           binding.LogicalID,
+		GenerationID:        binding.GenerationID,
+		Account:             record.Account,
+		Database:            binding.Database,
+		CredentialReference: binding.Reference,
+		ListenAddress:       binding.Host,
+		Port:                binding.Port,
+		Connectivity:        true,
+		Verified:            true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(generationRoot, "generation.json"), data, 0444); err != nil {
+		t.Fatal(err)
 	}
 }
 

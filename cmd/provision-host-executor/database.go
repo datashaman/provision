@@ -44,6 +44,8 @@ type postgresqlPackagingRecord struct {
 	QuadletPath         string `json:"quadletPath"`
 	Database            string `json:"database"`
 	CredentialReference string `json:"credentialReference"`
+	ListenAddress       string `json:"listenAddress"`
+	Port                int    `json:"port"`
 	Connectivity        bool   `json:"connectivity"`
 	DurableRestart      bool   `json:"durableRestart"`
 	Verified            bool   `json:"verified"`
@@ -83,6 +85,8 @@ func inspectDatabase(environment, account string) *host.DatabaseStatus {
 		PostgreSQLGenerationDataPath:  dataPath,
 		PostgreSQLQuadletPath:         quadletPath,
 		PostgreSQLCredentialReference: "secret://" + environment + "/postgresql-url",
+		PostgreSQLListenAddress:       "127.0.0.1",
+		PostgreSQLPort:                25432,
 		StoreRollbackGuarantee:        "not-qualified-by-packaging-proof",
 		ForwardCutoverGuarantee:       "not-qualified-by-packaging-proof",
 		SupportedTransitionMechanism:  "none-qualified-by-packaging-proof",
@@ -395,6 +399,7 @@ func applyDatabaseOperation(ctx context.Context, planned planner.Operation, clai
 		PostgreSQLVersion: input.PostgreSQLVersion, ImageIndex: input.ImageIndex, ImageManifest: input.ImageManifest,
 		ImageReference: input.ImageReference, ServiceUnit: input.ServiceUnit, Container: input.Container, Account: input.Account,
 		DataPath: input.DataPath, QuadletPath: input.QuadletPath, Database: input.DatabaseName, CredentialReference: input.CredentialReference,
+		ListenAddress: input.ListenAddress, Port: input.Port,
 		Connectivity: true, DurableRestart: false, Verified: true, PlanID: claim.PlanID, OperationDigest: operationDigest,
 	}
 	if err := writeJSONAtomic(recordPath, packaging, 0444); err != nil {
@@ -573,7 +578,7 @@ func databaseFailureCategory(reason string) string {
 }
 
 func databaseRecordMatchesInput(record postgresqlPackagingRecord, input planner.DatabaseOperationInput) bool {
-	return record.LogicalID == input.LogicalID && record.GenerationID == input.GenerationID && record.PostgreSQLVersion == input.PostgreSQLVersion && record.ImageIndex == input.ImageIndex && record.ImageManifest == input.ImageManifest && record.ImageReference == input.ImageReference && record.ServiceUnit == input.ServiceUnit && record.Container == input.Container && record.Account == input.Account && record.DataPath == input.DataPath && record.QuadletPath == input.QuadletPath && record.Database == input.DatabaseName && record.CredentialReference == input.CredentialReference
+	return record.LogicalID == input.LogicalID && record.GenerationID == input.GenerationID && record.PostgreSQLVersion == input.PostgreSQLVersion && record.ImageIndex == input.ImageIndex && record.ImageManifest == input.ImageManifest && record.ImageReference == input.ImageReference && record.ServiceUnit == input.ServiceUnit && record.Container == input.Container && record.Account == input.Account && record.DataPath == input.DataPath && record.QuadletPath == input.QuadletPath && record.Database == input.DatabaseName && record.CredentialReference == input.CredentialReference && record.ListenAddress == input.ListenAddress && record.Port == input.Port
 }
 
 func databaseOperationIdentity(input planner.DatabaseOperationInput) host.DatabaseOperationObservation {

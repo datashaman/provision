@@ -274,6 +274,17 @@ func (c Compiled) IsDatabaseOnly() bool {
 	return false
 }
 
+func (c Compiled) IsDatabaseBoundHTTP() bool {
+	if len(c.Application.Components) != 2 {
+		return false
+	}
+	roles := map[string]bool{}
+	for _, component := range c.Application.Components {
+		roles[component.Role] = true
+	}
+	return roles["database"] && roles["http"]
+}
+
 func (c Compiled) IsQueueOnly() bool {
 	if len(c.Application.Components) != 1 {
 		return false
@@ -590,6 +601,9 @@ func (c Compiled) validateAsync() error {
 	if c.IsDatabaseOnly() {
 		return c.validateDatabaseOnly()
 	}
+	if c.IsDatabaseBoundHTTP() {
+		return c.validateDatabaseBoundHTTP()
+	}
 	if c.IsQueueOnly() {
 		return c.validateQueueOnly()
 	}
@@ -843,34 +857,8 @@ func (c Compiled) validateDatabaseOnly() error {
 		if component.Health != (Health{}) || component.Queue != (QueueContract{}) || component.Worker != (WorkerContract{}) || component.Task != (TaskContract{}) || component.Schedule != (ScheduleContract{}) {
 			return fmt.Errorf("Database %q contains fields for another component type", name)
 		}
-		contract := component.Database
-		if contract.Engine != "postgresql" || !validName(contract.DatabaseName) {
-			return fmt.Errorf("Database %q requires a PostgreSQL engine and lowercase databaseName", name)
-		}
-		if contract.DataRole != "authoritative" {
-			return fmt.Errorf("Database %q requires authoritative dataRole for managed PostgreSQL", name)
-		}
-		if contract.StoreRollbackGuarantee != "forward-only" {
-			return fmt.Errorf("Database %q requires explicit forward-only Store Rollback Guarantee until store transitions are qualified", name)
-		}
-		if contract.TransitionCleanupPolicy != "retain-previous-generation" {
-			return fmt.Errorf("Database %q requires previous Store Generation retention policy", name)
-		}
-		if contract.Backup.Mode != "required" || validateCanonicalDuration(contract.Backup.Frequency, time.Minute, 24*time.Hour) != nil || validateCanonicalDuration(contract.Backup.Retention, time.Hour, 24*30*time.Hour) != nil {
-			return fmt.Errorf("Database %q requires a bounded backup policy", name)
-		}
-		if validateCanonicalDuration(contract.Recovery.PointObjective, time.Minute, 24*time.Hour) != nil || validateCanonicalDuration(contract.Recovery.TimeObjective, time.Minute, 24*time.Hour) != nil || contract.Recovery.RestoreVerification != "isolated-generation" || contract.Recovery.HostLoss != "off-host-backup-required" {
-			return fmt.Errorf("Database %q requires an explicit restore-verified recovery policy", name)
-		}
-		backupFrequency, _ := time.ParseDuration(contract.Backup.Frequency)
-		backupRetention, _ := time.ParseDuration(contract.Backup.Retention)
-		recoveryPointObjective, _ := time.ParseDuration(contract.Recovery.PointObjective)
-		rollbackWindow, _ := time.ParseDuration(string(c.Environment.RollbackWindow))
-		if backupFrequency > recoveryPointObjective {
-			return fmt.Errorf("Database %q backup frequency cannot exceed recovery point objective", name)
-		}
-		if backupRetention < rollbackWindow {
-			return fmt.Errorf("Database %q backup retention must cover the rollbackWindow", name)
+		if err := validateDatabaseContract(name, component, c.Environment.RollbackWindow); err != nil {
+			return err
 		}
 	}
 	implementation, ok := c.Environment.Implementations[databaseName]
@@ -893,6 +881,157 @@ func (c Compiled) validateDatabaseOnly() error {
 	}
 	if implementation.Kind != "postgresql-quadlet" || implementation.Lifecycle != "managed" || implementation.Rollout != "required" || !validSecretReference(implementation.Credential) {
 		return fmt.Errorf("Database %q requires a managed postgresql-quadlet implementation and Database credential Secret Reference", databaseName)
+	}
+	return nil
+}
+
+func (c Compiled) validateDatabaseBoundHTTP() error {
+	if len(c.Environment.Implementations) != 2 {
+		return errors.New("Database-bound HTTP tracer requires exactly one HTTP component implementation and one Database implementation")
+	}
+	var httpName, databaseName string
+	for name, component := range c.Application.Components {
+		if !validName(name) {
+			return fmt.Errorf("component %q must be a lowercase identifier", name)
+		}
+		switch component.Role {
+		case "http":
+			if httpName != "" {
+				return errors.New("Database-bound HTTP tracer requires exactly one HTTP component")
+			}
+			httpName = name
+			if component.Database != (DatabaseContract{}) || component.Queue != (QueueContract{}) || component.Worker != (WorkerContract{}) || component.Task != (TaskContract{}) || component.Schedule != (ScheduleContract{}) {
+				return fmt.Errorf("HTTP component %q contains fields for another component type", name)
+			}
+			for _, check := range []struct{ name, path string }{
+				{"liveness", component.Health.Liveness.Path},
+				{"readiness", component.Health.Readiness.Path},
+				{"candidateVerification", component.Health.CandidateVerification.Path},
+			} {
+				if !validHealthPath(check.path) {
+					return fmt.Errorf("HTTP component %q requires a valid %s health path", name, check.name)
+				}
+			}
+		case "database":
+			if databaseName != "" {
+				return errors.New("Database-bound HTTP tracer requires exactly one Database")
+			}
+			databaseName = name
+			if component.Health != (Health{}) || component.Queue != (QueueContract{}) || component.Worker != (WorkerContract{}) || component.Task != (TaskContract{}) || component.Schedule != (ScheduleContract{}) {
+				return fmt.Errorf("Database %q contains fields for another component type", name)
+			}
+			if err := validateDatabaseContract(name, component, c.Environment.RollbackWindow); err != nil {
+				return err
+			}
+		default:
+			return fmt.Errorf("component %q has unsupported Database-bound HTTP role %q", name, component.Role)
+		}
+	}
+	if httpName == "" || databaseName == "" {
+		return errors.New("Database-bound HTTP tracer requires exactly one HTTP component and one Database")
+	}
+	if len(c.Application.Components[httpName].Requires) != 1 {
+		return fmt.Errorf("HTTP component %q must require exactly one logical Database", httpName)
+	}
+	for _, required := range c.Application.Components[httpName].Requires {
+		if required != databaseName {
+			return fmt.Errorf("HTTP component %q references missing Database %q", httpName, required)
+		}
+	}
+	implementationTarget := ""
+	for name, implementation := range c.Environment.Implementations {
+		component, ok := c.Application.Components[name]
+		if !ok {
+			return fmt.Errorf("implementation %q has no Application component", name)
+		}
+		target, ok := c.Environment.Targets[implementation.Target]
+		if !ok || target.Kind != "host" || !validName(implementation.Target) || !userPattern.MatchString(target.User) {
+			return fmt.Errorf("implementation target %q must name an existing Host Target and operator", implementation.Target)
+		}
+		if target.Local {
+			if target.Address != "" {
+				return fmt.Errorf("local implementation target %q cannot declare an address", implementation.Target)
+			}
+		} else if !hostPattern.MatchString(target.Address) || strings.HasSuffix(target.Address, ".") {
+			return fmt.Errorf("implementation target %q must name an existing remote Host Target", implementation.Target)
+		}
+		if implementationTarget == "" {
+			implementationTarget = implementation.Target
+		} else if implementationTarget != implementation.Target {
+			return errors.New("Database-bound HTTP tracer requires the HTTP component and Database on the same Host Target")
+		}
+		switch component.Role {
+		case "database":
+			if implementation.Endpoint != (Endpoint{}) || implementation.Worker != (WorkerImplementation{}) || implementation.Schedule != (ScheduleImplementation{}) {
+				return fmt.Errorf("Database %q contains fields for another implementation type", name)
+			}
+			if implementation.Kind != "postgresql-quadlet" || implementation.Lifecycle != "managed" || implementation.Rollout != "required" || !validSecretReference(implementation.Credential) {
+				return fmt.Errorf("Database %q requires a managed postgresql-quadlet implementation and Database credential Secret Reference", name)
+			}
+		case "http":
+			if implementation.Lifecycle != "" || implementation.Credential != "" || implementation.Worker != (WorkerImplementation{}) || implementation.Schedule != (ScheduleImplementation{}) {
+				return fmt.Errorf("HTTP component %q contains fields for another implementation type", name)
+			}
+			if implementation.Kind != "systemd" || implementation.Endpoint.Port < 1024 || implementation.Endpoint.Port > 65535 {
+				return fmt.Errorf("HTTP component %q requires a systemd implementation and unprivileged endpoint port", name)
+			}
+			if implementation.Endpoint.Drain.Mode != drain.ModeBoundedHTTP {
+				return fmt.Errorf("HTTP component %q requires the bounded-http drain mode", name)
+			}
+			if _, err := drain.ParseBound(string(implementation.Endpoint.Drain.MaxDuration)); err != nil {
+				if strings.Contains(err.Error(), "canonical") {
+					return fmt.Errorf("HTTP component %q requires a valid canonical drain maxDuration", name)
+				}
+				return fmt.Errorf("HTTP component %q requires a supported drain maxDuration from 1s through 5m", name)
+			}
+			if implementation.Rollout != "required" {
+				return fmt.Errorf("HTTP component %q requires required blue-green rollout", name)
+			}
+		}
+	}
+	for name, artifact := range c.Revision.Artifacts {
+		if name != httpName {
+			return fmt.Errorf("Artifact %q must belong to the HTTP component", name)
+		}
+		if !digestPattern.MatchString(artifact.Digest) || !validArtifactSource(artifact.Source) {
+			return fmt.Errorf("component %q requires an immutable Artifact source and sha256 digest", name)
+		}
+	}
+	if _, ok := c.Revision.Artifacts[httpName]; !ok {
+		return fmt.Errorf("HTTP component %q requires an immutable Artifact", httpName)
+	}
+	return nil
+}
+
+func validateDatabaseContract(name string, component Component, rollbackWindow rollbackwindow.Window) error {
+	contract := component.Database
+	if contract.Engine != "postgresql" || !validName(contract.DatabaseName) {
+		return fmt.Errorf("Database %q requires a PostgreSQL engine and lowercase databaseName", name)
+	}
+	if contract.DataRole != "authoritative" {
+		return fmt.Errorf("Database %q requires authoritative dataRole for managed PostgreSQL", name)
+	}
+	if contract.StoreRollbackGuarantee != "forward-only" {
+		return fmt.Errorf("Database %q requires explicit forward-only Store Rollback Guarantee until store transitions are qualified", name)
+	}
+	if contract.TransitionCleanupPolicy != "retain-previous-generation" {
+		return fmt.Errorf("Database %q requires previous Store Generation retention policy", name)
+	}
+	if contract.Backup.Mode != "required" || validateCanonicalDuration(contract.Backup.Frequency, time.Minute, 24*time.Hour) != nil || validateCanonicalDuration(contract.Backup.Retention, time.Hour, 24*30*time.Hour) != nil {
+		return fmt.Errorf("Database %q requires a bounded backup policy", name)
+	}
+	if validateCanonicalDuration(contract.Recovery.PointObjective, time.Minute, 24*time.Hour) != nil || validateCanonicalDuration(contract.Recovery.TimeObjective, time.Minute, 24*time.Hour) != nil || contract.Recovery.RestoreVerification != "isolated-generation" || contract.Recovery.HostLoss != "off-host-backup-required" {
+		return fmt.Errorf("Database %q requires an explicit restore-verified recovery policy", name)
+	}
+	backupFrequency, _ := time.ParseDuration(contract.Backup.Frequency)
+	backupRetention, _ := time.ParseDuration(contract.Backup.Retention)
+	recoveryPointObjective, _ := time.ParseDuration(contract.Recovery.PointObjective)
+	rollbackDuration, _ := time.ParseDuration(string(rollbackWindow))
+	if backupFrequency > recoveryPointObjective {
+		return fmt.Errorf("Database %q backup frequency cannot exceed recovery point objective", name)
+	}
+	if backupRetention < rollbackDuration {
+		return fmt.Errorf("Database %q backup retention must cover the rollbackWindow", name)
 	}
 	return nil
 }

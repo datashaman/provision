@@ -86,8 +86,8 @@ func Evaluate(compiled config.Compiled, observation host.BootstrapStatus, target
 	if !capability.QuadletDefinitionRootOwned || !capability.GenerationDataPathOwned {
 		reasons = append(reasons, "PostgreSQL Quadlet definition and generation data path ownership are not qualified")
 	}
-	if capability.PostgreSQLServiceUnit == "" || capability.PostgreSQLContainer == "" || capability.PostgreSQLAccount == "" || capability.PostgreSQLGeneration == "" || capability.PostgreSQLGenerationDataPath == "" || capability.PostgreSQLQuadletPath == "" {
-		reasons = append(reasons, "PostgreSQL service, generation, container, account, data path, or Quadlet identity is incomplete")
+	if capability.PostgreSQLServiceUnit == "" || capability.PostgreSQLContainer == "" || capability.PostgreSQLAccount == "" || capability.PostgreSQLGeneration == "" || capability.PostgreSQLGenerationDataPath == "" || capability.PostgreSQLQuadletPath == "" || capability.PostgreSQLListenAddress == "" || capability.PostgreSQLPort == 0 {
+		reasons = append(reasons, "PostgreSQL service, generation, container, account, data path, Quadlet identity, or listener binding is incomplete")
 	}
 	if capability.StoreRollbackGuarantee != "not-qualified-by-packaging-proof" || capability.ForwardCutoverGuarantee != "not-qualified-by-packaging-proof" || capability.SupportedTransitionMechanism != "none-qualified-by-packaging-proof" {
 		reasons = append(reasons, "PostgreSQL Store Transition capability is not honestly classified as unqualified forward-only packaging")
@@ -137,8 +137,8 @@ func Plan(compiled config.Compiled, observation host.BootstrapStatus) PlanningOu
 		Account:                 capability.PostgreSQLAccount,
 		DataPath:                capability.PostgreSQLGenerationDataPath,
 		QuadletPath:             capability.PostgreSQLQuadletPath,
-		ListenAddress:           "127.0.0.1",
-		Port:                    25432,
+		ListenAddress:           capability.PostgreSQLListenAddress,
+		Port:                    capability.PostgreSQLPort,
 		StoreRollbackGuarantee:  component.Database.StoreRollbackGuarantee,
 		ForwardCutoverGuarantee: capability.ForwardCutoverGuarantee,
 		TransitionMechanism:     capability.SupportedTransitionMechanism,
@@ -147,7 +147,7 @@ func Plan(compiled config.Compiled, observation host.BootstrapStatus) PlanningOu
 		Backup:                  component.Database.Backup,
 		Recovery:                component.Database.Recovery,
 		Binding: planmodel.DatabaseBindingInput{
-			Reference: implementation.Credential, Protocol: "postgresql", Host: "127.0.0.1", Port: 25432, Database: component.Database.DatabaseName,
+			Reference: implementation.Credential, Protocol: "postgresql", Host: capability.PostgreSQLListenAddress, Port: capability.PostgreSQLPort, Database: component.Database.DatabaseName,
 		},
 		Consequences: databaseConsequences(compiled, component, capability, observation.Database.Deployment),
 		Observed:     observation.Database.Deployment,

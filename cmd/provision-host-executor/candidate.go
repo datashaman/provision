@@ -59,22 +59,22 @@ func validateCandidateOperation(planned planner.Operation, record bootstrapRecor
 		}
 		return validateHealthInput(*planned.Input.Health, record, paths)
 	case planner.SwitchEndpoint:
-		if len(planned.DependsOn) != 1 || planned.DependsOn[0] != "op-04" || planned.Input.Endpoint == nil || planned.Input.Generation != nil || planned.Input.Systemd != nil || planned.Input.Health != nil || planned.Input.Drain != nil || planned.Input.Retention != nil {
+		if len(planned.DependsOn) != 1 || !dependsOnPreviousOperation(planned.ID, planned.DependsOn[0]) || planned.Input.Endpoint == nil || planned.Input.Generation != nil || planned.Input.Systemd != nil || planned.Input.Health != nil || planned.Input.Drain != nil || planned.Input.Retention != nil {
 			return errors.New("switchEndpoint requires only its typed Endpoint input, optional planned previous Generation, and candidate-verification dependency")
 		}
 		return validateEndpointInput(*planned.Input.Endpoint, planned.Input.Previous, record, paths)
 	case planner.VerifyActive:
-		if len(planned.DependsOn) != 1 || planned.DependsOn[0] != "op-05" || planned.Input.Health == nil || planned.Input.Endpoint == nil || planned.Input.Generation != nil || planned.Input.Systemd != nil || planned.Input.Drain != nil || planned.Input.Retention != nil {
+		if len(planned.DependsOn) != 1 || !dependsOnPreviousOperation(planned.ID, planned.DependsOn[0]) || planned.Input.Health == nil || planned.Input.Endpoint == nil || planned.Input.Generation != nil || planned.Input.Systemd != nil || planned.Input.Drain != nil || planned.Input.Retention != nil {
 			return errors.New("verifyActive requires its typed stable Health Contract, Endpoint, optional previous Generation, and switch dependency")
 		}
 		return validateActiveVerificationInput(*planned.Input.Health, *planned.Input.Endpoint, planned.Input.Previous, record, paths)
 	case planner.DrainPrevious:
-		if len(planned.DependsOn) != 1 || planned.DependsOn[0] != "op-06" || planned.Input.Drain == nil || planned.Input.Generation != nil || planned.Input.Systemd != nil || planned.Input.Health != nil || planned.Input.Endpoint != nil || planned.Input.Previous != nil || planned.Input.Retention != nil {
+		if len(planned.DependsOn) != 1 || !dependsOnPreviousOperation(planned.ID, planned.DependsOn[0]) || planned.Input.Drain == nil || planned.Input.Generation != nil || planned.Input.Systemd != nil || planned.Input.Health != nil || planned.Input.Endpoint != nil || planned.Input.Previous != nil || planned.Input.Retention != nil {
 			return errors.New("drainPrevious requires only its typed HTTP drain input and stable-verification dependency")
 		}
 		return validateHTTPDrainInput(*planned.Input.Drain, record, paths)
 	case planner.RetainPrevious:
-		if len(planned.DependsOn) != 1 || planned.DependsOn[0] != "op-07" || planned.Input.Retention == nil || planned.Input.Generation != nil || planned.Input.Systemd != nil || planned.Input.Health != nil || planned.Input.Endpoint != nil || planned.Input.Previous != nil || planned.Input.Drain != nil {
+		if len(planned.DependsOn) != 1 || !dependsOnPreviousOperation(planned.ID, planned.DependsOn[0]) || planned.Input.Retention == nil || planned.Input.Generation != nil || planned.Input.Systemd != nil || planned.Input.Health != nil || planned.Input.Endpoint != nil || planned.Input.Previous != nil || planned.Input.Drain != nil {
 			return errors.New("retainPrevious requires only its typed rollback-window input and drain dependency")
 		}
 		return validateRetentionInput(*planned.Input.Retention, record, paths)
@@ -99,12 +99,92 @@ func validateRetentionInput(input planner.RetentionInput, record bootstrapRecord
 	return nil
 }
 
+func dependsOnPreviousOperation(id, dependency string) bool {
+	var current, previous int
+	if _, err := fmt.Sscanf(id, "op-%02d", &current); err != nil {
+		return false
+	}
+	if _, err := fmt.Sscanf(dependency, "op-%02d", &previous); err != nil {
+		return false
+	}
+	return previous == current-1
+}
+
 func validateGenerationReference(input planner.GenerationReference, record bootstrapRecord, paths executionPaths) error {
 	expected := filepath.Join(paths.environmentHome, "releases", input.ID)
 	if !deploymentIdentifier.MatchString(input.ID) || !deploymentIdentifier.MatchString(input.Revision) || !digestPattern.MatchString(input.ArtifactDigest) || input.Account != record.Account || input.ReleaseDirectory != expected {
 		return errors.New("Generation input does not match the bootstrapped Environment or fixed release path")
 	}
+	if err := validateDatabaseBindings(input.DatabaseBindings, record, paths); err != nil {
+		return err
+	}
 	return nil
+}
+
+func validateDatabaseBindings(bindings []planner.DatabaseBindingInput, record bootstrapRecord, paths executionPaths) error {
+	if len(bindings) > 1 {
+		return errors.New("only one Database binding is qualified for HTTP components")
+	}
+	for _, binding := range bindings {
+		if _, err := credentialNameFromDatabaseBinding(binding, record.Environment); err != nil {
+			return err
+		}
+		if !deploymentIdentifier.MatchString(binding.Component) ||
+			binding.LogicalID != "provision-"+record.Environment+"-"+binding.Component ||
+			!deploymentIdentifier.MatchString(binding.GenerationID) ||
+			binding.Protocol != "postgresql" ||
+			binding.Host == "" ||
+			binding.Port <= 0 ||
+			binding.Port > 65535 ||
+			!databaseNamePattern(binding.Database) ||
+			binding.EnvironmentVariable != "PROVISION_DATABASE_URL_FILE" ||
+			binding.ApplicationHealth != "http-candidate" ||
+			binding.BindingState != "database-bound" ||
+			!strings.HasPrefix(binding.DeterministicRecordNamespace, binding.LogicalID+"/") ||
+			len(binding.DeterministicRecordIDs) == 0 {
+			return errors.New("Database binding does not match the bootstrapped Environment or logical Database")
+		}
+		if err := validatePreparedDatabaseBinding(binding, record, paths); err != nil {
+			return err
+		}
+		for _, id := range binding.DeterministicRecordIDs {
+			if !strings.HasPrefix(id, binding.DeterministicRecordNamespace+"/") {
+				return errors.New("Database binding deterministic record identity is outside the planned namespace")
+			}
+		}
+	}
+	return nil
+}
+
+func validatePreparedDatabaseBinding(binding planner.DatabaseBindingInput, record bootstrapRecord, paths executionPaths) error {
+	generationRecordPath := filepath.Join(paths.environmentHome, "services", "postgresql", "generations", binding.GenerationID, "generation.json")
+	var generation postgresqlPackagingRecord
+	if err := readExactJSON(generationRecordPath, &generation); err != nil ||
+		generation.SchemaVersion != postgresqlGenerationSchema ||
+		generation.LogicalID != binding.LogicalID ||
+		generation.GenerationID != binding.GenerationID ||
+		generation.Account != record.Account ||
+		generation.Database != binding.Database ||
+		generation.CredentialReference != binding.Reference ||
+		generation.ListenAddress != binding.Host ||
+		generation.Port != binding.Port ||
+		!generation.Verified ||
+		!generation.Connectivity {
+		return errors.New("Database binding does not match a verified prepared Database generation")
+	}
+	return nil
+}
+
+func credentialNameFromDatabaseBinding(binding planner.DatabaseBindingInput, environment string) (string, error) {
+	prefix := "secret://" + environment + "/"
+	if !strings.HasPrefix(binding.Reference, prefix) {
+		return "", errors.New("Database binding Secret Reference is outside the Environment")
+	}
+	name := strings.TrimPrefix(binding.Reference, prefix)
+	if !deploymentIdentifier.MatchString(name) {
+		return "", errors.New("Database binding Secret Reference has an unsupported credential name")
+	}
+	return name, nil
 }
 
 func validateGenerationInput(input planner.GenerationInput, record bootstrapRecord, paths executionPaths) error {
@@ -506,6 +586,22 @@ func failedSystemd(input planner.SystemdInput, reason string) host.SystemdObserv
 }
 
 func systemdCandidateUnit(input planner.SystemdInput, executable string) string {
+	databaseBinding := ""
+	if len(input.DatabaseBindings) == 1 {
+		binding := input.DatabaseBindings[0]
+		environment := strings.TrimPrefix(input.Account, "provision-")
+		credentialName, err := credentialNameFromDatabaseBinding(binding, environment)
+		if err != nil {
+			credentialName = postgresqlCredentialName
+		}
+		databaseBinding = fmt.Sprintf(`LoadCredentialEncrypted=%s:%s
+Environment=PROVISION_DATABASE_COMPONENT=%s
+Environment=PROVISION_DATABASE_LOGICAL_ID=%s
+Environment=PROVISION_DATABASE_GENERATION=%s
+Environment=PROVISION_DATABASE_NAME=%s
+Environment=PROVISION_DATABASE_URL_FILE=%%d/%s
+`, credentialName, filepath.Join("/var/lib/provision/runtime", environment, ".config", "credstore.encrypted", credentialName), binding.Component, binding.LogicalID, binding.GenerationID, binding.Database, credentialName)
+	}
 	return fmt.Sprintf(`[Unit]
 Description=Provision candidate %s
 After=network.target
@@ -517,6 +613,7 @@ Group=%s
 WorkingDirectory=%s
 Environment=PROVISION_HTTP_LISTEN=127.0.0.1:%d
 Environment=PROVISION_REVISION=%s
+%s
 ExecStart=%s
 Restart=on-failure
 NoNewPrivileges=true
@@ -528,7 +625,7 @@ RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
 IPAddressDeny=any
 IPAddressAllow=localhost
 
-`, input.ID, input.Account, input.Account, input.ReleaseDirectory, input.Port, input.Revision, filepath.Join(input.ReleaseDirectory, executable))
+`, input.ID, input.Account, input.Account, input.ReleaseDirectory, input.Port, input.Revision, databaseBinding, filepath.Join(input.ReleaseDirectory, executable))
 }
 
 func cleanupCandidateUnit(ctx context.Context, paths executionPaths, input planner.SystemdInput) error {
@@ -674,18 +771,67 @@ func checkHTTPHealth(ctx context.Context, input planner.HealthInput, unavailable
 		}
 		if check.verifyRevision {
 			var body struct {
-				Revision string `json:"revision"`
+				Revision        string                           `json:"revision"`
+				DatabaseBinding *host.DatabaseBindingObservation `json:"databaseBinding"`
 			}
 			if json.Unmarshal(data, &body) != nil || body.Revision != input.Revision {
 				observed.Reason = "candidate verification did not report the planned Revision"
 				result = append(result, observed)
 				return result, check.name + " check failed"
 			}
+			if len(input.DatabaseBindings) > 0 {
+				binding := input.DatabaseBindings[0]
+				observed.DatabaseBinding = body.DatabaseBinding
+				if observed.DatabaseBinding == nil {
+					observed.DatabaseBinding = &host.DatabaseBindingObservation{LogicalID: binding.LogicalID, GenerationID: binding.GenerationID, Status: "missing", Reason: "candidate verification did not report the planned Database binding"}
+					observed.Reason = observed.DatabaseBinding.Reason
+					result = append(result, observed)
+					return result, check.name + " check failed"
+				}
+				if observed.DatabaseBinding.LogicalID != binding.LogicalID ||
+					observed.DatabaseBinding.GenerationID != binding.GenerationID ||
+					observed.DatabaseBinding.Status != "verified" ||
+					!databaseBindingRecordsMatch(binding, observed.DatabaseBinding.Records) {
+					observed.Reason = "candidate verification did not prove the planned Database binding"
+					observed.DatabaseBinding.Status = "failed"
+					if observed.DatabaseBinding.Reason == "" {
+						observed.DatabaseBinding.Reason = observed.Reason
+					}
+					result = append(result, observed)
+					return result, check.name + " check failed"
+				}
+			}
 		}
 		observed.Healthy = true
 		result = append(result, observed)
 	}
 	return result, ""
+}
+
+func databaseBindingRecordsMatch(binding planner.DatabaseBindingInput, observed []host.DeterministicDatabaseRecordStatus) bool {
+	if binding.DeterministicRecordNamespace == "" || len(binding.DeterministicRecordIDs) == 0 || len(observed) != len(binding.DeterministicRecordIDs) {
+		return false
+	}
+	expected := map[string]bool{}
+	for _, id := range binding.DeterministicRecordIDs {
+		if !strings.HasPrefix(id, binding.DeterministicRecordNamespace+"/") {
+			return false
+		}
+		expected[id] = false
+	}
+	for _, record := range observed {
+		seen, ok := expected[record.ID]
+		if !ok || seen || record.Namespace != binding.DeterministicRecordNamespace {
+			return false
+		}
+		expected[record.ID] = true
+	}
+	for _, seen := range expected {
+		if !seen {
+			return false
+		}
+	}
+	return true
 }
 
 func systemdInputFromHealth(input planner.HealthInput) planner.SystemdInput {

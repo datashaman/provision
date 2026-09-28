@@ -296,9 +296,6 @@ func resolvedValuesForOperation(plan planner.Plan, operationID string, available
 		if planned.ID != operationID {
 			continue
 		}
-		if planned.Kind != planner.PrepareQueue && planned.Kind != planner.PrepareDatabase {
-			return nil, nil
-		}
 		if planned.Kind == planner.PrepareQueue {
 			if planned.Input.Async == nil || planned.Input.Async.Queue == nil || planned.Input.Async.Queue.CredentialReference == "" {
 				return nil, errors.New("prepareQueue has no Queue credential Secret Reference")
@@ -310,8 +307,11 @@ func resolvedValuesForOperation(plan planner.Plan, operationID string, available
 			}
 			return map[string]string{reference: value}, nil
 		}
+		if planned.Input.Database == nil {
+			return nil, nil
+		}
 		if planned.Input.Database == nil || planned.Input.Database.CredentialReference == "" {
-			return nil, errors.New("prepareDatabase has no Database credential Secret Reference")
+			return nil, errors.New("Database operation has no Database credential Secret Reference")
 		}
 		reference := planned.Input.Database.CredentialReference
 		value, ok := available[reference]

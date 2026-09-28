@@ -116,13 +116,13 @@ func verifyHostResult(envelope operation.Envelope, result operation.Result) erro
 	if err := result.ValidateAgainst(envelope); err != nil {
 		return err
 	}
-	if result.Outcome == operation.OutcomeUncertain && envelope.Operation.Kind != planner.SwitchEndpoint && envelope.Operation.Kind != planner.VerifyActive && envelope.Operation.Kind != planner.DrainPrevious && envelope.Operation.Kind != planner.RetainPrevious && envelope.Operation.Kind != planner.VerifyWorkerActive {
+	if result.Outcome == operation.OutcomeUncertain && envelope.Operation.Kind != planner.SwitchEndpoint && envelope.Operation.Kind != planner.VerifyActive && envelope.Operation.Kind != planner.DrainPrevious && envelope.Operation.Kind != planner.RetainPrevious && envelope.Operation.Kind != planner.VerifyWorkerActive && !isDatabaseTransitionHostKind(envelope.Operation.Kind) {
 		return errors.New("host operation kind cannot return an uncertain structured outcome")
 	}
 	switch envelope.Operation.Kind {
 	case planner.PrepareQueue:
 		return verifyQueueResult(envelope, result)
-	case planner.PrepareDatabase:
+	case planner.PrepareDatabase, planner.PrepareDatabaseCandidate, planner.SynchronizeDatabaseCandidate, planner.FenceDatabaseWrites, planner.SwitchDatabaseAuthority, planner.VerifyDatabaseActive, planner.RetainDatabasePrevious:
 		return verifyDatabaseResult(envelope, result)
 	case planner.StageArtifact:
 		return verifyArtifactResult(envelope, result)
@@ -160,6 +160,15 @@ func verifyHostResult(envelope operation.Envelope, result operation.Result) erro
 	}
 }
 
+func isDatabaseTransitionHostKind(kind planner.OperationKind) bool {
+	return kind == planner.PrepareDatabaseCandidate ||
+		kind == planner.SynchronizeDatabaseCandidate ||
+		kind == planner.FenceDatabaseWrites ||
+		kind == planner.SwitchDatabaseAuthority ||
+		kind == planner.VerifyDatabaseActive ||
+		kind == planner.RetainDatabasePrevious
+}
+
 func verifyDatabaseResult(envelope operation.Envelope, result operation.Result) error {
 	if envelope.Operation.Input.Database == nil {
 		return errors.New("host Database observation has no planned Database")
@@ -176,10 +185,79 @@ func verifyDatabaseResult(envelope operation.Envelope, result operation.Result) 
 		if observed.Status != "verified" || !observed.Verified || !observed.Database.Ready || !observed.Database.Connectivity || observed.Database.Health != "healthy" || !observed.Checks.ServiceHealth || !observed.Checks.SQLConnectivity || !observed.Checks.DatabaseIdentity || !observed.Checks.GenerationIdentity || !observed.Checks.CredentialBoundary || len(observed.Database.SupportedGuarantees) == 0 || len(observed.Database.OwnedResources) == 0 {
 			return errors.New("host Database success observation is invalid")
 		}
+		if err := verifyDatabaseTransitionSuccess(envelope.Operation, observed); err != nil {
+			return err
+		}
 	} else if result.Outcome == operation.OutcomeFailed && (observed.Status != "failed" || observed.FailureCategory == "" || observed.Reason == "" || observed.RecoveryAction == "") {
 		return errors.New("host Database failure observation is invalid")
+	} else if result.Outcome == operation.OutcomeUncertain && (observed.Status != "uncertain" || observed.FailureCategory == "" || observed.Reason == "" || observed.RecoveryAction == "") {
+		return errors.New("host Database uncertain observation is invalid")
 	}
 	return nil
+}
+
+func verifyDatabaseTransitionSuccess(planned planner.Operation, observed host.DatabaseOperationObservation) error {
+	input := planned.Input.Database
+	switch planned.Kind {
+	case planner.SynchronizeDatabaseCandidate:
+		if observed.TransitionPhase != "synchronizeDatabaseCandidate" || observed.Synchronization != "logical-snapshot" || observed.WriteFence != "" {
+			return errors.New("host Database synchronization success lacks exact transition evidence")
+		}
+	case planner.FenceDatabaseWrites:
+		if observed.TransitionPhase != "fenceDatabaseWrites" || observed.Synchronization != "final-logical-snapshot-after-write-fence" || observed.WriteFence != "active-database-read-only" {
+			return errors.New("host Database write-fence success lacks exact transition evidence")
+		}
+	case planner.SwitchDatabaseAuthority:
+		if observed.TransitionPhase != "switchDatabaseAuthority" || observed.Synchronization != "authority-switched-after-write-fence" {
+			return errors.New("host Database authority-switch success lacks exact transition evidence")
+		}
+	case planner.VerifyDatabaseActive:
+		if observed.TransitionPhase != "verifyDatabaseActive" || observed.Synchronization != "verified-after-authority-switch" {
+			return errors.New("host Database active verification lacks exact transition evidence")
+		}
+		if len(input.Binding.DeterministicRecordIDs) > 0 && !databaseBindingRecordsMatch(input.Binding, observed.Records) {
+			return errors.New("host Database active verification lacks deterministic workload record evidence")
+		}
+	case planner.RetainDatabasePrevious:
+		if observed.TransitionPhase != "retainDatabasePrevious" || observed.Previous == nil || observed.RetainedUntil == "" || input.Observed.Active == nil || !databaseGenerationStatusMetadataMatches(*observed.Previous, *input.Observed.Active) {
+			return errors.New("host Database retention success lacks exact previous-generation evidence")
+		}
+	}
+	return nil
+}
+
+func databaseGenerationStatusMetadataMatches(left, right host.DatabaseGenerationStatus) bool {
+	return left.ID == right.ID &&
+		left.LogicalID == right.LogicalID &&
+		left.Role == right.Role &&
+		left.Authority == right.Authority &&
+		left.Ready == right.Ready &&
+		left.PostgreSQLVersion == right.PostgreSQLVersion &&
+		left.ImageManifest == right.ImageManifest &&
+		left.ServiceUnit == right.ServiceUnit &&
+		left.Container == right.Container &&
+		left.Account == right.Account &&
+		left.DataPath == right.DataPath &&
+		left.QuadletPath == right.QuadletPath &&
+		left.Database == right.Database &&
+		left.Connectivity == right.Connectivity &&
+		left.DurableRestart == right.DurableRestart &&
+		left.Health == right.Health &&
+		left.CompatibilityGate == right.CompatibilityGate &&
+		stringSlicesEqual(left.SupportedGuarantees, right.SupportedGuarantees) &&
+		stringSlicesEqual(left.OwnedResources, right.OwnedResources)
+}
+
+func stringSlicesEqual(left, right []string) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for index := range left {
+		if left[index] != right[index] {
+			return false
+		}
+	}
+	return true
 }
 
 func verifyAsyncWorkerActiveVerificationResult(envelope operation.Envelope, result operation.Result) error {

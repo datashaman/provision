@@ -48,11 +48,23 @@ state rather than broader guarantees.
 This row qualifies the packaging choice for the first managed Host-local
 Database tracer. It is not a production Database lifecycle claim. It does not
 qualify backups, restores, host-loss recovery, multi-node availability,
-side-by-side store transitions, automatic rollback after candidate writes,
-external PostgreSQL, RDS, or other PostgreSQL/image/Podman/OS versions. The
+automatic rollback after candidate writes, external PostgreSQL, RDS, or other
+PostgreSQL/image/Podman/OS versions. The
 credential proof covers systemd encrypted credential delivery scoped to the
 Environment user unit; it does not assert that the VM's backing media is
 encrypted.
+
+## Managed PostgreSQL Host transition contract
+
+| Test seam | Qualified input | Operation contract | Result |
+| --- | --- | --- | --- |
+| Go planner, restricted-executor, and local result-verifier tests for issue #73 | Existing active managed PostgreSQL `17.6` generation with matching image manifest, ready SQL connectivity, and authoritative role; candidate target is the exact qualified PostgreSQL `17.6` generation above | `prepareDatabaseCandidate`, `synchronizeDatabaseCandidate`, `fenceDatabaseWrites`, `switchDatabaseAuthority`, `verifyDatabaseActive`, and `retainDatabasePrevious` | Plan preview exposes lossless forward cutover after the explicit `active-database-read-only-with-session-termination` fence with `30s` maximum bound, keeps rollback classified as `forward-only`, uses separate candidate service/container/listener before authority switch, rejects incompatible active generations, rejects unsafe observed candidates, requires phase-specific signed Database results, verifies declared deterministic workload records directly from PostgreSQL after authority switch, and retains the previous generation with exact identity and policy metadata. |
+
+This row qualifies the contract shape and executor guardrails only. It does not
+replace live disposable-Host transition evidence, and it does not qualify
+production data migration, major-version upgrades, logical-replication DDL or
+sequence restrictions, reverse synchronization, automatic zero-loss rollback,
+backup/restore, host-loss recovery, RDS, or external PostgreSQL.
 
 ## First scheduled-message Host path
 
@@ -158,7 +170,7 @@ transitions, Host data-loss recovery, or RabbitMQ data-loss recovery.
 
 ## Limits
 
-- The HTTP rows cover a single native `x86_64` HTTP component on one systemd-managed host, exercised both directly on the host and remotely from an `arm64` macOS controller over SSH. The RabbitMQ rows qualify only the exact rootless Podman/Quadlet packaging and Queue semantics stated above. The PostgreSQL row qualifies only the exact Host-local packaging and restart proof stated above, not Database transitions or production durability. The scheduled-message row qualifies only its exact initial systemd Worker, Task, and Schedule path. The Worker rows qualify pre-handoff rejection, completed replacement, message-level activation, supported rollback, and controller-interruption recovery only for the stated single-host examples. The asynchronous parity row qualifies only direct-local and strict-SSH management parity for the exact single-Host Queue, Worker, Task, and Schedule tracer. No row qualifies EC2, ECS, Lambda, key-value stores, realtime services, Queue replacement, Queue migration, Host/data-loss recovery, RabbitMQ data-loss recovery, PostgreSQL host-loss recovery, or multi-host asynchronous availability.
+- The HTTP rows cover a single native `x86_64` HTTP component on one systemd-managed host, exercised both directly on the host and remotely from an `arm64` macOS controller over SSH. The RabbitMQ rows qualify only the exact rootless Podman/Quadlet packaging and Queue semantics stated above. The PostgreSQL packaging row qualifies only the exact Host-local packaging and restart proof stated above. The PostgreSQL transition-contract row qualifies only Plan/executor guardrails for a same-version forward-only transition, not production durability or live fault-injection evidence. The scheduled-message row qualifies only its exact initial systemd Worker, Task, and Schedule path. The Worker rows qualify pre-handoff rejection, completed replacement, message-level activation, supported rollback, and controller-interruption recovery only for the stated single-host examples. The asynchronous parity row qualifies only direct-local and strict-SSH management parity for the exact single-Host Queue, Worker, Task, and Schedule tracer. No row qualifies EC2, ECS, Lambda, key-value stores, realtime services, Queue replacement, Queue migration, Host/data-loss recovery, RabbitMQ data-loss recovery, PostgreSQL host-loss recovery, or multi-host asynchronous availability.
 - The Endpoint guarantee covers ordinary HTTP requests. It does not promise WebSocket or other long-lived stream draining.
 - Caddy configuration reload preserves the prior route on a rejected load. An external Caddy outage can still make the Endpoint unavailable until Caddy is restored.
 - Remote mode adds a management-transport dependency, not a workload-availability dependency. If the controller cannot authenticate the host or cannot obtain enough fresh evidence after a lost connection, the operation remains interrupted or uncertain until an operator restores access and resumes it; stable traffic continues according to the last host state.

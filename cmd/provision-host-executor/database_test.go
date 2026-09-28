@@ -113,6 +113,43 @@ func TestPrepareDatabaseValidationRescansHostForLateCandidate(t *testing.T) {
 	}
 }
 
+func TestDatabaseTransitionValidationAllowsCandidateIdentityOnlyBeforeAuthority(t *testing.T) {
+	planned, record, paths := databaseOperationFixture(t)
+	active := host.DatabaseGenerationStatus{
+		ID: "postgresql-17-6-aaaaaaaaaaaa", LogicalID: planned.Input.Database.LogicalID, Role: "active", Authority: "authoritative",
+		Ready: true, PostgreSQLVersion: planned.Input.Database.PostgreSQLVersion, ImageManifest: planned.Input.Database.ImageManifest,
+		ServiceUnit: "provision-lab-postgresql-old.service", Container: "provision-lab-postgresql-old", Account: record.Account,
+		DataPath:    filepath.Join(paths.environmentHome, "services", "postgresql", "generations", "postgresql-17-6-aaaaaaaaaaaa", "data"),
+		QuadletPath: "/etc/containers/systemd/users/999/provision-lab-postgresql-old.container", Database: planned.Input.Database.DatabaseName, Connectivity: true,
+	}
+	stable := *planned.Input.Database
+	stable.Observed.Active = &active
+	stable.ForwardCutoverGuarantee = "lossless-after-bounded-write-fence"
+	stable.TransitionMechanism = "offline-logical-snapshot-with-bounded-write-fence"
+	candidate := candidateDatabaseInput(stable)
+
+	candidateStep := planned
+	candidateStep.Kind = planner.PrepareDatabaseCandidate
+	candidateStep.Input.Database = &candidate
+	if err := validateDatabaseOperation(candidateStep, record, paths); err != nil {
+		t.Fatalf("candidate transition Database operation rejected: %v", err)
+	}
+
+	stableStep := planned
+	stableStep.Kind = planner.SwitchDatabaseAuthority
+	stableStep.DependsOn = []string{"op-03"}
+	stableStep.Input.Database = &stable
+	if err := validateDatabaseOperation(stableStep, record, paths); err != nil {
+		t.Fatalf("stable authority switch Database operation rejected: %v", err)
+	}
+
+	tampered := candidateStep
+	tampered.Input.Database = &stable
+	if err := validateDatabaseOperation(tampered, record, paths); err == nil {
+		t.Fatal("candidate preparation accepted stable service identity")
+	}
+}
+
 func TestDatabaseSecretBoundaryAndQuadletDoNotExposeResolvedValue(t *testing.T) {
 	planned, _, _ := databaseOperationFixture(t)
 	input := *planned.Input.Database
@@ -186,7 +223,7 @@ func databaseOperationFixture(t *testing.T) (planner.Operation, bootstrapRecord,
 		DataPath:      filepath.Join(environmentHome, "services", "postgresql", "generations", qualifiedPostgreSQLGeneration, "data"),
 		QuadletPath:   "/etc/containers/systemd/users/" + strconv.Itoa(uid) + "/provision-lab-postgresql.container",
 		ListenAddress: "127.0.0.1", Port: 25432, StoreRollbackGuarantee: "forward-only",
-		ForwardCutoverGuarantee: "not-qualified-by-packaging-proof", TransitionMechanism: "none-qualified-by-packaging-proof",
+		ForwardCutoverGuarantee: "lossless-after-bounded-write-fence", TransitionMechanism: "offline-logical-snapshot-with-bounded-write-fence",
 		TransitionCleanupPolicy: "retain-previous-generation",
 		Backup:                  config.DatabaseBackupPolicy{Mode: "required", Frequency: "1h0m0s", Retention: "168h0m0s"},
 		Recovery:                config.DatabaseRecoveryPolicy{PointObjective: "1h0m0s", TimeObjective: "4h0m0s", RestoreVerification: "isolated-generation", HostLoss: "off-host-backup-required"},
@@ -206,6 +243,8 @@ func databaseOperationFixture(t *testing.T) (planner.Operation, bootstrapRecord,
 				"bounded final write fence is declared and within policy",
 			},
 			ForwardCutoverRequirement:      "no acknowledged writes may be lost before candidate authority",
+			WriteFenceRequirement:          "active-database-read-only-with-session-termination",
+			WriteFenceMaximum:              "30s",
 			RollbackClassificationRequired: "forward-only",
 			UnsupportedCandidateFailure:    "fail-closed-before-authority-change",
 		},

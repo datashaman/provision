@@ -42,6 +42,7 @@ type Component struct {
 	Role     string           `yaml:"role" json:"role"`
 	Requires []string         `yaml:"requires,omitempty" json:"requires,omitempty"`
 	Health   Health           `yaml:"health,omitempty" json:"health,omitempty,omitzero"`
+	Database DatabaseContract `yaml:"database,omitempty" json:"database,omitempty,omitzero"`
 	Queue    QueueContract    `yaml:"queue,omitempty" json:"queue,omitempty,omitzero"`
 	Worker   WorkerContract   `yaml:"worker,omitempty" json:"worker,omitempty,omitzero"`
 	Task     TaskContract     `yaml:"task,omitempty" json:"task,omitempty,omitzero"`
@@ -68,6 +69,29 @@ type QueueContract struct {
 	Retention        string `yaml:"retention" json:"retention"`
 	Ordering         string `yaml:"ordering" json:"ordering"`
 	Deduplication    string `yaml:"deduplication" json:"deduplication"`
+}
+
+type DatabaseContract struct {
+	Engine                  string                 `yaml:"engine" json:"engine"`
+	DatabaseName            string                 `yaml:"databaseName" json:"databaseName"`
+	DataRole                string                 `yaml:"dataRole,omitempty" json:"dataRole,omitempty"`
+	StoreRollbackGuarantee  string                 `yaml:"storeRollbackGuarantee" json:"storeRollbackGuarantee"`
+	TransitionCleanupPolicy string                 `yaml:"transitionCleanupPolicy" json:"transitionCleanupPolicy"`
+	Backup                  DatabaseBackupPolicy   `yaml:"backup" json:"backup"`
+	Recovery                DatabaseRecoveryPolicy `yaml:"recovery" json:"recovery"`
+}
+
+type DatabaseBackupPolicy struct {
+	Mode      string `yaml:"mode" json:"mode"`
+	Frequency string `yaml:"frequency" json:"frequency"`
+	Retention string `yaml:"retention" json:"retention"`
+}
+
+type DatabaseRecoveryPolicy struct {
+	PointObjective      string `yaml:"pointObjective" json:"pointObjective"`
+	TimeObjective       string `yaml:"timeObjective" json:"timeObjective"`
+	RestoreVerification string `yaml:"restoreVerification" json:"restoreVerification"`
+	HostLoss            string `yaml:"hostLoss" json:"hostLoss"`
 }
 
 type WorkerContract struct {
@@ -238,6 +262,16 @@ func (c Compiled) PlanningTarget() (TargetSelection, error) {
 
 func (c Compiled) IsAsync() bool {
 	return c.IsQueueOnly() || c.isCompleteAsync()
+}
+
+func (c Compiled) IsDatabaseOnly() bool {
+	if len(c.Application.Components) != 1 {
+		return false
+	}
+	for _, component := range c.Application.Components {
+		return component.Role == "database"
+	}
+	return false
 }
 
 func (c Compiled) IsQueueOnly() bool {
@@ -462,6 +496,10 @@ func (c *Compiled) applyDefaults() {
 			component.Schedule.Timezone = "UTC"
 			c.Application.Components[name] = component
 		}
+		if component.Role == "database" && component.Database.DataRole == "" {
+			component.Database.DataRole = "authoritative"
+			c.Application.Components[name] = component
+		}
 	}
 }
 
@@ -549,6 +587,9 @@ func (c Compiled) validate() error {
 }
 
 func (c Compiled) validateAsync() error {
+	if c.IsDatabaseOnly() {
+		return c.validateDatabaseOnly()
+	}
 	if c.IsQueueOnly() {
 		return c.validateQueueOnly()
 	}
@@ -763,27 +804,95 @@ func (c Compiled) validateQueueOnly() error {
 
 func validateAsyncComponentShape(name string, component Component) error {
 	zeroHealth := Health{}
+	zeroDatabase := DatabaseContract{}
 	zeroQueue := QueueContract{}
 	zeroWorker := WorkerContract{}
 	zeroTask := TaskContract{}
 	zeroSchedule := ScheduleContract{}
 	switch component.Role {
 	case "queue":
-		if component.Health != zeroHealth || component.Worker != zeroWorker || component.Task != zeroTask || component.Schedule != zeroSchedule {
+		if component.Health != zeroHealth || component.Database != zeroDatabase || component.Worker != zeroWorker || component.Task != zeroTask || component.Schedule != zeroSchedule {
 			return fmt.Errorf("Queue %q contains fields for another component type", name)
 		}
 	case "worker":
-		if component.Queue != zeroQueue || component.Task != zeroTask || component.Schedule != zeroSchedule {
+		if component.Database != zeroDatabase || component.Queue != zeroQueue || component.Task != zeroTask || component.Schedule != zeroSchedule {
 			return fmt.Errorf("Worker %q contains fields for another component type", name)
 		}
 	case "task":
-		if component.Health != zeroHealth || component.Queue != zeroQueue || component.Worker != zeroWorker || component.Schedule != zeroSchedule {
+		if component.Health != zeroHealth || component.Database != zeroDatabase || component.Queue != zeroQueue || component.Worker != zeroWorker || component.Schedule != zeroSchedule {
 			return fmt.Errorf("Task %q contains fields for another component type", name)
 		}
 	case "schedule":
-		if component.Health != zeroHealth || component.Queue != zeroQueue || component.Worker != zeroWorker || component.Task != zeroTask {
+		if component.Health != zeroHealth || component.Database != zeroDatabase || component.Queue != zeroQueue || component.Worker != zeroWorker || component.Task != zeroTask {
 			return fmt.Errorf("Schedule %q contains fields for another component type", name)
 		}
+	}
+	return nil
+}
+
+func (c Compiled) validateDatabaseOnly() error {
+	if len(c.Environment.Implementations) != 1 || len(c.Revision.Artifacts) != 0 {
+		return errors.New("Database host tracer requires exactly one Database implementation and no Artifacts")
+	}
+	var databaseName string
+	for name, component := range c.Application.Components {
+		databaseName = name
+		if !validName(name) || component.Role != "database" {
+			return fmt.Errorf("component %q must be a Database", name)
+		}
+		if component.Health != (Health{}) || component.Queue != (QueueContract{}) || component.Worker != (WorkerContract{}) || component.Task != (TaskContract{}) || component.Schedule != (ScheduleContract{}) {
+			return fmt.Errorf("Database %q contains fields for another component type", name)
+		}
+		contract := component.Database
+		if contract.Engine != "postgresql" || !validName(contract.DatabaseName) {
+			return fmt.Errorf("Database %q requires a PostgreSQL engine and lowercase databaseName", name)
+		}
+		if contract.DataRole != "authoritative" {
+			return fmt.Errorf("Database %q requires authoritative dataRole for managed PostgreSQL", name)
+		}
+		if contract.StoreRollbackGuarantee != "forward-only" {
+			return fmt.Errorf("Database %q requires explicit forward-only Store Rollback Guarantee until store transitions are qualified", name)
+		}
+		if contract.TransitionCleanupPolicy != "retain-previous-generation" {
+			return fmt.Errorf("Database %q requires previous Store Generation retention policy", name)
+		}
+		if contract.Backup.Mode != "required" || validateCanonicalDuration(contract.Backup.Frequency, time.Minute, 24*time.Hour) != nil || validateCanonicalDuration(contract.Backup.Retention, time.Hour, 24*30*time.Hour) != nil {
+			return fmt.Errorf("Database %q requires a bounded backup policy", name)
+		}
+		if validateCanonicalDuration(contract.Recovery.PointObjective, time.Minute, 24*time.Hour) != nil || validateCanonicalDuration(contract.Recovery.TimeObjective, time.Minute, 24*time.Hour) != nil || contract.Recovery.RestoreVerification != "isolated-generation" || contract.Recovery.HostLoss != "off-host-backup-required" {
+			return fmt.Errorf("Database %q requires an explicit restore-verified recovery policy", name)
+		}
+		backupFrequency, _ := time.ParseDuration(contract.Backup.Frequency)
+		backupRetention, _ := time.ParseDuration(contract.Backup.Retention)
+		recoveryPointObjective, _ := time.ParseDuration(contract.Recovery.PointObjective)
+		rollbackWindow, _ := time.ParseDuration(string(c.Environment.RollbackWindow))
+		if backupFrequency > recoveryPointObjective {
+			return fmt.Errorf("Database %q backup frequency cannot exceed recovery point objective", name)
+		}
+		if backupRetention < rollbackWindow {
+			return fmt.Errorf("Database %q backup retention must cover the rollbackWindow", name)
+		}
+	}
+	implementation, ok := c.Environment.Implementations[databaseName]
+	if !ok {
+		return fmt.Errorf("Database %q has no implementation", databaseName)
+	}
+	target, ok := c.Environment.Targets[implementation.Target]
+	if len(c.Environment.Targets) != 1 || !ok || target.Kind != "host" || !validName(implementation.Target) || !userPattern.MatchString(target.User) {
+		return errors.New("Database host tracer requires exactly one valid Host Target and operator")
+	}
+	if target.Local {
+		if target.Address != "" {
+			return fmt.Errorf("local implementation target %q cannot declare an address", implementation.Target)
+		}
+	} else if !hostPattern.MatchString(target.Address) || strings.HasSuffix(target.Address, ".") {
+		return fmt.Errorf("implementation target %q must name an existing remote Host Target", implementation.Target)
+	}
+	if implementation.Endpoint != (Endpoint{}) || implementation.Worker != (WorkerImplementation{}) || implementation.Schedule != (ScheduleImplementation{}) {
+		return fmt.Errorf("Database %q contains fields for another implementation type", databaseName)
+	}
+	if implementation.Kind != "postgresql-quadlet" || implementation.Lifecycle != "managed" || implementation.Rollout != "required" || !validSecretReference(implementation.Credential) {
+		return fmt.Errorf("Database %q requires a managed postgresql-quadlet implementation and Database credential Secret Reference", databaseName)
 	}
 	return nil
 }

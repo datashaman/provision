@@ -14,6 +14,7 @@ import (
 	"provision/internal/config"
 	"provision/internal/host"
 	hostasync "provision/internal/implementation/hostasync"
+	hostdatabase "provision/internal/implementation/hostdatabase"
 	"provision/internal/planmodel"
 	"provision/internal/rollbackwindow"
 )
@@ -32,19 +33,20 @@ type Preview struct {
 }
 
 type Plan struct {
-	SchemaVersion            string                `json:"schemaVersion"`
-	ID                       string                `json:"id"`
-	Application              string                `json:"application"`
-	Environment              string                `json:"environment"`
-	Revision                 string                `json:"revision"`
-	ConfigurationDigest      string                `json:"configurationDigest"`
-	ArtifactDigests          map[string]string     `json:"artifactDigests"`
-	Target                   Target                `json:"target"`
-	ObservationDigest        string                `json:"observationDigest"`
-	Capability               CapabilityEvidence    `json:"capability"`
-	ApprovalRequirements     []ApprovalRequirement `json:"approvalRequirements"`
-	SensitiveValueReferences []string              `json:"sensitiveValueReferences"`
-	Operations               []Operation           `json:"operations"`
+	SchemaVersion            string                  `json:"schemaVersion"`
+	ID                       string                  `json:"id"`
+	Application              string                  `json:"application"`
+	Environment              string                  `json:"environment"`
+	Revision                 string                  `json:"revision"`
+	ConfigurationDigest      string                  `json:"configurationDigest"`
+	ArtifactDigests          map[string]string       `json:"artifactDigests"`
+	Target                   Target                  `json:"target"`
+	ObservationDigest        string                  `json:"observationDigest"`
+	Capability               CapabilityEvidence      `json:"capability"`
+	ApprovalRequirements     []ApprovalRequirement   `json:"approvalRequirements"`
+	SensitiveValueReferences []string                `json:"sensitiveValueReferences"`
+	Database                 *DatabaseOperationInput `json:"database,omitempty"`
+	Operations               []Operation             `json:"operations"`
 }
 
 type Target struct {
@@ -128,6 +130,9 @@ type AsyncWorkerHandoffInput = planmodel.AsyncWorkerHandoffInput
 type AsyncTaskInput = planmodel.AsyncTaskInput
 type AsyncScheduleInput = planmodel.AsyncScheduleInput
 type AsyncRuntimeInput = planmodel.AsyncRuntimeInput
+type DatabaseOperationInput = planmodel.DatabaseOperationInput
+type DatabaseBindingInput = planmodel.DatabaseBindingInput
+type DatabaseStoreConsequences = planmodel.DatabaseStoreConsequences
 
 type ArtifactInput = planmodel.ArtifactInput
 type GenerationReference = planmodel.GenerationReference
@@ -141,6 +146,9 @@ type RetentionInput = planmodel.RetentionInput
 // Build converts validated configuration and a restricted Host Target
 // inspection into canonical preview data. It never changes or persists state.
 func Build(compiled config.Compiled, observation host.BootstrapStatus) (Preview, error) {
+	if compiled.IsDatabaseOnly() {
+		return buildDatabase(compiled, observation)
+	}
 	if compiled.IsAsync() {
 		return buildAsync(compiled, observation)
 	}
@@ -218,6 +226,68 @@ func Build(compiled config.Compiled, observation host.BootstrapStatus) (Preview,
 		}},
 		SensitiveValueReferences: []string{},
 		Operations:               httpOperations(compiled, selection, observation, observationDigest),
+	}
+	plan.ID, err = digest(plan)
+	if err != nil {
+		return Preview{}, err
+	}
+	preview.Plan = &plan
+	return preview, nil
+}
+
+func buildDatabase(compiled config.Compiled, observation host.BootstrapStatus) (Preview, error) {
+	target, err := compiled.PlanningTarget()
+	if err != nil {
+		return Preview{}, err
+	}
+	if observation.Environment != compiled.Environment.Name || observation.Operator != target.Target.User {
+		return Preview{}, errors.New("host observation does not identify the configured Environment and operator")
+	}
+	evaluation := hostdatabase.Evaluate(compiled, observation, target)
+	evidence := CapabilityEvidence{
+		Contract:        evaluation.Contract,
+		RequiredMode:    "required",
+		Guarantees:      evaluation.Guarantees,
+		SupportEvidence: evaluation.SupportEvidence,
+		Observed:        observation,
+		Decision:        "required-initial-generation-supported",
+	}
+	reasons := append([]string(nil), evaluation.Reasons...)
+	if observation.Database != nil {
+		if reason := hostdatabase.ReplacementReason(compiled, *observation.Database); reason != "" {
+			reasons = append(reasons, reason)
+		}
+	}
+	preview := Preview{SchemaVersion: PreviewSchemaVersion, Executable: len(reasons) == 0, Capability: evidence, Reasons: unique(reasons)}
+	if len(reasons) != 0 {
+		preview.Capability.Decision = "unsupported"
+		return preview, nil
+	}
+
+	planObservation := hostdatabase.DecisionObservation(observation)
+	evidence.DecisionObserved = &planObservation
+	preview.Capability = evidence
+	observationDigest, err := digest(planObservation)
+	if err != nil {
+		return Preview{}, err
+	}
+	adapterPlan := hostdatabase.Plan(compiled, planObservation)
+	plan := Plan{
+		SchemaVersion:       SchemaVersion,
+		Application:         compiled.Application.Name,
+		Environment:         compiled.Environment.Name,
+		Revision:            compiled.Revision.Name,
+		ConfigurationDigest: compiled.Digest,
+		ArtifactDigests:     map[string]string{},
+		Target:              Target{Name: target.Name, Kind: target.Target.Kind, Local: target.Target.Local, Address: target.Target.Address, User: target.Target.User},
+		ObservationDigest:   observationDigest,
+		Capability:          evidence,
+		ApprovalRequirements: []ApprovalRequirement{{
+			Capability: "approve", Reason: "environment database policy requires approval of this exact Plan",
+		}},
+		SensitiveValueReferences: adapterPlan.SensitiveValueReferences,
+		Database:                 adapterPlan.Database,
+		Operations:               []Operation{},
 	}
 	plan.ID, err = digest(plan)
 	if err != nil {

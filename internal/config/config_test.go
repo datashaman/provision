@@ -131,6 +131,68 @@ func TestLoadQueueOnlyExampleDeterministically(t *testing.T) {
 	}
 }
 
+func TestLoadDatabaseExampleDefaultsAuthoritativeData(t *testing.T) {
+	path := filepath.Join("..", "..", "examples", "host-database", "root.yaml")
+	first, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.Digest != second.Digest || !first.IsDatabaseOnly() {
+		t.Fatalf("invalid Database compilation: %+v", first)
+	}
+	database := first.Application.Components["data"].Database
+	if database.DataRole != "authoritative" || database.StoreRollbackGuarantee != "forward-only" {
+		t.Fatalf("Database defaults/policy not preserved: %+v", database)
+	}
+	if len(first.Revision.Artifacts) != 0 || first.Environment.Implementations["data"].Credential != "secret://lab/postgresql-url" {
+		t.Fatalf("Database configuration has unrelated artifacts or missing secret reference: %+v", first)
+	}
+}
+
+func TestRejectsUnsafeDatabasePolicies(t *testing.T) {
+	tests := []struct {
+		name string
+		file string
+		old  string
+		new  string
+		want string
+	}{
+		{"derived data role", "application.yaml", "engine: postgresql", "engine: postgresql\n      dataRole: derived", "authoritative dataRole"},
+		{"zero loss rollback overclaim", "application.yaml", "storeRollbackGuarantee: forward-only", "storeRollbackGuarantee: zero-loss", "forward-only Store Rollback Guarantee"},
+		{"destroy previous", "application.yaml", "transitionCleanupPolicy: retain-previous-generation", "transitionCleanupPolicy: destroy-previous-generation", "previous Store Generation retention policy"},
+		{"missing backup", "application.yaml", "mode: required", "mode: optional", "bounded backup policy"},
+		{"backup misses rpo", "application.yaml", "pointObjective: 1h0m0s", "pointObjective: 30m0s", "backup frequency cannot exceed recovery point objective"},
+		{"backup retention misses rollback", "environment.yaml", "rollbackWindow: 30m0s", "rollbackWindow: 200h0m0s", "backup retention must cover the rollbackWindow"},
+		{"in-place restore", "application.yaml", "restoreVerification: isolated-generation", "restoreVerification: in-place", "restore-verified recovery policy"},
+		{"resolved credential", "environment.yaml", "secret://lab/postgresql-url", "postgres://user:super-secret@127.0.0.1/app", "Database credential Secret Reference"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			dir := copyDatabaseExample(t)
+			path := filepath.Join(dir, test.file)
+			data, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			changed := strings.Replace(string(data), test.old, test.new, 1)
+			if changed == string(data) {
+				t.Fatalf("test substitution did not match %q", test.old)
+			}
+			if err := os.WriteFile(path, []byte(changed), 0600); err != nil {
+				t.Fatal(err)
+			}
+			_, err = Load(filepath.Join(dir, "root.yaml"))
+			if err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("error = %v; want %q", err, test.want)
+			}
+		})
+	}
+}
+
 func TestEquivalentJSONRootHasSameDigest(t *testing.T) {
 	dir := copyExample(t)
 	jsonRoot := filepath.Join(dir, "root.json")
@@ -292,6 +354,21 @@ func copyAsyncExample(t *testing.T) string {
 	dir := t.TempDir()
 	for _, name := range []string{"root.yaml", "application.yaml", "environment.yaml", "revision.yaml"} {
 		data, err := os.ReadFile(filepath.Join("..", "..", "examples", "host-async", name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, name), data, 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return dir
+}
+
+func copyDatabaseExample(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	for _, name := range []string{"root.yaml", "application.yaml", "environment.yaml", "revision.yaml"} {
+		data, err := os.ReadFile(filepath.Join("..", "..", "examples", "host-database", name))
 		if err != nil {
 			t.Fatal(err)
 		}

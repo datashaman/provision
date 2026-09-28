@@ -94,15 +94,16 @@ type TypedCondition struct {
 }
 
 type OperationInput struct {
-	Artifact   *ArtifactInput         `json:"artifact,omitempty"`
-	Generation *GenerationInput       `json:"generation,omitempty"`
-	Systemd    *SystemdInput          `json:"systemd,omitempty"`
-	Health     *HealthInput           `json:"health,omitempty"`
-	Endpoint   *EndpointInput         `json:"endpoint,omitempty"`
-	Previous   *host.GenerationStatus `json:"previous,omitempty"`
-	Drain      *DrainInput            `json:"drain,omitempty"`
-	Retention  *RetentionInput        `json:"retention,omitempty"`
-	Async      *AsyncOperationInput   `json:"async,omitempty"`
+	Artifact   *ArtifactInput          `json:"artifact,omitempty"`
+	Generation *GenerationInput        `json:"generation,omitempty"`
+	Systemd    *SystemdInput           `json:"systemd,omitempty"`
+	Health     *HealthInput            `json:"health,omitempty"`
+	Endpoint   *EndpointInput          `json:"endpoint,omitempty"`
+	Previous   *host.GenerationStatus  `json:"previous,omitempty"`
+	Drain      *DrainInput             `json:"drain,omitempty"`
+	Retention  *RetentionInput         `json:"retention,omitempty"`
+	Async      *AsyncOperationInput    `json:"async,omitempty"`
+	Database   *DatabaseOperationInput `json:"database,omitempty"`
 }
 
 type AsyncOperationInput struct {
@@ -205,6 +206,60 @@ type AsyncScheduleInput struct {
 type AsyncRuntimeInput struct {
 	AppletDigest string `json:"appletDigest"`
 	LedgerSchema string `json:"ledgerSchema"`
+}
+
+type DatabaseOperationInput struct {
+	Component               string                        `json:"component"`
+	LogicalID               string                        `json:"logicalId"`
+	GenerationID            string                        `json:"generationId"`
+	Implementation          string                        `json:"implementation"`
+	Lifecycle               string                        `json:"lifecycle"`
+	Rollout                 string                        `json:"rollout"`
+	CredentialReference     string                        `json:"credentialReference"`
+	DatabaseName            string                        `json:"databaseName"`
+	DataRole                string                        `json:"dataRole"`
+	PostgreSQLVersion       string                        `json:"postgresqlVersion"`
+	ImageIndex              string                        `json:"imageIndex"`
+	ImageManifest           string                        `json:"imageManifest"`
+	ImageReference          string                        `json:"imageReference"`
+	ServiceUnit             string                        `json:"serviceUnit"`
+	Container               string                        `json:"container"`
+	Account                 string                        `json:"account"`
+	DataPath                string                        `json:"dataPath"`
+	QuadletPath             string                        `json:"quadletPath"`
+	ListenAddress           string                        `json:"listenAddress"`
+	Port                    int                           `json:"port"`
+	StoreRollbackGuarantee  string                        `json:"storeRollbackGuarantee"`
+	ForwardCutoverGuarantee string                        `json:"forwardCutoverGuarantee"`
+	TransitionMechanism     string                        `json:"transitionMechanism"`
+	TransitionCleanupPolicy string                        `json:"transitionCleanupPolicy"`
+	RollbackWindow          rollbackwindow.Window         `json:"rollbackWindow"`
+	Backup                  config.DatabaseBackupPolicy   `json:"backup"`
+	Recovery                config.DatabaseRecoveryPolicy `json:"recovery"`
+	Binding                 DatabaseBindingInput          `json:"binding"`
+	Consequences            DatabaseStoreConsequences     `json:"consequences"`
+	Observed                host.DatabaseDeploymentStatus `json:"observed"`
+}
+
+type DatabaseBindingInput struct {
+	Reference string `json:"reference"`
+	Protocol  string `json:"protocol"`
+	Host      string `json:"host"`
+	Port      int    `json:"port"`
+	Database  string `json:"database"`
+}
+
+type DatabaseStoreConsequences struct {
+	ActiveGeneration        string                `json:"activeGeneration"`
+	CandidateGeneration     string                `json:"candidateGeneration"`
+	PreviousGeneration      string                `json:"previousGeneration"`
+	RetainedGenerations     []string              `json:"retainedGenerations"`
+	Synchronization         string                `json:"synchronization"`
+	Cutover                 string                `json:"cutover"`
+	Retention               string                `json:"retention"`
+	StoreRollbackGuarantee  string                `json:"storeRollbackGuarantee"`
+	RollbackWindow          rollbackwindow.Window `json:"rollbackWindow"`
+	TransitionApplicability string                `json:"transitionApplicability"`
 }
 
 type ArtifactInput struct {

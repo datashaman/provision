@@ -470,6 +470,9 @@ func verifyHealthResult(envelope operation.Envelope, result operation.Result) er
 			if check.Name != expected[index].name || check.Path != expected[index].path || !check.Healthy || check.StatusCode < 200 || check.StatusCode >= 300 {
 				return errors.New("host health success observation is invalid")
 			}
+			if check.Name == "candidateVerification" && !databaseBindingEvidenceMatches(input.DatabaseBindings, check.DatabaseBinding) {
+				return errors.New("host health Database binding evidence does not match the Plan")
+			}
 		}
 	}
 	if result.Outcome == operation.OutcomeFailed && (observed.Status != host.CandidateFailed || observed.Reason == "" || observed.SwitchEligible) {
@@ -637,6 +640,49 @@ func exactHealthChecks(checks []host.HealthCheckObservation, input planner.Healt
 	}
 	for index, check := range checks {
 		if check.Name != expected[index].name || check.Path != expected[index].path || !check.Healthy || check.StatusCode < 200 || check.StatusCode >= 300 || check.Reason != "" {
+			return false
+		}
+		if check.Name == "candidateVerification" && !databaseBindingEvidenceMatches(input.DatabaseBindings, check.DatabaseBinding) {
+			return false
+		}
+	}
+	return true
+}
+
+func databaseBindingEvidenceMatches(planned []planner.DatabaseBindingInput, observed *host.DatabaseBindingObservation) bool {
+	if len(planned) == 0 {
+		return observed == nil
+	}
+	if len(planned) != 1 || observed == nil {
+		return false
+	}
+	binding := planned[0]
+	if observed.LogicalID != binding.LogicalID || observed.GenerationID != binding.GenerationID || observed.Status != "verified" || !databaseBindingRecordsMatch(binding, observed.Records) {
+		return false
+	}
+	return true
+}
+
+func databaseBindingRecordsMatch(binding planner.DatabaseBindingInput, observed []host.DeterministicDatabaseRecordStatus) bool {
+	if binding.DeterministicRecordNamespace == "" || len(binding.DeterministicRecordIDs) == 0 || len(observed) != len(binding.DeterministicRecordIDs) {
+		return false
+	}
+	expected := map[string]bool{}
+	for _, id := range binding.DeterministicRecordIDs {
+		if !strings.HasPrefix(id, binding.DeterministicRecordNamespace+"/") {
+			return false
+		}
+		expected[id] = false
+	}
+	for _, record := range observed {
+		seen, ok := expected[record.ID]
+		if !ok || seen || record.Namespace != binding.DeterministicRecordNamespace {
+			return false
+		}
+		expected[record.ID] = true
+	}
+	for _, seen := range expected {
+		if !seen {
 			return false
 		}
 	}

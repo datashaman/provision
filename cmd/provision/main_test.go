@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"os/user"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -902,6 +903,103 @@ func TestDatabasePlanPreviewIsDeterministicAndFailsClosedForUnqualifiedTransitio
 	}
 }
 
+func TestDatabaseBoundHTTPPlanBindsAppToActiveDatabase(t *testing.T) {
+	dir := t.TempDir()
+	sshLog := filepath.Join(dir, "ssh.log")
+	writeDatabaseBootstrapInspectionSSH(t, dir)
+	configPath := filepath.Join("..", "..", "examples", "host-database-http", "root.yaml")
+
+	preview := func(extraEnv ...string) ([]byte, error) {
+		command := exec.Command("go", "run", ".", "plan", "preview", "--file", configPath)
+		command.Env = append(os.Environ(), "PATH="+dir+string(os.PathListSeparator)+os.Getenv("PATH"), "FAKE_SSH_LOG="+sshLog)
+		command.Env = append(command.Env, extraEnv...)
+		return command.CombinedOutput()
+	}
+	first, err := preview()
+	if err != nil {
+		t.Fatalf("Database-bound HTTP Plan preview failed: %v\n%s", err, first)
+	}
+	second, err := preview()
+	if err != nil {
+		t.Fatalf("second Database-bound HTTP Plan preview failed: %v\n%s", err, second)
+	}
+	if string(first) != string(second) {
+		t.Fatalf("equivalent Database-bound HTTP inputs produced different Plans:\n%s\n%s", first, second)
+	}
+	var plan planner.Plan
+	if err := json.Unmarshal(first, &plan); err != nil {
+		t.Fatalf("invalid Database-bound HTTP Plan JSON: %v\n%s", err, first)
+	}
+	wantOperations := []planner.OperationKind{
+		planner.PrepareDatabase, planner.StageArtifact, planner.InstallGeneration, planner.StartCandidate,
+		planner.VerifyCandidate, planner.SwitchEndpoint, planner.VerifyActive,
+	}
+	if len(plan.Operations) != len(wantOperations) {
+		t.Fatalf("operation count = %d, want %d:\n%s", len(plan.Operations), len(wantOperations), first)
+	}
+	for index, want := range wantOperations {
+		if plan.Operations[index].Kind != want {
+			t.Fatalf("operation %d = %q, want %q", index, plan.Operations[index].Kind, want)
+		}
+	}
+	stage := plan.Operations[1]
+	start := plan.Operations[3]
+	if !slices.Contains(stage.DependsOn, "op-01") || start.Input.Systemd == nil || len(start.Input.Systemd.DatabaseBindings) != 1 {
+		t.Fatalf("HTTP component is not gated by the managed Database binding: stage=%+v start=%+v", stage, start)
+	}
+	binding := start.Input.Systemd.DatabaseBindings[0]
+	if binding.Component != "data" || binding.LogicalID != "provision-lab-data" || binding.GenerationID != "postgresql-17-6-b86568d3e0fe" || binding.Reference != "secret://lab/postgresql-url" || binding.EnvironmentVariable != "PROVISION_DATABASE_URL_FILE" {
+		t.Fatalf("HTTP component binding does not use the logical Database identity: %+v", binding)
+	}
+	wantRecordID := "provision-lab-data/provision-example-database-http-v1/record-0001"
+	if binding.DeterministicRecordNamespace != "provision-lab-data/provision-example-database-http-v1" || len(binding.DeterministicRecordIDs) != 1 || binding.DeterministicRecordIDs[0] != wantRecordID {
+		t.Fatalf("HTTP component binding does not require exact deterministic Database record evidence: %+v", binding)
+	}
+	if plan.Database == nil || plan.Database.Binding.Reference != "secret://lab/postgresql-url" {
+		t.Fatalf("Plan omitted managed Database input: %+v", plan.Database)
+	}
+	if len(plan.SensitiveValueReferences) != 1 || plan.SensitiveValueReferences[0] != "secret://lab/postgresql-url" {
+		t.Fatalf("Plan omitted Database Secret Reference: %+v", plan.SensitiveValueReferences)
+	}
+	for _, want := range []string{
+		`"contract": "host-postgresql-systemd-database+http-component/v1alpha1"`,
+		`"applicationHealth": "http-candidate"`,
+		`"bindingState": "database-bound"`,
+		`"deterministicRecordNamespace": "provision-lab-data/provision-example-database-http-v1"`,
+		`"provision-lab-data/provision-example-database-http-v1/record-0001"`,
+	} {
+		if !strings.Contains(string(first), want) {
+			t.Fatalf("Database-bound HTTP Plan omitted %s:\n%s", want, first)
+		}
+	}
+	if strings.Contains(string(first), "postgresql://") || strings.Contains(string(first), "LongRandomPassword") {
+		t.Fatalf("Database-bound HTTP Plan exposed resolved Database credentials: %s", first)
+	}
+
+	exactActive, exactActiveErr := preview("FAKE_ACTIVE_DATABASE_EXACT=1", "FAKE_ACTIVE_HTTP_COMPONENT_EXACT=1")
+	if exactActiveErr != nil {
+		t.Fatalf("exact active Database-bound HTTP did not preview cleanly: %v\n%s", exactActiveErr, exactActive)
+	}
+	var exactActivePlan planner.Plan
+	if err := json.Unmarshal(exactActive, &exactActivePlan); err != nil {
+		t.Fatal(err)
+	}
+	if len(exactActivePlan.Operations) != 0 || exactActivePlan.Database == nil {
+		t.Fatalf("unchanged Database-bound HTTP was not a no-op Plan: %s", exactActive)
+	}
+	missingActiveBinding, missingActiveBindingErr := preview("FAKE_ACTIVE_DATABASE_EXACT=1", "FAKE_ACTIVE_HTTP_COMPONENT_EXACT=1", "FAKE_ACTIVE_HTTP_COMPONENT_DATABASE_BINDING=false")
+	if missingActiveBindingErr != nil {
+		t.Fatalf("active HTTP component without observed Database binding did not preview cleanly: %v\n%s", missingActiveBindingErr, missingActiveBinding)
+	}
+	var missingActiveBindingPlan planner.Plan
+	if err := json.Unmarshal(missingActiveBinding, &missingActiveBindingPlan); err != nil {
+		t.Fatal(err)
+	}
+	if len(missingActiveBindingPlan.Operations) == 0 {
+		t.Fatalf("active HTTP component without observed Database binding was treated as a no-op Plan: %s", missingActiveBinding)
+	}
+}
+
 func TestPlanPreviewRejectsUntestedRequiredBlueGreenCapability(t *testing.T) {
 	dir := t.TempDir()
 	writeBootstrapInspectionSSH(t, dir)
@@ -1354,6 +1452,14 @@ case "$*" in
     podman_version="${FAKE_PODMAN_VERSION:-5.7.0+ds2-3build1}"
     credential_reference="${FAKE_POSTGRES_CREDENTIAL_REFERENCE:-secret://lab/postgresql-url}"
     encrypted_credential="${FAKE_ENCRYPTED_CREDENTIAL:-true}"
+    host_deployment='{}'
+    if [ "${FAKE_ACTIVE_HTTP_COMPONENT_EXACT:-0}" = 1 ]; then
+      http_database_binding=''
+      if [ "${FAKE_ACTIVE_HTTP_COMPONENT_DATABASE_BINDING:-true}" = true ]; then
+        http_database_binding=',"databaseBinding":{"component":"data","logicalId":"provision-lab-data","generationId":"postgresql-17-6-b86568d3e0fe","database":"app","environmentVariable":"PROVISION_DATABASE_URL_FILE","bindingState":"database-bound"}'
+      fi
+      host_deployment='{"active":{"id":"provision-example-database-http-v1-4ac304a88517","revision":"provision-example-database-http-v1","artifactDigest":"sha256:4ac304a885179a21fc889fef25cf09f12d8af19e30aa49c1c05e719d10f031b5","systemdUnit":"provision-lab-web-4ac304a88517.service","releaseDirectory":"/var/lib/provision/environments/lab/releases/provision-example-database-http-v1-4ac304a88517","port":39139,"routeId":"provision-lab-web"'"$http_database_binding"',"unitActive":true,"unitMatches":true,"routeObserved":true,"routeUpstream":"127.0.0.1:39139","routeMatches":true}}'
+    fi
     deployment='{}'
     if [ "${FAKE_ACTIVE_DATABASE_DIFFERENT:-0}" = 1 ]; then
       deployment='{"active":{"id":"postgresql-16-0-aaaaaaaaaaaa","logicalId":"provision-lab-data","ready":true,"postgresqlVersion":"16.0","imageManifest":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","serviceUnit":"provision-lab-postgresql.service","container":"provision-lab-postgresql","account":"provision-lab","dataPath":"/var/lib/provision/environments/lab/services/postgresql/generations/postgresql-16-0-aaaaaaaaaaaa/data","quadletPath":"/etc/containers/systemd/users/999/provision-lab-postgresql.container","database":"app","connectivity":true,"durableRestart":true}}'
@@ -1361,7 +1467,7 @@ case "$*" in
     if [ "${FAKE_ACTIVE_DATABASE_EXACT:-0}" = 1 ]; then
       deployment='{"active":{"id":"postgresql-17-6-b86568d3e0fe","logicalId":"provision-lab-data","ready":true,"postgresqlVersion":"17.6","imageManifest":"sha256:b86568d3e0fe1dfaeff52714f9da36f206a30e4c49131b82bf96982d78627409","serviceUnit":"provision-lab-postgresql.service","container":"provision-lab-postgresql","account":"provision-lab","dataPath":"/var/lib/provision/environments/lab/services/postgresql/generations/postgresql-17-6-b86568d3e0fe/data","quadletPath":"/etc/containers/systemd/users/999/provision-lab-postgresql.container","database":"app","connectivity":true,"durableRestart":true}}'
     fi
-    printf '{"schemaVersion":"provision.dev/host-inspection/v1alpha1","environment":"lab","operator":"marlinf","account":"provision-lab","os":"ubuntu","osVersion":"26.04","architecture":"x86_64","systemdVersion":"systemd 259 (259.5-0ubuntu3.4)","sshServerVersion":"OpenSSH_10.2p1","caddyVersion":"2.6.2","caddyActive":true,"journaldActive":true,"cgroupV2":true,"executorDigest":"%s","authorityKeyId":"sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc","sshHostKeyFingerprint":"SHA256:ddddddddddddddddddddddddddddddddddddddddddd","generationStorageReady":true,"caddyConfigValid":true,"caddyAdminReachable":true,"caddyConfigDurable":true,"allowedOperations":["inspect","stageArtifact","installGeneration","startCandidate","verifyCandidate","switchEndpoint","verifyActive","drainPrevious","retainPrevious","prepareQueue","installTaskGeneration","verifyTaskGeneration","installWorkerGeneration","startWorkerCandidate","verifyWorkerCandidate","fenceWorkerIntake","drainWorkerPrevious","activateWorkerIntake","verifyWorkerActive","installScheduleRuntime","handoffSchedule","verifySchedule","retainWorkerPrevious","prepareDatabase"],"ready":true,"findings":[],"database":{"schemaVersion":"provision.dev/host-database-inspection/v1alpha1","observationComplete":true,"findings":[],"capabilities":{"podmanVersion":"%s","quadlet":true,"rootlessEnvironmentAccount":true,"systemdCredentials":true,"subordinateIds":true,"lingeringUserManager":true,"quadletDefinitionRootOwned":true,"generationDataPathOwned":true,"encryptedCredentialObserved":%s,"postgresqlQualificationDigest":"sha256:892fb587ac7323ba4f04d38b1fc165f9e2304219f3de14e7e365cb60b4960eff","postgresqlVersion":"17.6","postgresqlImageIndex":"sha256:00bc86618629af00d2937fdc5a5d63db3ff8450acf52f0636ec813c7f4902929","postgresqlImageManifest":"%s","postgresqlImageReference":"docker.io/library/postgres@%s","postgresqlServiceUnit":"provision-lab-postgresql.service","postgresqlContainer":"provision-lab-postgresql","postgresqlAccount":"provision-lab","postgresqlGeneration":"postgresql-17-6-b86568d3e0fe","postgresqlGenerationDataPath":"/var/lib/provision/environments/lab/services/postgresql/generations/postgresql-17-6-b86568d3e0fe/data","postgresqlQuadletPath":"/etc/containers/systemd/users/999/provision-lab-postgresql.container","postgresqlCredentialReference":"%s","storeRollbackGuarantee":"not-qualified-by-packaging-proof","forwardCutoverGuarantee":"not-qualified-by-packaging-proof","supportedTransitionMechanism":"none-qualified-by-packaging-proof"},"deployment":%s}}\n' "$executor_digest" "$podman_version" "$encrypted_credential" "$postgres_manifest" "$postgres_manifest" "$credential_reference" "$deployment"
+    printf '{"schemaVersion":"provision.dev/host-inspection/v1alpha1","environment":"lab","operator":"marlinf","account":"provision-lab","os":"ubuntu","osVersion":"26.04","architecture":"x86_64","systemdVersion":"systemd 259 (259.5-0ubuntu3.4)","sshServerVersion":"OpenSSH_10.2p1","caddyVersion":"2.6.2","caddyActive":true,"journaldActive":true,"cgroupV2":true,"executorDigest":"%s","authorityKeyId":"sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc","sshHostKeyFingerprint":"SHA256:ddddddddddddddddddddddddddddddddddddddddddd","generationStorageReady":true,"caddyConfigValid":true,"caddyAdminReachable":true,"caddyConfigDurable":true,"deployment":%s,"allowedOperations":["inspect","stageArtifact","installGeneration","startCandidate","verifyCandidate","switchEndpoint","verifyActive","drainPrevious","retainPrevious","prepareQueue","installTaskGeneration","verifyTaskGeneration","installWorkerGeneration","startWorkerCandidate","verifyWorkerCandidate","fenceWorkerIntake","drainWorkerPrevious","activateWorkerIntake","verifyWorkerActive","installScheduleRuntime","handoffSchedule","verifySchedule","retainWorkerPrevious","prepareDatabase"],"ready":true,"findings":[],"database":{"schemaVersion":"provision.dev/host-database-inspection/v1alpha1","observationComplete":true,"findings":[],"capabilities":{"podmanVersion":"%s","quadlet":true,"rootlessEnvironmentAccount":true,"systemdCredentials":true,"subordinateIds":true,"lingeringUserManager":true,"quadletDefinitionRootOwned":true,"generationDataPathOwned":true,"encryptedCredentialObserved":%s,"postgresqlQualificationDigest":"sha256:892fb587ac7323ba4f04d38b1fc165f9e2304219f3de14e7e365cb60b4960eff","postgresqlVersion":"17.6","postgresqlImageIndex":"sha256:00bc86618629af00d2937fdc5a5d63db3ff8450acf52f0636ec813c7f4902929","postgresqlImageManifest":"%s","postgresqlImageReference":"docker.io/library/postgres@%s","postgresqlServiceUnit":"provision-lab-postgresql.service","postgresqlContainer":"provision-lab-postgresql","postgresqlAccount":"provision-lab","postgresqlGeneration":"postgresql-17-6-b86568d3e0fe","postgresqlGenerationDataPath":"/var/lib/provision/environments/lab/services/postgresql/generations/postgresql-17-6-b86568d3e0fe/data","postgresqlQuadletPath":"/etc/containers/systemd/users/999/provision-lab-postgresql.container","postgresqlCredentialReference":"%s","postgresqlListenAddress":"127.0.0.1","postgresqlPort":25432,"storeRollbackGuarantee":"not-qualified-by-packaging-proof","forwardCutoverGuarantee":"not-qualified-by-packaging-proof","supportedTransitionMechanism":"none-qualified-by-packaging-proof"},"deployment":%s}}\n' "$executor_digest" "$host_deployment" "$podman_version" "$encrypted_credential" "$postgres_manifest" "$postgres_manifest" "$credential_reference" "$deployment"
     ;;
   *) exit 23 ;;
 esac

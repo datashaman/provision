@@ -151,6 +151,9 @@ func Build(compiled config.Compiled, observation host.BootstrapStatus) (Preview,
 	if compiled.IsDatabaseOnly() {
 		return buildDatabase(compiled, observation)
 	}
+	if compiled.IsDatabaseBoundHTTP() {
+		return buildDatabaseBoundHTTP(compiled, observation)
+	}
 	if compiled.IsAsync() {
 		return buildAsync(compiled, observation)
 	}
@@ -237,6 +240,88 @@ func Build(compiled config.Compiled, observation host.BootstrapStatus) (Preview,
 	return preview, nil
 }
 
+func buildDatabaseBoundHTTP(compiled config.Compiled, observation host.BootstrapStatus) (Preview, error) {
+	selection, err := databaseBoundHTTPSelection(compiled)
+	if err != nil {
+		return Preview{}, err
+	}
+	if observation.Environment != compiled.Environment.Name || observation.Operator != selection.Target.User {
+		return Preview{}, errors.New("host observation does not identify the configured Environment and operator")
+	}
+	databaseEvaluation := hostdatabase.Evaluate(compiled, observation, config.TargetSelection{Name: selection.TargetName, Target: selection.Target})
+	evidence := CapabilityEvidence{
+		Contract:     "host-postgresql-systemd-database+http-component/v1alpha1",
+		RequiredMode: "required",
+		Guarantees: unique(append([]string{
+			"logical-database-binding",
+			"secret-reference-only-plan",
+			"application-health-distinct-from-database-health",
+			"deterministic-database-record-evidence",
+		}, append(databaseEvaluation.Guarantees, "separate-candidate-generation", "candidate-health-gate", "atomic-caddy-route-load", "previous-generation-retention")...)),
+		SupportEvidence: unique(append(databaseEvaluation.SupportEvidence, "restricted-bootstrap-ready", "caddy-config-valid", "generation-storage-ready", "restricted-executor-identity-matched")),
+		Observed:        observation,
+		Decision:        "required-database-bound-http-supported",
+	}
+	reasons := unique(append(capabilityIssues(observation, config.HostSelection{
+		Component: selection.HTTPComponent, Implementation: selection.HTTPImplementation, Artifact: selection.HTTPArtifact,
+		TargetName: selection.TargetName, Target: selection.Target,
+	}), databaseEvaluation.Reasons...))
+	if observation.Database != nil {
+		if reason := hostdatabase.ReplacementReason(compiled, *observation.Database); reason != "" {
+			reasons = append(reasons, reason)
+		}
+	}
+	preview := Preview{SchemaVersion: PreviewSchemaVersion, Executable: len(reasons) == 0, Capability: evidence, Reasons: unique(reasons)}
+	if len(reasons) != 0 {
+		preview.Capability.Decision = "unsupported"
+		return preview, nil
+	}
+
+	planObservation := hostdatabase.DecisionObservation(observation)
+	evidence.DecisionObserved = &planObservation
+	preview.Capability = evidence
+	observationDigest, err := digest(planObservation)
+	if err != nil {
+		return Preview{}, err
+	}
+	adapterPlan := hostdatabase.Plan(compiled, planObservation)
+	operations := databaseBoundHTTPOperations(compiled, selection, planObservation, observationDigest, adapterPlan)
+	for _, operation := range operations {
+		if !slices.Contains(observation.AllowedOperations, string(operation.Kind)) {
+			reasons = append(reasons, fmt.Sprintf("host executor does not allow typed %s operations", operation.Kind))
+		}
+	}
+	if len(reasons) != 0 {
+		preview.Executable = false
+		preview.Reasons = unique(reasons)
+		preview.Capability.Decision = "unsupported"
+		return preview, nil
+	}
+	plan := Plan{
+		SchemaVersion:       SchemaVersion,
+		Application:         compiled.Application.Name,
+		Environment:         compiled.Environment.Name,
+		Revision:            compiled.Revision.Name,
+		ConfigurationDigest: compiled.Digest,
+		ArtifactDigests:     map[string]string{selection.HTTPComponent: selection.HTTPArtifact.Digest},
+		Target:              Target{Name: selection.TargetName, Kind: selection.Target.Kind, Local: selection.Target.Local, Address: selection.Target.Address, User: selection.Target.User},
+		ObservationDigest:   observationDigest,
+		Capability:          evidence,
+		ApprovalRequirements: []ApprovalRequirement{{
+			Capability: "approve", Reason: "environment database-bound HTTP policy requires approval of this exact Plan",
+		}},
+		SensitiveValueReferences: adapterPlan.SensitiveValueReferences,
+		Database:                 adapterPlan.Database,
+		Operations:               operations,
+	}
+	plan.ID, err = digest(plan)
+	if err != nil {
+		return Preview{}, err
+	}
+	preview.Plan = &plan
+	return preview, nil
+}
+
 func buildDatabase(compiled config.Compiled, observation host.BootstrapStatus) (Preview, error) {
 	target, err := compiled.PlanningTarget()
 	if err != nil {
@@ -309,6 +394,159 @@ func buildDatabase(compiled config.Compiled, observation host.BootstrapStatus) (
 	}
 	preview.Plan = &plan
 	return preview, nil
+}
+
+type databaseBoundHTTPPlanSelection struct {
+	HTTPComponent      string
+	HTTPImplementation config.Implementation
+	HTTPArtifact       config.Artifact
+	DatabaseComponent  string
+	TargetName         string
+	Target             config.Target
+}
+
+func databaseBoundHTTPSelection(compiled config.Compiled) (databaseBoundHTTPPlanSelection, error) {
+	target, err := compiled.PlanningTarget()
+	if err != nil {
+		return databaseBoundHTTPPlanSelection{}, err
+	}
+	var selection databaseBoundHTTPPlanSelection
+	selection.TargetName, selection.Target = target.Name, target.Target
+	for name, component := range compiled.Application.Components {
+		switch component.Role {
+		case "http":
+			artifact, ok := compiled.Revision.Artifacts[name]
+			if !ok {
+				return databaseBoundHTTPPlanSelection{}, fmt.Errorf("HTTP component %q has no Artifact", name)
+			}
+			selection.HTTPComponent = name
+			selection.HTTPImplementation = compiled.Environment.Implementations[name]
+			selection.HTTPArtifact = artifact
+		case "database":
+			selection.DatabaseComponent = name
+		}
+	}
+	if selection.HTTPComponent == "" || selection.DatabaseComponent == "" {
+		return databaseBoundHTTPPlanSelection{}, errors.New("Database-bound HTTP configuration is incomplete")
+	}
+	return selection, nil
+}
+
+func databaseBoundHTTPOperations(compiled config.Compiled, selection databaseBoundHTTPPlanSelection, observation host.BootstrapStatus, observationDigest string, adapterPlan hostdatabase.PlanningOutput) []Operation {
+	databaseOps := databaseOperations(adapterPlan)
+	bindings := []DatabaseBindingInput{}
+	if adapterPlan.Database != nil {
+		binding := adapterPlan.Database.Binding
+		binding.Component = selection.DatabaseComponent
+		binding.LogicalID = adapterPlan.Database.LogicalID
+		binding.GenerationID = adapterPlan.Database.GenerationID
+		binding.EnvironmentVariable = "PROVISION_DATABASE_URL_FILE"
+		binding.ApplicationHealth = "http-candidate"
+		binding.BindingState = "database-bound"
+		binding.DeterministicRecordNamespace = adapterPlan.Database.LogicalID + "/" + compiled.Revision.Name
+		binding.DeterministicRecordIDs = []string{binding.DeterministicRecordNamespace + "/record-0001"}
+		bindings = append(bindings, binding)
+	}
+	httpSelection := config.HostSelection{
+		Component: selection.HTTPComponent, Implementation: selection.HTTPImplementation, Artifact: selection.HTTPArtifact,
+		TargetName: selection.TargetName, Target: selection.Target,
+	}
+	if exactActiveHTTP(compiled, httpSelection, observation, bindings) {
+		return databaseOps
+	}
+	httpOps := httpOperations(compiled, httpSelection, observation, observationDigest)
+	offset := len(databaseOps)
+	for index := range httpOps {
+		httpOps[index] = offsetOperation(httpOps[index], offset)
+		attachDatabaseBindings(&httpOps[index], bindings)
+		if offset > 0 && httpOps[index].Kind == StageArtifact {
+			httpOps[index] = withDependencies(httpOps[index], "op-01")
+		}
+	}
+	return append(databaseOps, httpOps...)
+}
+
+func exactActiveHTTP(compiled config.Compiled, selection config.HostSelection, observation host.BootstrapStatus, bindings []DatabaseBindingInput) bool {
+	active := observation.Deployment.Active
+	if active == nil {
+		return false
+	}
+	digestID := strings.TrimPrefix(selection.Artifact.Digest, "sha256:")[:12]
+	generationID := compiled.Revision.Name + "-" + digestID
+	unit := fmt.Sprintf("provision-%s-%s-%s.service", compiled.Environment.Name, selection.Component, digestID)
+	routeID := fmt.Sprintf("provision-%s-%s", compiled.Environment.Name, selection.Component)
+	return active.ID == generationID &&
+		active.Revision == compiled.Revision.Name &&
+		active.ArtifactDigest == selection.Artifact.Digest &&
+		active.SystemdUnit == unit &&
+		active.RouteID == routeID &&
+		active.UnitActive &&
+		active.UnitMatches &&
+		active.RouteObserved &&
+		active.RouteMatches &&
+		activeHTTPDatabaseBindingMatches(active.DatabaseBinding, bindings)
+}
+
+func activeHTTPDatabaseBindingMatches(observed *host.HTTPDatabaseBindingStatus, bindings []DatabaseBindingInput) bool {
+	if len(bindings) == 0 {
+		return observed == nil
+	}
+	if len(bindings) != 1 || observed == nil {
+		return false
+	}
+	binding := bindings[0]
+	return observed.Component == binding.Component &&
+		observed.LogicalID == binding.LogicalID &&
+		observed.GenerationID == binding.GenerationID &&
+		observed.Database == binding.Database &&
+		observed.EnvironmentVariable == binding.EnvironmentVariable &&
+		observed.BindingState == binding.BindingState
+}
+
+func offsetOperation(operation Operation, offset int) Operation {
+	if offset == 0 {
+		return operation
+	}
+	operation.ID = offsetOperationID(operation.ID, offset)
+	for index := range operation.DependsOn {
+		operation.DependsOn[index] = offsetOperationID(operation.DependsOn[index], offset)
+	}
+	return operation
+}
+
+func offsetOperationID(id string, offset int) string {
+	if !strings.HasPrefix(id, "op-") {
+		return id
+	}
+	var number int
+	if _, err := fmt.Sscanf(id, "op-%02d", &number); err != nil {
+		return id
+	}
+	return fmt.Sprintf("op-%02d", number+offset)
+}
+
+func attachDatabaseBindings(operation *Operation, bindings []DatabaseBindingInput) {
+	if len(bindings) == 0 {
+		return
+	}
+	if operation.Input.Generation != nil {
+		operation.Input.Generation.DatabaseBindings = append([]DatabaseBindingInput(nil), bindings...)
+	}
+	if operation.Input.Systemd != nil {
+		operation.Input.Systemd.DatabaseBindings = append([]DatabaseBindingInput(nil), bindings...)
+	}
+	if operation.Input.Health != nil {
+		operation.Input.Health.DatabaseBindings = append([]DatabaseBindingInput(nil), bindings...)
+	}
+	if operation.Input.Endpoint != nil {
+		operation.Input.Endpoint.DatabaseBindings = append([]DatabaseBindingInput(nil), bindings...)
+	}
+	if operation.Input.Drain != nil {
+		operation.Input.Drain.Endpoint.DatabaseBindings = append([]DatabaseBindingInput(nil), bindings...)
+	}
+	if operation.Input.Retention != nil {
+		operation.Input.Retention.Endpoint.DatabaseBindings = append([]DatabaseBindingInput(nil), bindings...)
+	}
 }
 
 func databaseOperations(adapterPlan hostdatabase.PlanningOutput) []Operation {

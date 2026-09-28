@@ -153,6 +153,70 @@ func TestLoadDatabaseExampleDefaultsAuthoritativeData(t *testing.T) {
 	}
 }
 
+func TestLoadDatabaseBoundHTTPExample(t *testing.T) {
+	path := filepath.Join("..", "..", "examples", "host-database-http", "root.yaml")
+	first, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.Digest != second.Digest || !strings.HasPrefix(first.Digest, "sha256:") || !first.IsDatabaseBoundHTTP() {
+		t.Fatalf("invalid Database-bound HTTP compilation: %+v", first)
+	}
+	web := first.Application.Components["web"]
+	if len(web.Requires) != 1 || web.Requires[0] != "data" {
+		t.Fatalf("HTTP component does not declare its logical Database relationship: %+v", web)
+	}
+	if len(first.Revision.Artifacts) != 1 || first.Revision.Artifacts["web"].Digest == "" {
+		t.Fatalf("HTTP component Revision does not bind exactly one app Artifact: %+v", first.Revision.Artifacts)
+	}
+	if first.Environment.Implementations["data"].Credential != "secret://lab/postgresql-url" {
+		t.Fatalf("managed Database Secret Reference missing: %+v", first.Environment.Implementations["data"])
+	}
+}
+
+func TestRejectsInvalidDatabaseBoundHTTPContracts(t *testing.T) {
+	tests := []struct {
+		name string
+		file string
+		old  string
+		new  string
+		want string
+	}{
+		{"requires omits database", "application.yaml", "    requires:\n      - data\n", "", "must require exactly one logical Database"},
+		{"requires missing database", "application.yaml", "- data", "- missing", "references missing Database"},
+		{"database artifact", "revision.yaml", "  web:", "  data:\n    source: https://example.invalid/database.tar.gz\n    digest: sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n  web:", "Artifact \"data\" must belong to the HTTP component"},
+		{"different host targets", "environment.yaml", "target: base\n    rollout: required\n    endpoint:", "target: other\n    rollout: required\n    endpoint:", "same Host Target"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			dir := copyDatabaseBoundHTTPExample(t)
+			path := filepath.Join(dir, test.file)
+			data, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			changed := strings.Replace(string(data), test.old, test.new, 1)
+			if changed == string(data) {
+				t.Fatalf("test substitution did not match %q", test.old)
+			}
+			if test.name == "different host targets" {
+				changed = strings.Replace(changed, "targets:\n  base:", "targets:\n  other:\n    kind: host\n    address: other.local\n    user: marlinf\n  base:", 1)
+			}
+			if err := os.WriteFile(path, []byte(changed), 0600); err != nil {
+				t.Fatal(err)
+			}
+			_, err = Load(filepath.Join(dir, "root.yaml"))
+			if err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("error = %v; want %q", err, test.want)
+			}
+		})
+	}
+}
+
 func TestRejectsUnsafeDatabasePolicies(t *testing.T) {
 	tests := []struct {
 		name string
@@ -369,6 +433,21 @@ func copyDatabaseExample(t *testing.T) string {
 	dir := t.TempDir()
 	for _, name := range []string{"root.yaml", "application.yaml", "environment.yaml", "revision.yaml"} {
 		data, err := os.ReadFile(filepath.Join("..", "..", "examples", "host-database", name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, name), data, 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return dir
+}
+
+func copyDatabaseBoundHTTPExample(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	for _, name := range []string{"root.yaml", "application.yaml", "environment.yaml", "revision.yaml"} {
+		data, err := os.ReadFile(filepath.Join("..", "..", "examples", "host-database-http", name))
 		if err != nil {
 			t.Fatal(err)
 		}

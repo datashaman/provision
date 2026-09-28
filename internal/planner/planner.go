@@ -20,8 +20,8 @@ import (
 )
 
 const (
-	SchemaVersion        = "provision.dev/plan/v1alpha1"
-	PreviewSchemaVersion = "provision.dev/plan-preview/v1alpha1"
+	SchemaVersion        = "provision.dev/plan/v1alpha2"
+	PreviewSchemaVersion = "provision.dev/plan-preview/v1alpha2"
 )
 
 type Preview struct {
@@ -135,6 +135,7 @@ type AsyncRuntimeInput = planmodel.AsyncRuntimeInput
 type DatabaseOperationInput = planmodel.DatabaseOperationInput
 type DatabaseBindingInput = planmodel.DatabaseBindingInput
 type DatabaseStoreConsequences = planmodel.DatabaseStoreConsequences
+type DatabaseTransitionValidation = planmodel.DatabaseTransitionValidation
 
 type ArtifactInput = planmodel.ArtifactInput
 type GenerationReference = planmodel.GenerationReference
@@ -874,6 +875,9 @@ func ApprovalFingerprint(plan Plan) (string, error) {
 }
 
 func (p Plan) VerifyIdentity() error {
+	if p.SchemaVersion != SchemaVersion {
+		return fmt.Errorf("Plan schema %q is unsupported; replan with %s", p.SchemaVersion, SchemaVersion)
+	}
 	want := p.ID
 	copy := p
 	copy.ID = ""

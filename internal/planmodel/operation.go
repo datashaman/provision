@@ -238,9 +238,19 @@ type DatabaseOperationInput struct {
 	RollbackWindow          rollbackwindow.Window         `json:"rollbackWindow"`
 	Backup                  config.DatabaseBackupPolicy   `json:"backup"`
 	Recovery                config.DatabaseRecoveryPolicy `json:"recovery"`
+	TransitionValidation    DatabaseTransitionValidation  `json:"transitionValidation"`
 	Binding                 DatabaseBindingInput          `json:"binding"`
 	Consequences            DatabaseStoreConsequences     `json:"consequences"`
 	Observed                host.DatabaseDeploymentStatus `json:"observed"`
+}
+
+type DatabaseTransitionValidation struct {
+	RequiredStoreRollbackGuarantee string   `json:"requiredStoreRollbackGuarantee"`
+	PhysicalReplicationRequired    []string `json:"physicalReplicationRequired"`
+	LogicalReplicationRequired     []string `json:"logicalReplicationRequired"`
+	ForwardCutoverRequirement      string   `json:"forwardCutoverRequirement"`
+	RollbackClassificationRequired string   `json:"rollbackClassificationRequired"`
+	UnsupportedCandidateFailure    string   `json:"unsupportedCandidateFailure"`
 }
 
 type DatabaseBindingInput struct {

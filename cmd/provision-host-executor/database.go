@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -111,8 +112,8 @@ func inspectPostgreSQLDeployment(ctx context.Context, capability host.DatabaseCa
 	if err := json.Unmarshal(data, &record); err != nil || record.SchemaVersion != postgresqlGenerationSchema {
 		return host.DatabaseDeploymentStatus{}, []string{"PostgreSQL generation record is invalid"}
 	}
-	active := &host.DatabaseGenerationStatus{
-		ID: record.GenerationID, LogicalID: record.LogicalID, PostgreSQLVersion: record.PostgreSQLVersion,
+	generation := &host.DatabaseGenerationStatus{
+		ID: record.GenerationID, LogicalID: record.LogicalID, Role: "candidate", Authority: "none", PostgreSQLVersion: record.PostgreSQLVersion,
 		ImageManifest: record.ImageManifest, ServiceUnit: record.ServiceUnit, Container: record.Container,
 		Account: record.Account, DataPath: record.DataPath, QuadletPath: record.QuadletPath,
 		Database: record.Database, Connectivity: record.Connectivity, DurableRestart: record.DurableRestart,
@@ -130,65 +131,118 @@ func inspectPostgreSQLDeployment(ctx context.Context, capability host.DatabaseCa
 		record.DataPath != capability.PostgreSQLGenerationDataPath ||
 		record.QuadletPath != capability.PostgreSQLQuadletPath ||
 		record.CredentialReference != capability.PostgreSQLCredentialReference {
-		active.Reason = "recorded PostgreSQL generation differs from qualified packaging capability"
-		active.RecoveryAction = "re-run the packaging qualification on a clean disposable Host"
-		findings = append(findings, active.Reason)
-		return host.DatabaseDeploymentStatus{Candidate: active}, findings
+		generation.Reason = "recorded PostgreSQL generation differs from qualified packaging capability"
+		generation.RecoveryAction = "re-run the packaging qualification on a clean disposable Host"
+		findings = append(findings, generation.Reason)
+		return host.DatabaseDeploymentStatus{Candidate: generation}, findings
 	}
 	if !record.Verified || !digestPattern.MatchString(record.PlanID) || !digestPattern.MatchString(record.OperationDigest) {
-		active.Health = "degraded"
-		active.Reason = "PostgreSQL generation record is not bound to an approved Plan and operation"
-		active.RecoveryAction = "run the signed Database preparation operation for this exact generation"
-		return host.DatabaseDeploymentStatus{Candidate: active}, findings
+		generation.Health = "degraded"
+		generation.Reason = "PostgreSQL generation record is not bound to an approved Plan and operation"
+		generation.RecoveryAction = "run the signed Database preparation operation for this exact generation"
+		return host.DatabaseDeploymentStatus{Candidate: generation}, findings
 	}
 	if command("systemctl", "is-active", "user@"+strconv.Itoa(accountUID(record.Account))+".service") != "active" {
-		active.Health = "unobservable"
-		active.Reason = "Environment user manager is not active"
-		active.RecoveryAction = "restore or restart the Environment user manager before planning Database lifecycle work"
-		return host.DatabaseDeploymentStatus{Candidate: active}, findings
+		generation.Health = "unobservable"
+		generation.Reason = "Environment user manager is not active"
+		generation.RecoveryAction = "restore or restart the Environment user manager before planning Database lifecycle work"
+		return host.DatabaseDeploymentStatus{Candidate: generation}, findings
 	}
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 	status, err := runAsEnvironment(ctx, bootstrapRecord{Environment: strings.TrimPrefix(record.Account, "provision-"), Account: record.Account}, "systemctl", "--user", "is-active", record.ServiceUnit)
 	if err != nil || strings.TrimSpace(string(status)) != "active" {
-		active.Health = "unhealthy"
-		active.Reason = "PostgreSQL service is not active"
-		active.RecoveryAction = "inspect the Environment user journal and the PostgreSQL container before planning Database lifecycle work"
-		return host.DatabaseDeploymentStatus{Candidate: active}, findings
+		generation.Health = "unhealthy"
+		generation.Reason = "PostgreSQL service is not active"
+		generation.RecoveryAction = "inspect the Environment user journal and the PostgreSQL container before planning Database lifecycle work"
+		return host.DatabaseDeploymentStatus{Candidate: generation}, findings
 	}
 	manifest, manifestErr := runAsEnvironment(ctx, bootstrapRecord{Environment: strings.TrimPrefix(record.Account, "provision-"), Account: record.Account}, "podman", "inspect", "--format", "{{.ImageDigest}}", record.Container)
 	binding, bindingErr := runAsEnvironment(ctx, bootstrapRecord{Environment: strings.TrimPrefix(record.Account, "provision-"), Account: record.Account}, "podman", "port", record.Container, "5432/tcp")
 	credentialMount, credentialErr := runAsEnvironment(ctx, bootstrapRecord{Environment: strings.TrimPrefix(record.Account, "provision-"), Account: record.Account}, "podman", "inspect", "--format", "{{range .}}{{range .Mounts}}{{if eq .Destination \"/run/provision-credential/postgresql-url\"}}{{.RW}}{{end}}{{end}}{{end}}", record.Container)
 	if manifestErr != nil || strings.TrimSpace(string(manifest)) != record.ImageManifest || bindingErr != nil || strings.TrimSpace(string(binding)) != "127.0.0.1:25432" || credentialErr != nil || strings.TrimSpace(string(credentialMount)) != "false" {
-		active.Health = "drifted"
-		active.Reason = "PostgreSQL runtime image, loopback binding, or credential boundary differs from the verified generation"
-		active.RecoveryAction = "run the signed Database preparation operation or inspect the PostgreSQL Quadlet and container"
-		return host.DatabaseDeploymentStatus{Candidate: active}, findings
+		generation.Health = "drifted"
+		generation.Reason = "PostgreSQL runtime image, loopback binding, or credential boundary differs from the verified generation"
+		generation.RecoveryAction = "run the signed Database preparation operation or inspect the PostgreSQL Quadlet and container"
+		return host.DatabaseDeploymentStatus{Candidate: generation}, findings
 	}
 	version, err := runAsEnvironment(ctx, bootstrapRecord{Environment: strings.TrimPrefix(record.Account, "provision-"), Account: record.Account}, "podman", "exec", record.Container, "psql", "-U", databaseUserFromRecord(record), "-d", record.Database, "-Atc", "SHOW server_version;")
 	if err != nil || !strings.HasPrefix(strings.TrimSpace(string(version)), qualifiedPostgreSQL) {
-		active.Health = "unobservable"
-		active.Reason = "PostgreSQL connectivity or product version cannot be verified"
-		active.RecoveryAction = "re-run the packaging proof or inspect the credential and container state"
-		return host.DatabaseDeploymentStatus{Candidate: active}, findings
+		generation.Health = "unobservable"
+		generation.Reason = "PostgreSQL connectivity or product version cannot be verified"
+		generation.RecoveryAction = "re-run the packaging proof or inspect the credential and container state"
+		return host.DatabaseDeploymentStatus{Candidate: generation}, findings
 	}
 	identity, identityErr := runAsEnvironment(ctx, bootstrapRecord{Environment: strings.TrimPrefix(record.Account, "provision-"), Account: record.Account}, "podman", "exec", record.Container, "psql", "-U", databaseUserFromRecord(record), "-d", record.Database, "-Atc", "SELECT current_database() || ':' || current_user;")
 	if identityErr != nil || strings.TrimSpace(string(identity)) != record.Database+":"+databaseUserFromRecord(record) {
-		active.Health = "unobservable"
-		active.Reason = "PostgreSQL database identity cannot be verified"
-		active.RecoveryAction = "inspect the PostgreSQL credential, database, and role before planning Database lifecycle work"
-		return host.DatabaseDeploymentStatus{Candidate: active}, findings
+		generation.Health = "unobservable"
+		generation.Reason = "PostgreSQL database identity cannot be verified"
+		generation.RecoveryAction = "inspect the PostgreSQL credential, database, and role before planning Database lifecycle work"
+		return host.DatabaseDeploymentStatus{Candidate: generation}, findings
 	}
-	active.Ready = active.Connectivity && record.Verified
-	if !active.Ready {
-		active.Health = "degraded"
-		active.Reason = "PostgreSQL generation has not completed connectivity verification"
-		active.RecoveryAction = "inspect the credential, PostgreSQL service, and SQL identity before planning Database lifecycle work"
-		return host.DatabaseDeploymentStatus{Candidate: active}, findings
+	generation.Ready = generation.Connectivity && record.Verified
+	if !generation.Ready {
+		generation.Health = "degraded"
+		generation.Reason = "PostgreSQL generation has not completed connectivity verification"
+		generation.RecoveryAction = "inspect the credential, PostgreSQL service, and SQL identity before planning Database lifecycle work"
+		return host.DatabaseDeploymentStatus{Candidate: generation}, findings
 	} else {
-		active.Health = "healthy"
+		generation.Health = "healthy"
+		generation.Role = "active"
+		generation.Authority = "authoritative"
 	}
-	return host.DatabaseDeploymentStatus{Active: active}, findings
+	deployment := host.DatabaseDeploymentStatus{Active: generation}
+	if candidate := observedPostgreSQLCandidateGeneration(capability, generation.ID); candidate != nil {
+		deployment.Candidate = candidate
+	}
+	return deployment, findings
+}
+
+func observedPostgreSQLCandidateGeneration(capability host.DatabaseCapabilities, activeID string) *host.DatabaseGenerationStatus {
+	generationsRoot := filepath.Dir(filepath.Dir(capability.PostgreSQLGenerationDataPath))
+	entries, err := os.ReadDir(generationsRoot)
+	if err != nil {
+		return nil
+	}
+	for _, entry := range entries {
+		if !entry.IsDir() || entry.Name() == activeID {
+			continue
+		}
+		recordPath := filepath.Join(generationsRoot, entry.Name(), "generation.json")
+		data, err := os.ReadFile(recordPath)
+		if err != nil {
+			continue
+		}
+		var record postgresqlPackagingRecord
+		if json.Unmarshal(data, &record) != nil || record.SchemaVersion != postgresqlGenerationSchema || record.GenerationID == "" || record.LogicalID == "" {
+			return &host.DatabaseGenerationStatus{
+				ID: entry.Name(), Role: "candidate", Authority: "none", Health: "unobservable",
+				CompatibilityGate: "generation-record",
+				Reason:            "candidate PostgreSQL generation record is invalid",
+				RecoveryAction:    "discard the candidate generation or recreate it from a Plan with validated transition evidence",
+			}
+		}
+		return candidateDatabaseGenerationStatus(record)
+	}
+	return nil
+}
+
+func candidateDatabaseGenerationStatus(record postgresqlPackagingRecord) *host.DatabaseGenerationStatus {
+	gate := "transition-compatibility-unqualified"
+	if record.PostgreSQLVersion != qualifiedPostgreSQL {
+		gate = "physical-replication-version"
+	}
+	return &host.DatabaseGenerationStatus{
+		ID: record.GenerationID, LogicalID: record.LogicalID, Role: "candidate", Authority: "none", Ready: false,
+		PostgreSQLVersion: record.PostgreSQLVersion, ImageManifest: record.ImageManifest, ServiceUnit: record.ServiceUnit,
+		Container: record.Container, Account: record.Account, DataPath: record.DataPath, QuadletPath: record.QuadletPath,
+		Database: record.Database, Connectivity: record.Connectivity, DurableRestart: record.DurableRestart, Health: "failed",
+		Reason:              "candidate PostgreSQL generation has not proven physical/logical replication compatibility with the active generation",
+		RecoveryAction:      "discard the candidate generation or re-plan with validated PostgreSQL transition evidence",
+		CompatibilityGate:   gate,
+		SupportedGuarantees: databaseSupportedGuarantees(),
+		OwnedResources:      databaseOwnedResources(record),
+	}
 }
 
 func validateDatabaseOperation(planned planner.Operation, record bootstrapRecord, paths executionPaths) error {
@@ -226,7 +280,39 @@ func validateDatabaseOperation(planned planner.Operation, record bootstrapRecord
 	if input.Backup.Mode != "required" || input.Recovery.RestoreVerification != "isolated-generation" || input.Recovery.HostLoss != "off-host-backup-required" {
 		return errors.New("Database safety policy does not require backups and isolated restore verification")
 	}
+	if !databaseTransitionValidationMatches(input.TransitionValidation, input.StoreRollbackGuarantee) {
+		return errors.New("Database Plan lacks PostgreSQL physical/logical replication compatibility requirements")
+	}
+	if input.Observed.Active != nil && input.Observed.Active.ID != input.GenerationID {
+		return errors.New("prepareDatabase cannot replace an active Database generation without qualified Store Transition compatibility evidence")
+	}
+	if input.Observed.Candidate != nil {
+		return errors.New("prepareDatabase cannot proceed while an unqualified candidate Database generation is observed")
+	}
+	if candidate := observedPostgreSQLCandidateGeneration(host.DatabaseCapabilities{PostgreSQLGenerationDataPath: input.DataPath}, input.GenerationID); candidate != nil {
+		return fmt.Errorf("prepareDatabase cannot proceed while candidate Database generation %s failed PostgreSQL compatibility gate %q: %s", candidate.ID, candidate.CompatibilityGate, candidate.Reason)
+	}
 	return nil
+}
+
+func databaseTransitionValidationMatches(validation planner.DatabaseTransitionValidation, rollbackGuarantee string) bool {
+	return validation.RequiredStoreRollbackGuarantee == rollbackGuarantee &&
+		slices.Equal(validation.PhysicalReplicationRequired, []string{
+			"same PostgreSQL major version family",
+			"compatible server parameters and extensions",
+			"base backup or streaming replication source remains the active generation",
+			"candidate reaches verified replay position before any authority change",
+		}) &&
+		slices.Equal(validation.LogicalReplicationRequired, []string{
+			"schema compatibility is validated before subscription",
+			"DDL changes are outside the replication window or explicitly coordinated",
+			"sequence semantics and gaps are explicitly accepted",
+			"extension and workload restrictions are validated",
+			"bounded final write fence is declared and within policy",
+		}) &&
+		validation.ForwardCutoverRequirement == "no acknowledged writes may be lost before candidate authority" &&
+		validation.RollbackClassificationRequired == rollbackGuarantee &&
+		validation.UnsupportedCandidateFailure == "fail-closed-before-authority-change"
 }
 
 func databaseNamePattern(value string) bool {
@@ -583,7 +669,7 @@ func databaseRecordMatchesInput(record postgresqlPackagingRecord, input planner.
 
 func databaseOperationIdentity(input planner.DatabaseOperationInput) host.DatabaseOperationObservation {
 	return host.DatabaseOperationObservation{Status: "pending", Database: host.DatabaseGenerationStatus{
-		ID: input.GenerationID, LogicalID: input.LogicalID, PostgreSQLVersion: input.PostgreSQLVersion, ImageManifest: input.ImageManifest,
+		ID: input.GenerationID, LogicalID: input.LogicalID, Role: "candidate", Authority: "pending", PostgreSQLVersion: input.PostgreSQLVersion, ImageManifest: input.ImageManifest,
 		ServiceUnit: input.ServiceUnit, Container: input.Container, Account: input.Account, DataPath: input.DataPath, QuadletPath: input.QuadletPath,
 		Database: input.DatabaseName, SupportedGuarantees: databaseSupportedGuarantees(), OwnedResources: databaseOwnedResources(postgresqlPackagingRecord{
 			LogicalID: input.LogicalID, GenerationID: input.GenerationID, ServiceUnit: input.ServiceUnit, Container: input.Container, Account: input.Account,

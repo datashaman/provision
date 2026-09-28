@@ -98,6 +98,8 @@ type DatabaseDeploymentStatus struct {
 type DatabaseGenerationStatus struct {
 	ID                  string   `json:"id"`
 	LogicalID           string   `json:"logicalId"`
+	Role                string   `json:"role,omitempty"`
+	Authority           string   `json:"authority,omitempty"`
 	Ready               bool     `json:"ready"`
 	PostgreSQLVersion   string   `json:"postgresqlVersion,omitempty"`
 	ImageManifest       string   `json:"imageManifest"`
@@ -112,6 +114,7 @@ type DatabaseGenerationStatus struct {
 	Health              string   `json:"health,omitempty"`
 	Reason              string   `json:"reason,omitempty"`
 	RecoveryAction      string   `json:"recoveryAction,omitempty"`
+	CompatibilityGate   string   `json:"compatibilityGate,omitempty"`
 	SupportedGuarantees []string `json:"supportedGuarantees,omitempty"`
 	OwnedResources      []string `json:"ownedResources,omitempty"`
 }

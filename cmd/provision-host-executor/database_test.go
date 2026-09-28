@@ -1,6 +1,8 @@
 package main
 
 import (
+	"encoding/json"
+	"os"
 	"os/user"
 	"path/filepath"
 	"slices"
@@ -9,6 +11,7 @@ import (
 	"testing"
 
 	"provision/internal/config"
+	"provision/internal/host"
 	"provision/internal/planner"
 )
 
@@ -28,6 +31,21 @@ func TestPrepareDatabaseValidationPinsIdentityPathsAndPolicy(t *testing.T) {
 		}},
 		{"wrong account", func(input *planner.DatabaseOperationInput) { input.Account = "root" }},
 		{"overclaimed rollback", func(input *planner.DatabaseOperationInput) { input.StoreRollbackGuarantee = "automatic" }},
+		{"missing transition validation", func(input *planner.DatabaseOperationInput) {
+			input.TransitionValidation.PhysicalReplicationRequired = nil
+		}},
+		{"weaker transition validation wording", func(input *planner.DatabaseOperationInput) {
+			input.TransitionValidation.PhysicalReplicationRequired = []string{"trust me"}
+		}},
+		{"active replacement without compatibility proof", func(input *planner.DatabaseOperationInput) {
+			input.Observed.Active = &host.DatabaseGenerationStatus{ID: "postgresql-16-0-aaaaaaaaaaaa", LogicalID: input.LogicalID, Ready: true, Connectivity: true}
+		}},
+		{"unsafe candidate observed", func(input *planner.DatabaseOperationInput) {
+			input.Observed.Candidate = &host.DatabaseGenerationStatus{ID: "postgresql-18-0-bbbbbbbbbbbb", LogicalID: input.LogicalID, Health: "failed", CompatibilityGate: "physical-replication-version"}
+		}},
+		{"unverified ready candidate observed", func(input *planner.DatabaseOperationInput) {
+			input.Observed.Candidate = &host.DatabaseGenerationStatus{ID: "postgresql-17-6-bbbbbbbbbbbb", LogicalID: input.LogicalID, Ready: true, Connectivity: true}
+		}},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -39,6 +57,59 @@ func TestPrepareDatabaseValidationPinsIdentityPathsAndPolicy(t *testing.T) {
 				t.Fatal("tampered prepareDatabase accepted")
 			}
 		})
+	}
+}
+
+func TestCandidateGenerationInspectionReportsCompatibilityGate(t *testing.T) {
+	root := t.TempDir()
+	generationsRoot := filepath.Join(root, "services", "postgresql", "generations")
+	candidateRoot := filepath.Join(generationsRoot, "postgresql-18-0-bbbbbbbbbbbb")
+	if err := os.MkdirAll(candidateRoot, 0755); err != nil {
+		t.Fatal(err)
+	}
+	record := postgresqlPackagingRecord{
+		SchemaVersion: postgresqlGenerationSchema, LogicalID: "provision-lab-data", GenerationID: "postgresql-18-0-bbbbbbbbbbbb",
+		PostgreSQLVersion: "18.0", ImageManifest: "sha256:" + strings.Repeat("b", 64),
+		ServiceUnit: "provision-lab-postgresql-candidate.service", Container: "provision-lab-postgresql-candidate",
+		Account: "provision-lab", DataPath: filepath.Join(candidateRoot, "data"), QuadletPath: "/etc/containers/systemd/users/999/provision-lab-postgresql-candidate.container",
+		Database: "app", CredentialReference: "secret://lab/postgresql-url", Connectivity: true,
+	}
+	data, err := json.Marshal(record)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(candidateRoot, "generation.json"), data, 0600); err != nil {
+		t.Fatal(err)
+	}
+	candidate := observedPostgreSQLCandidateGeneration(host.DatabaseCapabilities{
+		PostgreSQLGenerationDataPath: filepath.Join(generationsRoot, qualifiedPostgreSQLGeneration, "data"),
+	}, qualifiedPostgreSQLGeneration)
+	if candidate == nil || candidate.ID != record.GenerationID || candidate.Role != "candidate" || candidate.Authority != "none" || candidate.CompatibilityGate != "physical-replication-version" || candidate.Ready || !strings.Contains(candidate.Reason, "physical/logical replication compatibility") {
+		t.Fatalf("candidate compatibility evidence was not surfaced: %+v", candidate)
+	}
+}
+
+func TestPrepareDatabaseValidationRescansHostForLateCandidate(t *testing.T) {
+	planned, record, paths := databaseOperationFixture(t)
+	candidateRoot := filepath.Join(paths.environmentHome, "services", "postgresql", "generations", "postgresql-18-0-bbbbbbbbbbbb")
+	if err := os.MkdirAll(candidateRoot, 0755); err != nil {
+		t.Fatal(err)
+	}
+	data, err := json.Marshal(postgresqlPackagingRecord{
+		SchemaVersion: postgresqlGenerationSchema, LogicalID: "provision-lab-data", GenerationID: "postgresql-18-0-bbbbbbbbbbbb",
+		PostgreSQLVersion: "18.0", ImageManifest: "sha256:" + strings.Repeat("b", 64),
+		ServiceUnit: "provision-lab-postgresql-candidate.service", Container: "provision-lab-postgresql-candidate",
+		Account: record.Account, DataPath: filepath.Join(candidateRoot, "data"), QuadletPath: "/etc/containers/systemd/users/999/provision-lab-postgresql-candidate.container",
+		Database: "app", CredentialReference: "secret://lab/postgresql-url",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(candidateRoot, "generation.json"), data, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := validateDatabaseOperation(planned, record, paths); err == nil || !strings.Contains(err.Error(), "physical-replication-version") {
+		t.Fatalf("late unsafe candidate was not rejected with compatibility evidence: %v", err)
 	}
 }
 
@@ -119,7 +190,26 @@ func databaseOperationFixture(t *testing.T) (planner.Operation, bootstrapRecord,
 		TransitionCleanupPolicy: "retain-previous-generation",
 		Backup:                  config.DatabaseBackupPolicy{Mode: "required", Frequency: "1h0m0s", Retention: "168h0m0s"},
 		Recovery:                config.DatabaseRecoveryPolicy{PointObjective: "1h0m0s", TimeObjective: "4h0m0s", RestoreVerification: "isolated-generation", HostLoss: "off-host-backup-required"},
-		Binding:                 planner.DatabaseBindingInput{Reference: "secret://lab/postgresql-url", Protocol: "postgresql", Host: "127.0.0.1", Port: 25432, Database: "app"},
+		TransitionValidation: planner.DatabaseTransitionValidation{
+			RequiredStoreRollbackGuarantee: "forward-only",
+			PhysicalReplicationRequired: []string{
+				"same PostgreSQL major version family",
+				"compatible server parameters and extensions",
+				"base backup or streaming replication source remains the active generation",
+				"candidate reaches verified replay position before any authority change",
+			},
+			LogicalReplicationRequired: []string{
+				"schema compatibility is validated before subscription",
+				"DDL changes are outside the replication window or explicitly coordinated",
+				"sequence semantics and gaps are explicitly accepted",
+				"extension and workload restrictions are validated",
+				"bounded final write fence is declared and within policy",
+			},
+			ForwardCutoverRequirement:      "no acknowledged writes may be lost before candidate authority",
+			RollbackClassificationRequired: "forward-only",
+			UnsupportedCandidateFailure:    "fail-closed-before-authority-change",
+		},
+		Binding: planner.DatabaseBindingInput{Reference: "secret://lab/postgresql-url", Protocol: "postgresql", Host: "127.0.0.1", Port: 25432, Database: "app"},
 	}
 	planned := planner.Operation{ID: "op-01", Kind: planner.PrepareDatabase, DependsOn: []string{}, Input: planner.OperationInput{Database: input}, Recovery: planner.RetainDatabase}
 	return planned, bootstrapRecord{Environment: "lab", Account: current.Username}, executionPaths{environmentHome: environmentHome}

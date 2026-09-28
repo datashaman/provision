@@ -1,0 +1,17 @@
+schemaVersion: provision.dev/v1alpha1
+kind: Environment
+name: lab
+application: provision-example-database
+rollbackWindow: 30m0s
+targets:
+  current:
+    kind: host
+    address: base.local
+    user: marlinf
+implementations:
+  data:
+    kind: postgresql-quadlet
+    target: current
+    lifecycle: managed
+    credential: secret://lab/postgresql-url
+    rollout: required

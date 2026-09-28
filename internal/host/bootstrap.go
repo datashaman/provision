@@ -87,7 +87,10 @@ type DatabaseCapabilities struct {
 }
 
 type DatabaseDeploymentStatus struct {
-	Active *DatabaseGenerationStatus `json:"active,omitempty"`
+	Active    *DatabaseGenerationStatus  `json:"active,omitempty"`
+	Candidate *DatabaseGenerationStatus  `json:"candidate,omitempty"`
+	Previous  *DatabaseGenerationStatus  `json:"previous,omitempty"`
+	Retained  []DatabaseGenerationStatus `json:"retained,omitempty"`
 }
 
 type DatabaseGenerationStatus struct {

@@ -1,0 +1,20 @@
+schemaVersion: provision.dev/v1alpha1
+kind: Application
+name: provision-example-database
+components:
+  data:
+    role: database
+    database:
+      engine: postgresql
+      databaseName: app
+      storeRollbackGuarantee: forward-only
+      transitionCleanupPolicy: retain-previous-generation
+      backup:
+        mode: required
+        frequency: 1h0m0s
+        retention: 168h0m0s
+      recovery:
+        pointObjective: 1h0m0s
+        timeObjective: 4h0m0s
+        restoreVerification: isolated-generation
+        hostLoss: off-host-backup-required

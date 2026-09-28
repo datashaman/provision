@@ -39,6 +39,8 @@ const (
 	VerifySchedule               OperationKind = "verifySchedule"
 	RetainWorkerPrevious         OperationKind = "retainWorkerPrevious"
 	PrepareDatabase              OperationKind = "prepareDatabase"
+	BackupDatabase               OperationKind = "backupDatabase"
+	VerifyDatabaseRestore        OperationKind = "verifyDatabaseRestore"
 	PrepareDatabaseCandidate     OperationKind = "prepareDatabaseCandidate"
 	SynchronizeDatabaseCandidate OperationKind = "synchronizeDatabaseCandidate"
 	FenceDatabaseWrites          OperationKind = "fenceDatabaseWrites"
@@ -244,10 +246,22 @@ type DatabaseOperationInput struct {
 	RollbackWindow          rollbackwindow.Window         `json:"rollbackWindow"`
 	Backup                  config.DatabaseBackupPolicy   `json:"backup"`
 	Recovery                config.DatabaseRecoveryPolicy `json:"recovery"`
+	RestoreCandidate        DatabaseRestoreCandidateInput `json:"restoreCandidate,omitempty"`
 	TransitionValidation    DatabaseTransitionValidation  `json:"transitionValidation"`
 	Binding                 DatabaseBindingInput          `json:"binding"`
 	Consequences            DatabaseStoreConsequences     `json:"consequences"`
 	Observed                host.DatabaseDeploymentStatus `json:"observed"`
+}
+
+type DatabaseRestoreCandidateInput struct {
+	GenerationID  string `json:"generationId"`
+	ServiceUnit   string `json:"serviceUnit"`
+	Container     string `json:"container"`
+	DataPath      string `json:"dataPath"`
+	QuadletPath   string `json:"quadletPath"`
+	ListenAddress string `json:"listenAddress"`
+	Port          int    `json:"port"`
+	Isolated      bool   `json:"isolated"`
 }
 
 type DatabaseTransitionValidation struct {

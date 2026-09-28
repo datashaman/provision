@@ -13,8 +13,9 @@ components:
         mode: required
         frequency: 1h0m0s
         retention: 168h0m0s
+        destination: file:///var/lib/provision/backups/lab/postgresql
       recovery:
         pointObjective: 1h0m0s
         timeObjective: 4h0m0s
         restoreVerification: isolated-generation
-        hostLoss: off-host-backup-required
+        hostLoss: not-declared

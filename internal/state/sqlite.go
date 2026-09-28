@@ -427,10 +427,15 @@ func (b *sqliteBackend) BeginOperation(ctx context.Context, request BeginOperati
 		// HTTP artifacts may be the first operation, while asynchronous
 		// artifacts deliberately follow Queue preparation. The dependency
 		// loop below enforces either shape from the approved Plan.
+	case planner.BackupDatabase:
+		// A Database backup may be the first operation for an already-active
+		// generation, or may deliberately follow a Database preparation or
+		// transition. The dependency loop below enforces the approved shape.
 	case planner.InstallGeneration, planner.StartCandidate, planner.VerifyCandidate, planner.SwitchEndpoint, planner.VerifyActive, planner.DrainPrevious, planner.RetainPrevious,
 		planner.InstallTaskGeneration, planner.VerifyTaskGeneration,
 		planner.InstallWorkerGeneration, planner.StartWorkerCandidate, planner.VerifyWorkerCandidate, planner.FenceWorkerIntake, planner.DrainWorkerPrevious, planner.ActivateWorkerIntake, planner.VerifyWorkerActive, planner.RetainWorkerPrevious,
 		planner.InstallScheduleRuntime, planner.HandoffSchedule, planner.VerifySchedule,
+		planner.VerifyDatabaseRestore,
 		planner.SynchronizeDatabaseCandidate, planner.FenceDatabaseWrites, planner.SwitchDatabaseAuthority, planner.VerifyDatabaseActive, planner.RetainDatabasePrevious:
 		if len(operation.DependsOn) == 0 {
 			return OperationAttempt{}, errors.New("candidate operation requires a successful dependency")

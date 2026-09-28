@@ -122,7 +122,7 @@ func verifyHostResult(envelope operation.Envelope, result operation.Result) erro
 	switch envelope.Operation.Kind {
 	case planner.PrepareQueue:
 		return verifyQueueResult(envelope, result)
-	case planner.PrepareDatabase, planner.PrepareDatabaseCandidate, planner.SynchronizeDatabaseCandidate, planner.FenceDatabaseWrites, planner.SwitchDatabaseAuthority, planner.VerifyDatabaseActive, planner.RetainDatabasePrevious:
+	case planner.PrepareDatabase, planner.BackupDatabase, planner.VerifyDatabaseRestore, planner.PrepareDatabaseCandidate, planner.SynchronizeDatabaseCandidate, planner.FenceDatabaseWrites, planner.SwitchDatabaseAuthority, planner.VerifyDatabaseActive, planner.RetainDatabasePrevious:
 		return verifyDatabaseResult(envelope, result)
 	case planner.StageArtifact:
 		return verifyArtifactResult(envelope, result)
@@ -161,7 +161,9 @@ func verifyHostResult(envelope operation.Envelope, result operation.Result) erro
 }
 
 func isDatabaseTransitionHostKind(kind planner.OperationKind) bool {
-	return kind == planner.PrepareDatabaseCandidate ||
+	return kind == planner.BackupDatabase ||
+		kind == planner.VerifyDatabaseRestore ||
+		kind == planner.PrepareDatabaseCandidate ||
 		kind == planner.SynchronizeDatabaseCandidate ||
 		kind == planner.FenceDatabaseWrites ||
 		kind == planner.SwitchDatabaseAuthority ||
@@ -178,15 +180,21 @@ func verifyDatabaseResult(envelope operation.Envelope, result operation.Result) 
 	if err := decodeObservation(result.Observation, &observed); err != nil {
 		return errors.New("host Database observation is invalid")
 	}
-	if observed.Database.ID != input.GenerationID || observed.Database.LogicalID != input.LogicalID || observed.Database.PostgreSQLVersion != input.PostgreSQLVersion || observed.Database.ImageManifest != input.ImageManifest || observed.Database.ServiceUnit != input.ServiceUnit || observed.Database.Container != input.Container || observed.Database.Account != input.Account || observed.Database.DataPath != input.DataPath || observed.Database.QuadletPath != input.QuadletPath || observed.Database.Database != input.DatabaseName {
+	if envelope.Operation.Kind == planner.VerifyDatabaseRestore {
+		if !databaseRestoreCandidateObservationMatches(observed.Database, input) {
+			return errors.New("host Database restore observation does not match the Plan")
+		}
+	} else if observed.Database.ID != input.GenerationID || observed.Database.LogicalID != input.LogicalID || observed.Database.PostgreSQLVersion != input.PostgreSQLVersion || observed.Database.ImageManifest != input.ImageManifest || observed.Database.ServiceUnit != input.ServiceUnit || observed.Database.Container != input.Container || observed.Database.Account != input.Account || observed.Database.DataPath != input.DataPath || observed.Database.QuadletPath != input.QuadletPath || observed.Database.Database != input.DatabaseName {
 		return errors.New("host Database observation does not match the Plan")
 	}
 	if result.Outcome == operation.OutcomeSucceeded {
 		if observed.Status != "verified" || !observed.Verified || !observed.Database.Ready || !observed.Database.Connectivity || observed.Database.Health != "healthy" || !observed.Checks.ServiceHealth || !observed.Checks.SQLConnectivity || !observed.Checks.DatabaseIdentity || !observed.Checks.GenerationIdentity || !observed.Checks.CredentialBoundary || len(observed.Database.SupportedGuarantees) == 0 || len(observed.Database.OwnedResources) == 0 {
 			return errors.New("host Database success observation is invalid")
 		}
-		if err := verifyDatabaseTransitionSuccess(envelope.Operation, observed); err != nil {
-			return err
+		if isDatabaseTransitionHostKind(envelope.Operation.Kind) {
+			if err := verifyDatabaseTransitionSuccess(envelope.Operation, observed); err != nil {
+				return err
+			}
 		}
 	} else if result.Outcome == operation.OutcomeFailed && (observed.Status != "failed" || observed.FailureCategory == "" || observed.Reason == "" || observed.RecoveryAction == "") {
 		return errors.New("host Database failure observation is invalid")
@@ -199,6 +207,19 @@ func verifyDatabaseResult(envelope operation.Envelope, result operation.Result) 
 func verifyDatabaseTransitionSuccess(planned planner.Operation, observed host.DatabaseOperationObservation) error {
 	input := planned.Input.Database
 	switch planned.Kind {
+	case planner.BackupDatabase:
+		if observed.TransitionPhase != "backupDatabase" || observed.Backup == nil || observed.Backup.SchemaVersion != "provision.dev/database-backup/v1alpha1" || observed.Backup.SourceGeneration != expectedDatabaseBackupSourceGeneration(input) || observed.Backup.DestinationReference != input.Backup.Destination || !observed.Backup.OutsideGeneration || !databaseRecoveryPointFresh(observed.Backup.AchievedRecoveryPoint, input.Recovery.PointObjective) {
+			return errors.New("host Database backup success lacks exact backup evidence")
+		}
+	case planner.VerifyDatabaseRestore:
+		if observed.TransitionPhase != "verifyDatabaseRestore" || observed.Restore == nil || observed.Restore.SchemaVersion != "provision.dev/database-restore-verification/v1alpha1" || observed.Restore.BackupID == "" || !observed.Restore.Isolated || !observed.Restore.Verified || !databaseGenerationStatusMetadataMatches(observed.Restore.CandidateGeneration, observed.Database) || !databaseRestoreCandidateObservationMatches(observed.Restore.CandidateGeneration, input) {
+			return errors.New("host Database restore success lacks isolated restore evidence")
+		}
+		if len(input.Binding.DeterministicRecordIDs) > 0 && !databaseBindingRecordsMatch(input.Binding, observed.Records) {
+			return errors.New("host Database restore verification lacks deterministic workload record evidence")
+		}
+	case planner.PrepareDatabaseCandidate:
+		return nil
 	case planner.SynchronizeDatabaseCandidate:
 		if observed.TransitionPhase != "synchronizeDatabaseCandidate" || observed.Synchronization != "logical-snapshot" || observed.WriteFence != "" {
 			return errors.New("host Database synchronization success lacks exact transition evidence")
@@ -224,6 +245,40 @@ func verifyDatabaseTransitionSuccess(planned planner.Operation, observed host.Da
 		}
 	}
 	return nil
+}
+
+func expectedDatabaseBackupSourceGeneration(input *planner.DatabaseOperationInput) string {
+	if input.Observed.Active != nil && input.Observed.Active.ID != input.GenerationID {
+		return input.Observed.Active.ID
+	}
+	return input.GenerationID
+}
+
+func databaseRecoveryPointFresh(value, objective string) bool {
+	achieved, err := time.Parse(time.RFC3339Nano, value)
+	if err != nil {
+		return false
+	}
+	rpo, err := time.ParseDuration(objective)
+	if err != nil {
+		return false
+	}
+	now := time.Now().UTC()
+	return !achieved.After(now.Add(time.Minute)) && !achieved.Before(now.Add(-rpo))
+}
+
+func databaseRestoreCandidateObservationMatches(observed host.DatabaseGenerationStatus, input *planner.DatabaseOperationInput) bool {
+	return observed.ID == input.RestoreCandidate.GenerationID &&
+		observed.LogicalID == input.LogicalID &&
+		observed.PostgreSQLVersion == input.PostgreSQLVersion &&
+		observed.ImageManifest == input.ImageManifest &&
+		observed.ServiceUnit == input.RestoreCandidate.ServiceUnit &&
+		observed.Container == input.RestoreCandidate.Container &&
+		observed.Account == input.Account &&
+		observed.DataPath == input.RestoreCandidate.DataPath &&
+		observed.QuadletPath == input.RestoreCandidate.QuadletPath &&
+		observed.Database == input.DatabaseName &&
+		observed.DataPath != input.DataPath
 }
 
 func databaseGenerationStatusMetadataMatches(left, right host.DatabaseGenerationStatus) bool {

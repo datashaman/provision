@@ -98,6 +98,8 @@ const (
 	VerifySchedule               = planmodel.VerifySchedule
 	RetainWorkerPrevious         = planmodel.RetainWorkerPrevious
 	PrepareDatabase              = planmodel.PrepareDatabase
+	BackupDatabase               = planmodel.BackupDatabase
+	VerifyDatabaseRestore        = planmodel.VerifyDatabaseRestore
 	PrepareDatabaseCandidate     = planmodel.PrepareDatabaseCandidate
 	SynchronizeDatabaseCandidate = planmodel.SynchronizeDatabaseCandidate
 	FenceDatabaseWrites          = planmodel.FenceDatabaseWrites
@@ -139,6 +141,7 @@ type AsyncTaskInput = planmodel.AsyncTaskInput
 type AsyncScheduleInput = planmodel.AsyncScheduleInput
 type AsyncRuntimeInput = planmodel.AsyncRuntimeInput
 type DatabaseOperationInput = planmodel.DatabaseOperationInput
+type DatabaseRestoreCandidateInput = planmodel.DatabaseRestoreCandidateInput
 type DatabaseBindingInput = planmodel.DatabaseBindingInput
 type DatabaseStoreConsequences = planmodel.DatabaseStoreConsequences
 type DatabaseTransitionValidation = planmodel.DatabaseTransitionValidation
@@ -464,7 +467,7 @@ func databaseBoundHTTPOperations(compiled config.Compiled, selection databaseBou
 		Component: selection.HTTPComponent, Implementation: selection.HTTPImplementation, Artifact: selection.HTTPArtifact,
 		TargetName: selection.TargetName, Target: selection.Target,
 	}
-	if len(databaseOps) == 0 && exactActiveHTTP(compiled, httpSelection, observation, bindings) {
+	if exactActiveHTTP(compiled, httpSelection, observation, bindings) && len(databaseOps) <= 2 {
 		return databaseOps
 	}
 	httpOps := httpOperations(compiled, httpSelection, observation, observationDigest)
@@ -567,13 +570,50 @@ func databaseOperations(adapterPlan hostdatabase.PlanningOutput) []Operation {
 		return nil
 	}
 	input := adapterPlan.Database
+	backupRestore := func(after []Operation, source *DatabaseOperationInput) []Operation {
+		start := len(after) + 1
+		dependsOn := []string{}
+		if len(after) > 0 {
+			dependsOn = []string{after[len(after)-1].ID}
+		}
+		backup := Operation{
+			ID:        fmt.Sprintf("op-%02d", start),
+			Kind:      BackupDatabase,
+			DependsOn: dependsOn,
+			Input:     OperationInput{Database: source},
+			Preconditions: []TypedCondition{
+				{Kind: "database-generation", Subject: source.LogicalID, Expected: expectedDatabaseBackupSourceGeneration(*source)},
+				{Kind: "backup-destination", Subject: source.Backup.Destination, Expected: "outside-active-generation"},
+			},
+			ExpectedObservations: []TypedCondition{
+				{Kind: "database-backup", Subject: source.LogicalID, Expected: "recorded"},
+				{Kind: "recovery-point", Subject: source.LogicalID, Expected: "<= " + source.Recovery.PointObjective},
+			},
+			Recovery: RetainDatabase,
+		}
+		restore := Operation{
+			ID:        fmt.Sprintf("op-%02d", start+1),
+			Kind:      VerifyDatabaseRestore,
+			DependsOn: []string{backup.ID},
+			Input:     OperationInput{Database: source},
+			Preconditions: []TypedCondition{
+				{Kind: "database-backup", Subject: source.LogicalID, Expected: "recorded"},
+				{Kind: "restore-candidate-generation", Subject: source.RestoreCandidate.GenerationID, Expected: "isolated"},
+			},
+			ExpectedObservations: []TypedCondition{
+				{Kind: "restore-verification", Subject: source.RestoreCandidate.GenerationID, Expected: "verified"},
+			},
+			Recovery: RetainDatabase,
+		}
+		return append(after, backup, restore)
+	}
 	if active := input.Observed.Active; active != nil && active.ID == input.GenerationID && active.Ready && active.Connectivity && active.ImageManifest == input.ImageManifest {
-		return []Operation{}
+		return backupRestore(nil, input)
 	}
 	if input.Observed.Active != nil {
 		return databaseTransitionOperations(adapterPlan)
 	}
-	return []Operation{{
+	return backupRestore([]Operation{{
 		ID:        "op-01",
 		Kind:      PrepareDatabase,
 		DependsOn: []string{},
@@ -587,7 +627,7 @@ func databaseOperations(adapterPlan hostdatabase.PlanningOutput) []Operation {
 			{Kind: "postgresql-connectivity", Subject: input.DatabaseName, Expected: "verified"},
 		},
 		Recovery: RetainDatabase,
-	}}
+	}}, input)
 }
 
 func databaseTransitionOperations(adapterPlan hostdatabase.PlanningOutput) []Operation {
@@ -597,6 +637,8 @@ func databaseTransitionOperations(adapterPlan hostdatabase.PlanningOutput) []Ope
 		PrepareDatabaseCandidate,
 		SynchronizeDatabaseCandidate,
 		FenceDatabaseWrites,
+		BackupDatabase,
+		VerifyDatabaseRestore,
 		SwitchDatabaseAuthority,
 		VerifyDatabaseActive,
 		RetainDatabasePrevious,
@@ -617,6 +659,16 @@ func databaseTransitionOperations(adapterPlan hostdatabase.PlanningOutput) []Ope
 		},
 		{
 			{Kind: "write-fence", Subject: input.LogicalID, Expected: "closed-to-active-writes"},
+			{Kind: "database-generation", Subject: input.LogicalID, Expected: expectedDatabaseBackupSourceGeneration(*input)},
+			{Kind: "backup-destination", Subject: input.Backup.Destination, Expected: "outside-active-generation"},
+		},
+		{
+			{Kind: "database-backup", Subject: input.LogicalID, Expected: "recorded"},
+			{Kind: "restore-candidate-generation", Subject: input.RestoreCandidate.GenerationID, Expected: "isolated"},
+		},
+		{
+			{Kind: "write-fence", Subject: input.LogicalID, Expected: "closed-to-active-writes"},
+			{Kind: "restore-verification", Subject: input.RestoreCandidate.GenerationID, Expected: "verified"},
 			{Kind: "forward-cutover", Subject: input.LogicalID, Expected: input.ForwardCutoverGuarantee},
 		},
 		{
@@ -632,6 +684,8 @@ func databaseTransitionOperations(adapterPlan hostdatabase.PlanningOutput) []Ope
 		{{Kind: "candidate-database-generation", Subject: input.GenerationID, Expected: "prepared"}},
 		{{Kind: "candidate-database-generation", Subject: input.GenerationID, Expected: "synchronized"}},
 		{{Kind: "write-fence", Subject: input.LogicalID, Expected: "bounded"}},
+		{{Kind: "database-backup", Subject: input.LogicalID, Expected: "recorded"}},
+		{{Kind: "restore-verification", Subject: input.RestoreCandidate.GenerationID, Expected: "verified"}},
 		{{Kind: "database-authority", Subject: input.LogicalID, Expected: input.GenerationID}},
 		{{Kind: "postgresql-connectivity", Subject: input.DatabaseName, Expected: "verified-active"}},
 		{{Kind: "previous-database-generation", Subject: input.Observed.Active.ID, Expected: "retained-through-rollback-window"}},
@@ -663,6 +717,13 @@ func databaseInputForTransitionStep(kind OperationKind, stable, candidate *Datab
 	default:
 		return stable
 	}
+}
+
+func expectedDatabaseBackupSourceGeneration(input DatabaseOperationInput) string {
+	if input.Observed.Active != nil && input.Observed.Active.ID != input.GenerationID {
+		return input.Observed.Active.ID
+	}
+	return input.GenerationID
 }
 
 func buildAsync(compiled config.Compiled, observation host.BootstrapStatus) (Preview, error) {

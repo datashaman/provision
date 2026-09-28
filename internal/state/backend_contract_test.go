@@ -206,6 +206,95 @@ func TestSQLiteBackendEnablesIndependentQueuePreparation(t *testing.T) {
 	}
 }
 
+func TestSQLiteBackendRequiresDatabaseBackupAndRestoreDependencies(t *testing.T) {
+	path := t.TempDir() + "/state.db"
+	backend, err := OpenSQLite(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer backend.Close()
+
+	plan := contractPlan(t, "application-a", "lab", "revision-a")
+	plan.Operations = []planner.Operation{
+		{ID: "op-01", Kind: planner.PrepareDatabase},
+		{ID: "op-02", Kind: planner.BackupDatabase, DependsOn: []string{"op-01"}},
+		{ID: "op-03", Kind: planner.VerifyDatabaseRestore, DependsOn: []string{"op-02"}},
+	}
+	plan.ID = ""
+	encoded, err := json.Marshal(plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	digest := sha256.Sum256(encoded)
+	plan.ID = "sha256:" + hex.EncodeToString(digest[:])
+	now := time.Date(2026, 9, 27, 12, 0, 0, 0, time.UTC)
+	if err := backend.StoreCurrentPlan(context.Background(), plan, now); err != nil {
+		t.Fatal(err)
+	}
+	if err := backend.RecordApproval(context.Background(), plan.ID, ApprovalRecord{Actor: "tester", Decision: DecisionApproved, DecidedAt: now, ExpiresAt: now.Add(time.Hour)}); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := backend.BeginOperation(context.Background(), BeginOperationRequest{PlanID: plan.ID, OperationID: "op-02", Holder: "holder", StartedAt: now.Add(time.Minute), LeaseDuration: time.Minute}); err == nil || !strings.Contains(err.Error(), "op-01 has no recorded outcome") {
+		t.Fatalf("Database backup began before preparation completed: %v", err)
+	}
+	prepareAttempt, err := backend.BeginOperation(context.Background(), BeginOperationRequest{PlanID: plan.ID, OperationID: "op-01", Holder: "holder", StartedAt: now.Add(2 * time.Minute), LeaseDuration: time.Minute})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := backend.CompleteOperation(context.Background(), CompleteOperationRequest{AttemptID: prepareAttempt.AttemptID, Holder: prepareAttempt.Holder, PlanID: plan.ID, OperationID: "op-01", FencingToken: prepareAttempt.FencingToken, Outcome: ExecutionSucceeded, Observation: json.RawMessage(`{"status":"ready"}`), CompletedAt: now.Add(2*time.Minute + time.Second)}); err != nil {
+		t.Fatal(err)
+	}
+	backupAttempt, err := backend.BeginOperation(context.Background(), BeginOperationRequest{PlanID: plan.ID, OperationID: "op-02", Holder: "holder", StartedAt: now.Add(3 * time.Minute), LeaseDuration: time.Minute})
+	if err != nil {
+		t.Fatalf("Database backup did not begin after successful preparation: %v", err)
+	}
+	if _, err := backend.BeginOperation(context.Background(), BeginOperationRequest{PlanID: plan.ID, OperationID: "op-03", Holder: "holder", StartedAt: now.Add(4 * time.Minute), LeaseDuration: time.Minute}); err == nil || !strings.Contains(err.Error(), "op-02 has no recorded outcome") {
+		t.Fatalf("Database restore verification began before backup completed: %v", err)
+	}
+	if err := backend.CompleteOperation(context.Background(), CompleteOperationRequest{AttemptID: backupAttempt.AttemptID, Holder: backupAttempt.Holder, PlanID: plan.ID, OperationID: "op-02", FencingToken: backupAttempt.FencingToken, Outcome: ExecutionSucceeded, Observation: json.RawMessage(`{"status":"backed-up"}`), CompletedAt: now.Add(3*time.Minute + time.Second)}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := backend.BeginOperation(context.Background(), BeginOperationRequest{PlanID: plan.ID, OperationID: "op-03", Holder: "holder", StartedAt: now.Add(4 * time.Minute), LeaseDuration: time.Minute}); err != nil {
+		t.Fatalf("Database restore verification did not begin after successful backup: %v", err)
+	}
+}
+
+func TestSQLiteBackendAllowsDatabaseBackupAsFirstOperation(t *testing.T) {
+	path := t.TempDir() + "/state.db"
+	backend, err := OpenSQLite(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer backend.Close()
+
+	plan := contractPlan(t, "application-a", "lab", "revision-a")
+	plan.Operations = []planner.Operation{
+		{ID: "op-01", Kind: planner.BackupDatabase},
+		{ID: "op-02", Kind: planner.VerifyDatabaseRestore, DependsOn: []string{"op-01"}},
+	}
+	plan.ID = ""
+	encoded, err := json.Marshal(plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	digest := sha256.Sum256(encoded)
+	plan.ID = "sha256:" + hex.EncodeToString(digest[:])
+	now := time.Date(2026, 9, 27, 13, 0, 0, 0, time.UTC)
+	if err := backend.StoreCurrentPlan(context.Background(), plan, now); err != nil {
+		t.Fatal(err)
+	}
+	if err := backend.RecordApproval(context.Background(), plan.ID, ApprovalRecord{Actor: "tester", Decision: DecisionApproved, DecidedAt: now, ExpiresAt: now.Add(time.Hour)}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := backend.BeginOperation(context.Background(), BeginOperationRequest{PlanID: plan.ID, OperationID: "op-01", Holder: "holder", StartedAt: now.Add(time.Minute), LeaseDuration: time.Minute}); err != nil {
+		t.Fatalf("Database backup first operation was not executable: %v", err)
+	}
+	if _, err := backend.BeginOperation(context.Background(), BeginOperationRequest{PlanID: plan.ID, OperationID: "op-02", Holder: "holder", StartedAt: now.Add(2 * time.Minute), LeaseDuration: time.Minute}); err == nil || !strings.Contains(err.Error(), "op-01 has no recorded outcome") {
+		t.Fatalf("Database restore verification began while backup was active: %v", err)
+	}
+}
+
 func TestSQLiteBackendRejectsWorkerIntakeOutsideCandidateOnlyPlan(t *testing.T) {
 	path := t.TempDir() + "/state.db"
 	backend, err := OpenSQLite(path)

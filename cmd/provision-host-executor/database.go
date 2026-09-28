@@ -34,9 +34,13 @@ const (
 	databaseSwitchPhase           = "switchDatabaseAuthority"
 	databaseVerifyActivePhase     = "verifyDatabaseActive"
 	databaseRetainPreviousPhase   = "retainDatabasePrevious"
+	databaseBackupPhase           = "backupDatabase"
+	databaseRestorePhase          = "verifyDatabaseRestore"
 	databaseLogicalSnapshot       = "logical-snapshot"
 	databaseFinalSnapshot         = "final-logical-snapshot-after-write-fence"
 	databaseWriteFence            = "active-database-read-only"
+	databaseBackupSchema          = "provision.dev/database-backup/v1alpha1"
+	databaseRestoreSchema         = "provision.dev/database-restore-verification/v1alpha1"
 )
 
 type postgresqlPackagingRecord struct {
@@ -361,6 +365,8 @@ func candidateDatabaseGenerationStatus(record postgresqlPackagingRecord) *host.D
 
 func isDatabaseOperationKind(kind planner.OperationKind) bool {
 	return kind == planner.PrepareDatabase ||
+		kind == planner.BackupDatabase ||
+		kind == planner.VerifyDatabaseRestore ||
 		kind == planner.PrepareDatabaseCandidate ||
 		kind == planner.SynchronizeDatabaseCandidate ||
 		kind == planner.FenceDatabaseWrites ||
@@ -376,7 +382,7 @@ func validateDatabaseOperation(planned planner.Operation, record bootstrapRecord
 	if planned.Kind == planner.PrepareDatabase && len(planned.DependsOn) != 0 {
 		return errors.New("initial prepareDatabase operation cannot have operation dependencies")
 	}
-	if planned.Kind != planner.PrepareDatabase && planned.Kind != planner.PrepareDatabaseCandidate && len(planned.DependsOn) == 0 {
+	if planned.Kind != planner.PrepareDatabase && planned.Kind != planner.PrepareDatabaseCandidate && planned.Kind != planner.BackupDatabase && len(planned.DependsOn) == 0 {
 		return errors.New("Store Transition Database operation requires an ordered dependency")
 	}
 	input := planned.Input.Database
@@ -412,8 +418,14 @@ func validateDatabaseOperation(planned planner.Operation, record bootstrapRecord
 	if input.StoreRollbackGuarantee != "forward-only" || input.ForwardCutoverGuarantee != "lossless-after-bounded-write-fence" || input.TransitionMechanism != "offline-logical-snapshot-with-bounded-write-fence" || input.TransitionCleanupPolicy != "retain-previous-generation" {
 		return errors.New("Database transition policy does not match the qualified forward-only Store Transition contract")
 	}
-	if input.Backup.Mode != "required" || input.Recovery.RestoreVerification != "isolated-generation" || input.Recovery.HostLoss != "off-host-backup-required" {
+	if input.Backup.Mode != "required" || input.Backup.Destination == "" || input.Recovery.RestoreVerification != "isolated-generation" || input.Recovery.HostLoss != "not-declared" && input.Recovery.HostLoss != "off-host-backup-required" {
 		return errors.New("Database safety policy does not require backups and isolated restore verification")
+	}
+	if input.Recovery.HostLoss == "off-host-backup-required" && databaseBackupDestinationClass(input.Backup.Destination) != "off-host-ssh" {
+		return errors.New("Database host-loss recovery requires an off-host backup destination")
+	}
+	if input.RestoreCandidate.GenerationID == "" || !input.RestoreCandidate.Isolated || input.RestoreCandidate.DataPath == "" || strings.HasPrefix(input.RestoreCandidate.DataPath, filepath.Dir(input.DataPath)) {
+		return errors.New("Database restore verification requires an isolated candidate generation outside the active generation")
 	}
 	if !databaseTransitionValidationMatches(input.TransitionValidation, input.StoreRollbackGuarantee) {
 		return errors.New("Database Plan lacks PostgreSQL physical/logical replication compatibility requirements")
@@ -556,6 +568,12 @@ func observeDatabaseOperation(ctx context.Context, planID string, planned planne
 	if planned.Kind == planner.SynchronizeDatabaseCandidate || planned.Kind == planner.FenceDatabaseWrites {
 		return observeDatabaseSynchronizationOperation(ctx, planID, planned, record, paths)
 	}
+	if planned.Kind == planner.BackupDatabase {
+		return observeDatabaseBackupOperation(ctx, planID, planned, record, paths)
+	}
+	if planned.Kind == planner.VerifyDatabaseRestore {
+		return observeDatabaseRestoreOperation(ctx, planID, planned, record, paths)
+	}
 	if planned.Kind == planner.RetainDatabasePrevious {
 		return observeDatabaseRetentionOperation(ctx, planID, planned, record, paths)
 	}
@@ -563,6 +581,64 @@ func observeDatabaseOperation(ctx context.Context, planID string, planned planne
 		operationDigest = ""
 	}
 	observed, state := observeManagedDatabase(ctx, *planned.Input.Database, record, paths, planID, operationDigest, "")
+	evidence, err := json.Marshal(observed)
+	if err != nil {
+		return host.OperationObservation{}, err
+	}
+	return host.OperationObservation{State: state, Evidence: evidence}, nil
+}
+
+func observeDatabaseBackupOperation(ctx context.Context, planID string, planned planner.Operation, record bootstrapRecord, paths executionPaths) (host.OperationObservation, error) {
+	input := *planned.Input.Database
+	operationDigest, err := planner.OperationDigest(planned)
+	if err != nil {
+		return host.OperationObservation{}, err
+	}
+	observed, state := observeManagedDatabase(ctx, input, record, paths, planID, "", "")
+	observed.TransitionPhase = databaseBackupPhase
+	if backup, ok := readDatabaseBackupEvidence(input, planID, planned.ID, operationDigest); ok {
+		observed.Status = "verified"
+		observed.Verified = true
+		observed.Backup = &backup
+		observed.Reason = ""
+		observed.RecoveryAction = ""
+		state = "satisfied"
+	} else {
+		observed.Status = "pending"
+		observed.Verified = false
+		observed.Reason = "Database backup evidence is absent"
+		observed.RecoveryAction = "resume the approved Database backup operation to create backup evidence outside the active generation"
+		state = "pending"
+	}
+	evidence, err := json.Marshal(observed)
+	if err != nil {
+		return host.OperationObservation{}, err
+	}
+	return host.OperationObservation{State: state, Evidence: evidence}, nil
+}
+
+func observeDatabaseRestoreOperation(ctx context.Context, planID string, planned planner.Operation, record bootstrapRecord, paths executionPaths) (host.OperationObservation, error) {
+	input := *planned.Input.Database
+	operationDigest, err := planner.OperationDigest(planned)
+	if err != nil {
+		return host.OperationObservation{}, err
+	}
+	observed, state := observeManagedDatabase(ctx, input, record, paths, planID, "", "")
+	observed.TransitionPhase = databaseRestorePhase
+	if restore, ok := readDatabaseRestoreEvidence(input, planID, planned.ID, operationDigest); ok {
+		observed.Status = "verified"
+		observed.Verified = true
+		observed.Restore = &restore
+		observed.Reason = ""
+		observed.RecoveryAction = ""
+		state = "satisfied"
+	} else {
+		observed.Status = "pending"
+		observed.Verified = false
+		observed.Reason = "Database restore verification evidence is absent"
+		observed.RecoveryAction = "resume the approved Database restore verification operation to materialize an isolated candidate"
+		state = "pending"
+	}
 	evidence, err := json.Marshal(observed)
 	if err != nil {
 		return host.OperationObservation{}, err
@@ -685,6 +761,139 @@ func databaseRetentionRecordMatches(path, planID, operationID string, input plan
 		record.Previous.DataPath == input.Observed.Active.DataPath
 }
 
+func databaseBackupDestinationClass(destination string) string {
+	parsed, err := url.Parse(destination)
+	if err != nil || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" || parsed.Path == "" {
+		return ""
+	}
+	switch parsed.Scheme {
+	case "file":
+		if parsed.Host != "" || !strings.HasPrefix(destination, "file:///") {
+			return ""
+		}
+		return "host-filesystem"
+	case "ssh":
+		if parsed.Hostname() == "" {
+			return ""
+		}
+		return "off-host-ssh"
+	default:
+		return ""
+	}
+}
+
+func databaseBackupRoot(input planner.DatabaseOperationInput) (string, error) {
+	if databaseBackupDestinationClass(input.Backup.Destination) != "host-filesystem" {
+		return "", errors.New("only host-filesystem Database backup destinations are executable by this Host renderer")
+	}
+	parsed, err := url.Parse(input.Backup.Destination)
+	if err != nil || parsed.Scheme != "file" || parsed.Path == "" {
+		return "", errors.New("Database backup destination is not a valid file URL")
+	}
+	activeRoot := filepath.Dir(input.DataPath)
+	clean := filepath.Clean(parsed.Path)
+	if clean == activeRoot || strings.HasPrefix(clean, activeRoot+string(os.PathSeparator)) {
+		return "", errors.New("Database backup destination is inside the active Store Generation")
+	}
+	if input.Observed.Active != nil {
+		observedActiveRoot := filepath.Dir(input.Observed.Active.DataPath)
+		if clean == observedActiveRoot || strings.HasPrefix(clean, observedActiveRoot+string(os.PathSeparator)) {
+			return "", errors.New("Database backup destination is inside the active Store Generation")
+		}
+	}
+	return clean, nil
+}
+
+func databaseBackupEvidencePath(input planner.DatabaseOperationInput, planID, operationID string) (string, error) {
+	root, err := databaseBackupRoot(input)
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(root, input.LogicalID, stableFilePart(planID)+"-"+operationID+".json"), nil
+}
+
+func stableFilePart(value string) string {
+	value = strings.TrimPrefix(value, "sha256:")
+	if len(value) > 16 {
+		return value[:16]
+	}
+	return strings.NewReplacer("/", "-", ":", "-", ".", "-").Replace(value)
+}
+
+func expectedDatabaseBackupSourceGeneration(input planner.DatabaseOperationInput) string {
+	source, _ := databaseBackupSource(input)
+	return source.ID
+}
+
+func databaseBackupSource(input planner.DatabaseOperationInput) (host.DatabaseGenerationStatus, bool) {
+	if input.Observed.Active != nil && input.Observed.Active.ID != input.GenerationID {
+		active := *input.Observed.Active
+		return active, active.ID != "" && active.Container != "" && active.Ready && active.Connectivity
+	}
+	return host.DatabaseGenerationStatus{
+		ID:                input.GenerationID,
+		LogicalID:         input.LogicalID,
+		Role:              "active",
+		Authority:         "authoritative",
+		Ready:             true,
+		PostgreSQLVersion: input.PostgreSQLVersion,
+		ImageManifest:     input.ImageManifest,
+		ServiceUnit:       input.ServiceUnit,
+		Container:         input.Container,
+		Account:           input.Account,
+		DataPath:          input.DataPath,
+		QuadletPath:       input.QuadletPath,
+		Database:          input.DatabaseName,
+		Connectivity:      true,
+	}, true
+}
+
+func readDatabaseBackupEvidence(input planner.DatabaseOperationInput, planID, operationID, operationDigest string) (host.DatabaseBackupObservation, bool) {
+	path, err := databaseBackupEvidencePath(input, planID, operationID)
+	if err != nil {
+		return host.DatabaseBackupObservation{}, false
+	}
+	var record struct {
+		SchemaVersion   string                         `json:"schemaVersion"`
+		PlanID          string                         `json:"planId"`
+		OperationID     string                         `json:"operationId"`
+		OperationDigest string                         `json:"operationDigest"`
+		LogicalID       string                         `json:"logicalId"`
+		Backup          host.DatabaseBackupObservation `json:"backup"`
+	}
+	data, err := os.ReadFile(path)
+	if err != nil || json.Unmarshal(data, &record) != nil {
+		return host.DatabaseBackupObservation{}, false
+	}
+	if record.SchemaVersion != databaseBackupSchema || record.PlanID != planID || record.OperationID != operationID || record.OperationDigest != operationDigest || record.LogicalID != input.LogicalID || record.Backup.SourceGeneration != expectedDatabaseBackupSourceGeneration(input) || !record.Backup.OutsideGeneration {
+		return host.DatabaseBackupObservation{}, false
+	}
+	return record.Backup, true
+}
+
+func databaseRestoreEvidencePath(input planner.DatabaseOperationInput, planID, operationID string) string {
+	return filepath.Join(filepath.Dir(filepath.Dir(input.RestoreCandidate.DataPath)), stableFilePart(planID)+"-"+operationID+".json")
+}
+
+func readDatabaseRestoreEvidence(input planner.DatabaseOperationInput, planID, operationID, operationDigest string) (host.DatabaseRestoreObservation, bool) {
+	var record struct {
+		SchemaVersion   string                          `json:"schemaVersion"`
+		PlanID          string                          `json:"planId"`
+		OperationID     string                          `json:"operationId"`
+		OperationDigest string                          `json:"operationDigest"`
+		LogicalID       string                          `json:"logicalId"`
+		Restore         host.DatabaseRestoreObservation `json:"restore"`
+	}
+	data, err := os.ReadFile(databaseRestoreEvidencePath(input, planID, operationID))
+	if err != nil || json.Unmarshal(data, &record) != nil {
+		return host.DatabaseRestoreObservation{}, false
+	}
+	if record.SchemaVersion != databaseRestoreSchema || record.PlanID != planID || record.OperationID != operationID || record.OperationDigest != operationDigest || record.LogicalID != input.LogicalID || record.Restore.CandidateGeneration.ID != input.RestoreCandidate.GenerationID || !record.Restore.Isolated || !record.Restore.Verified {
+		return host.DatabaseRestoreObservation{}, false
+	}
+	return record.Restore, true
+}
+
 func applyDatabaseOperation(ctx context.Context, planned planner.Operation, claim authority.Claim, record bootstrapRecord, paths executionPaths, sensitiveValues map[string]string) (json.RawMessage, error) {
 	if err := validateDatabaseOperation(planned, record, paths); err != nil {
 		return nil, err
@@ -696,6 +905,12 @@ func applyDatabaseOperation(ctx context.Context, planned planner.Operation, clai
 	input := *planned.Input.Database
 	if planned.Kind == planner.SwitchDatabaseAuthority {
 		return applyDatabaseAuthoritySwitch(ctx, input, claim, record, paths, sensitiveValues)
+	}
+	if planned.Kind == planner.BackupDatabase {
+		return applyDatabaseBackup(ctx, input, claim, record, paths, sensitiveValues)
+	}
+	if planned.Kind == planner.VerifyDatabaseRestore {
+		return applyDatabaseRestoreVerification(ctx, planned, input, claim, record, paths, sensitiveValues)
 	}
 	if planned.Kind == planner.SynchronizeDatabaseCandidate {
 		return applyDatabaseSynchronization(ctx, input, claim, record, paths, sensitiveValues, false)
@@ -854,6 +1069,218 @@ func applyDatabaseSynchronization(ctx context.Context, input planner.DatabaseOpe
 		return encoded, errors.New("Database synchronization cannot verify the candidate generation")
 	}
 	return encoded, nil
+}
+
+func applyDatabaseBackup(ctx context.Context, input planner.DatabaseOperationInput, claim authority.Claim, record bootstrapRecord, paths executionPaths, sensitiveValues map[string]string) (json.RawMessage, error) {
+	secret := sensitiveValues[input.CredentialReference]
+	if _, _, err := validateDatabaseSensitiveValues(map[string]string{input.CredentialReference: secret}, input); err != nil {
+		return nil, err
+	}
+	observed, state := observeManagedDatabase(ctx, input, record, paths, claim.PlanID, "", secret)
+	observed.TransitionPhase = databaseBackupPhase
+	source, sourceOK := databaseBackupSource(input)
+	if input.Observed.Active == nil || input.Observed.Active.ID == input.GenerationID {
+		sourceOK = sourceOK && state == "satisfied"
+	}
+	if !sourceOK {
+		encoded, _ := json.Marshal(observed)
+		return encoded, errors.New("Database backup requires an exact active managed generation")
+	}
+	if backup, ok := readDatabaseBackupEvidence(input, claim.PlanID, claim.OperationID, claim.OperationDigest); ok {
+		observed.Backup = &backup
+		encoded, err := json.Marshal(observed)
+		return encoded, err
+	}
+	root, err := databaseBackupRoot(input)
+	if err != nil {
+		return nil, err
+	}
+	uid, gid := accountUID(record.Account), accountGID(record.Account)
+	if uid <= 0 || gid <= 0 {
+		return nil, errors.New("Environment account identity is unavailable")
+	}
+	backupDir := filepath.Join(root, input.LogicalID)
+	if err := ensureDirectory(backupDir, 0750, uid, gid); err != nil {
+		return nil, err
+	}
+	backupID := stableFilePart(claim.PlanID) + "-" + claim.OperationID
+	dumpPath := filepath.Join(backupDir, backupID+".dump")
+	containerURL, err := containerPostgreSQLURL(secret)
+	if err != nil {
+		return nil, err
+	}
+	backupStarted := time.Now().UTC().Format(time.RFC3339Nano)
+	dump, err := runAsEnvironment(ctx, record, "podman", "exec", source.Container, "pg_dump", containerURL, "-Fc", "--no-owner", "--no-privileges")
+	if err != nil {
+		return nil, errors.New("export PostgreSQL custom-format backup from active generation")
+	}
+	if err := installExactFile(dumpPath, dump, 0440, uid, gid); err != nil {
+		return nil, errors.New("write PostgreSQL backup outside active generation")
+	}
+	backup := host.DatabaseBackupObservation{
+		SchemaVersion:         databaseBackupSchema,
+		BackupID:              backupID,
+		SourceGeneration:      source.ID,
+		DestinationClass:      databaseBackupDestinationClass(input.Backup.Destination),
+		DestinationReference:  input.Backup.Destination,
+		Path:                  dumpPath,
+		AchievedRecoveryPoint: backupStarted,
+		Format:                "pg_dump-custom",
+		OutsideGeneration:     true,
+	}
+	recordData := map[string]any{
+		"schemaVersion": databaseBackupSchema,
+		"planId":        claim.PlanID, "operationId": claim.OperationID, "operationDigest": claim.OperationDigest,
+		"logicalId": input.LogicalID, "sourceGeneration": source.ID, "backup": backup,
+	}
+	evidencePath, err := databaseBackupEvidencePath(input, claim.PlanID, claim.OperationID)
+	if err != nil {
+		return nil, err
+	}
+	if err := writeJSONAtomic(evidencePath, recordData, 0440); err != nil {
+		return nil, errors.New("record PostgreSQL backup evidence")
+	}
+	observed.Backup = &backup
+	encoded, encodeErr := json.Marshal(observed)
+	if encodeErr != nil {
+		return nil, encodeErr
+	}
+	return encoded, nil
+}
+
+func applyDatabaseRestoreVerification(ctx context.Context, planned planner.Operation, input planner.DatabaseOperationInput, claim authority.Claim, record bootstrapRecord, paths executionPaths, sensitiveValues map[string]string) (json.RawMessage, error) {
+	secret := sensitiveValues[input.CredentialReference]
+	username, _, _, _, err := parseDatabaseSecret(secret)
+	if err != nil {
+		return nil, err
+	}
+	observed, state := observeManagedDatabase(ctx, input, record, paths, claim.PlanID, "", secret)
+	observed.TransitionPhase = databaseRestorePhase
+	if state != "satisfied" && (input.Observed.Active == nil || input.Observed.Active.ID == input.GenerationID) {
+		encoded, _ := json.Marshal(observed)
+		return encoded, errors.New("Database restore verification requires an exact active managed generation")
+	}
+	if restore, ok := readDatabaseRestoreEvidence(input, claim.PlanID, claim.OperationID, claim.OperationDigest); ok {
+		observed.Restore = &restore
+		encoded, err := json.Marshal(observed)
+		return encoded, err
+	}
+	if len(planned.DependsOn) != 1 {
+		encoded, _ := json.Marshal(observed)
+		return encoded, errors.New("Database restore verification requires exactly one backup dependency")
+	}
+	backupRoot, err := databaseBackupRoot(input)
+	if err != nil {
+		encoded, _ := json.Marshal(observed)
+		return encoded, err
+	}
+	backupID := stableFilePart(claim.PlanID) + "-" + planned.DependsOn[0]
+	backupPath := filepath.Join(backupRoot, input.LogicalID, backupID+".dump")
+	if _, err := os.Stat(backupPath); err != nil {
+		encoded, _ := json.Marshal(observed)
+		return encoded, errors.New("Database restore verification requires backup evidence")
+	}
+	candidate := databaseRestoreCandidateOperationInput(input)
+	uid, gid := accountUID(record.Account), accountGID(record.Account)
+	if uid <= 0 || gid <= 0 {
+		return nil, errors.New("Environment account identity is unavailable")
+	}
+	serviceRoot := filepath.Dir(filepath.Dir(filepath.Dir(input.DataPath)))
+	if err := ensureDirectory(filepath.Dir(candidate.DataPath), 0755, 0, 0); err != nil {
+		return nil, err
+	}
+	if err := ensureEnvironmentDataDirectory(candidate.DataPath, record.Account, uid, gid); err != nil {
+		return nil, err
+	}
+	entrypointPath := filepath.Join(serviceRoot, "credential-entrypoint")
+	if err := installExactFile(input.RestoreCandidate.QuadletPath, []byte(renderDatabaseQuadlet(candidate, entrypointPath, username)), 0644, 0, 0); err != nil {
+		return nil, err
+	}
+	if _, err := runAsEnvironment(ctx, record, "podman", "unshare", "chown", "-R", "999:999", candidate.DataPath); err != nil {
+		return nil, errors.New("own restore verification data path inside the rootless user namespace")
+	}
+	if _, err := runAsEnvironment(ctx, record, "systemctl", "--user", "daemon-reload"); err != nil {
+		return nil, errors.New("reload Environment user units")
+	}
+	if _, err := runAsEnvironment(ctx, record, "systemctl", "--user", "restart", candidate.ServiceUnit); err != nil {
+		return nil, errors.New("start restore verification PostgreSQL service")
+	}
+	if err := waitForDatabaseService(ctx, record, candidate); err != nil {
+		return nil, err
+	}
+	containerDump := "/tmp/provision-restore.dump"
+	if _, err := runAsEnvironment(ctx, record, "podman", "cp", backupPath, candidate.Container+":"+containerDump); err != nil {
+		return nil, errors.New("copy PostgreSQL backup into restore candidate")
+	}
+	containerURL, err := containerPostgreSQLURL(secret)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := runAsEnvironment(ctx, record, "podman", "exec", candidate.Container, "pg_restore", "--clean", "--if-exists", "--no-owner", "--no-privileges", "-d", containerURL, containerDump); err != nil {
+		return nil, errors.New("restore PostgreSQL backup into isolated candidate")
+	}
+	verified, verifyErr := verifyDatabaseGeneration(ctx, candidate, record, paths, username, secret)
+	if verifyErr != nil {
+		encoded, _ := json.Marshal(verified)
+		return encoded, verifyErr
+	}
+	if len(candidate.Binding.DeterministicRecordIDs) > 0 {
+		records, err := observeDatabaseDeterministicRecords(ctx, candidate, record, secret)
+		verified.Records = records
+		if err != nil || !databaseBindingRecordsMatch(candidate.Binding, records) {
+			verified.Status = "failed"
+			verified.Verified = false
+			verified.Database.Health = "failed"
+			verified.FailureCategory = "deterministic-records"
+			verified.Reason = "isolated restore candidate did not prove the planned deterministic workload records"
+			if err != nil {
+				verified.Reason += ": " + err.Error()
+			}
+			verified.RecoveryAction = "inspect the isolated restore candidate and backup contents before resuming restore verification"
+			verified.Database.Reason = verified.Reason
+			verified.Database.RecoveryAction = verified.RecoveryAction
+			encoded, _ := json.Marshal(verified)
+			return encoded, errors.New("isolated restore candidate did not verify restored deterministic data")
+		}
+	}
+	restore := host.DatabaseRestoreObservation{
+		SchemaVersion:       databaseRestoreSchema,
+		BackupID:            backupID,
+		CandidateGeneration: verified.Database,
+		Isolated:            true,
+		Verified:            true,
+	}
+	recordData := map[string]any{
+		"schemaVersion": databaseRestoreSchema,
+		"planId":        claim.PlanID, "operationId": claim.OperationID, "operationDigest": claim.OperationDigest,
+		"logicalId": input.LogicalID, "restore": restore,
+	}
+	if err := ensureDirectory(filepath.Dir(databaseRestoreEvidencePath(input, claim.PlanID, claim.OperationID)), 0755, 0, 0); err != nil {
+		return nil, err
+	}
+	if err := writeJSONAtomic(databaseRestoreEvidencePath(input, claim.PlanID, claim.OperationID), recordData, 0444); err != nil {
+		return nil, errors.New("record PostgreSQL restore verification evidence")
+	}
+	verified.TransitionPhase = databaseRestorePhase
+	verified.Restore = &restore
+	encoded, encodeErr := json.Marshal(verified)
+	if encodeErr != nil {
+		return nil, encodeErr
+	}
+	return encoded, nil
+}
+
+func databaseRestoreCandidateOperationInput(input planner.DatabaseOperationInput) planner.DatabaseOperationInput {
+	candidate := input
+	candidate.GenerationID = input.RestoreCandidate.GenerationID
+	candidate.ServiceUnit = input.RestoreCandidate.ServiceUnit
+	candidate.Container = input.RestoreCandidate.Container
+	candidate.DataPath = input.RestoreCandidate.DataPath
+	candidate.QuadletPath = input.RestoreCandidate.QuadletPath
+	candidate.ListenAddress = input.RestoreCandidate.ListenAddress
+	candidate.Port = input.RestoreCandidate.Port
+	candidate.Binding.Port = candidate.Port
+	return candidate
 }
 
 func uncertainDatabaseTransitionObservation(ctx context.Context, input planner.DatabaseOperationInput, claim authority.Claim, record bootstrapRecord, paths executionPaths, credentialURL, reason string) (json.RawMessage, error) {

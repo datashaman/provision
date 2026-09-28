@@ -253,9 +253,51 @@ func TestVerifyDatabaseTransitionResultRequiresStepSpecificEvidence(t *testing.T
 		t.Fatalf("valid Database active transition evidence rejected: %v", err)
 	}
 
+	backup := planner.Operation{ID: "op-04", Kind: planner.BackupDatabase, Input: planner.OperationInput{Database: &input}}
+	envelope.Operation = backup
+	envelope.Authorization.Claim.OperationID = "op-04"
+	observed = databaseOperationObservationFixture(input)
+	observed.TransitionPhase = "backupDatabase"
+	observed.Backup = &host.DatabaseBackupObservation{
+		SchemaVersion:         "provision.dev/database-backup/v1alpha1",
+		BackupID:              "backup-1",
+		SourceGeneration:      input.Observed.Active.ID,
+		DestinationClass:      "host-filesystem",
+		DestinationReference:  input.Backup.Destination,
+		AchievedRecoveryPoint: time.Now().UTC().Format(time.RFC3339Nano),
+		Format:                "pg_dump-custom",
+		OutsideGeneration:     true,
+	}
+	result.OperationID = "op-04"
+	result.Observation = mustJSON(t, observed)
+	if err := verifyHostResult(envelope, result); err != nil {
+		t.Fatalf("valid Database backup evidence rejected: %v", err)
+	}
+	observed.Backup.AchievedRecoveryPoint = time.Now().UTC().Add(-2 * time.Hour).Format(time.RFC3339Nano)
+	result.Observation = mustJSON(t, observed)
+	if err := verifyHostResult(envelope, result); err == nil || !strings.Contains(err.Error(), "backup evidence") {
+		t.Fatalf("stale Database backup recovery point accepted: %v", err)
+	}
+
+	restore := planner.Operation{ID: "op-05", Kind: planner.VerifyDatabaseRestore, Input: planner.OperationInput{Database: &input}}
+	envelope.Operation = restore
+	envelope.Authorization.Claim.OperationID = "op-05"
+	observed = databaseRestoreOperationObservationFixture(input)
+	result.OperationID = "op-05"
+	result.Observation = mustJSON(t, observed)
+	if err := verifyHostResult(envelope, result); err != nil {
+		t.Fatalf("valid Database restore verification evidence rejected: %v", err)
+	}
+	observed.Records = nil
+	result.Observation = mustJSON(t, observed)
+	if err := verifyHostResult(envelope, result); err == nil || !strings.Contains(err.Error(), "deterministic workload record") {
+		t.Fatalf("Database restore verification without restored records accepted: %v", err)
+	}
+
 	retain := planner.Operation{ID: "op-06", Kind: planner.RetainDatabasePrevious, Input: planner.OperationInput{Database: &input}}
 	envelope.Operation = retain
 	envelope.Authorization.Claim.OperationID = "op-06"
+	observed = databaseOperationObservationFixture(input)
 	observed.TransitionPhase = "retainDatabasePrevious"
 	observed.Previous = input.Observed.Active
 	observed.RetainedUntil = "2026-09-28T10:00:00Z"
@@ -353,7 +395,18 @@ func databaseOperationInputFixture() planner.DatabaseOperationInput {
 		PostgreSQLVersion: "17.6", ImageManifest: "sha256:" + strings.Repeat("b", 64),
 		ServiceUnit: "provision-lab-postgresql.service", Container: "provision-lab-postgresql", Account: "provision-lab",
 		DataPath: "/var/lib/provision/environments/lab/services/postgresql/generations/postgresql-17-6-b86568d3e0fe/data", QuadletPath: "/etc/containers/systemd/users/999/provision-lab-postgresql.container",
-		DatabaseName: binding.Database, Binding: binding, Observed: host.DatabaseDeploymentStatus{Active: &active},
+		DatabaseName: binding.Database,
+		Backup:       config.DatabaseBackupPolicy{Mode: "required", Frequency: "30m0s", Retention: "24h0m0s", Destination: "file:///var/lib/provision/backups/lab/postgresql"},
+		Recovery:     config.DatabaseRecoveryPolicy{PointObjective: "1h0m0s", TimeObjective: "4h0m0s", RestoreVerification: "isolated-generation", HostLoss: "not-declared"},
+		RestoreCandidate: planner.DatabaseRestoreCandidateInput{
+			GenerationID: "postgresql-17-6-b86568d3e0fe-restore-check",
+			ServiceUnit:  "provision-lab-postgresql-restore.service",
+			Container:    "provision-lab-postgresql-restore",
+			DataPath:     "/var/lib/provision/environments/lab/services/postgresql/restore-candidates/postgresql-17-6-b86568d3e0fe-restore-check/data",
+			QuadletPath:  "/etc/containers/systemd/users/999/provision-lab-postgresql-restore.container",
+			Isolated:     true,
+		},
+		Binding: binding, Observed: host.DatabaseDeploymentStatus{Active: &active},
 	}
 }
 
@@ -370,6 +423,25 @@ func databaseOperationObservationFixture(input planner.DatabaseOperationInput) h
 			SupportedGuarantees: []string{"durable-local-postgresql"}, OwnedResources: []string{"postgresql-database:" + input.DatabaseName},
 		},
 	}
+}
+
+func databaseRestoreOperationObservationFixture(input planner.DatabaseOperationInput) host.DatabaseOperationObservation {
+	observed := databaseOperationObservationFixture(input)
+	observed.TransitionPhase = "verifyDatabaseRestore"
+	observed.Database.ID = input.RestoreCandidate.GenerationID
+	observed.Database.ServiceUnit = input.RestoreCandidate.ServiceUnit
+	observed.Database.Container = input.RestoreCandidate.Container
+	observed.Database.DataPath = input.RestoreCandidate.DataPath
+	observed.Database.QuadletPath = input.RestoreCandidate.QuadletPath
+	observed.Records = []host.DeterministicDatabaseRecordStatus{{ID: input.Binding.DeterministicRecordIDs[0], Namespace: input.Binding.DeterministicRecordNamespace}}
+	observed.Restore = &host.DatabaseRestoreObservation{
+		SchemaVersion:       "provision.dev/database-restore-verification/v1alpha1",
+		BackupID:            "backup-1",
+		CandidateGeneration: observed.Database,
+		Isolated:            true,
+		Verified:            true,
+	}
+	return observed
 }
 
 func databaseBoundHealthyChecks() []host.HealthCheckObservation {

@@ -225,8 +225,15 @@ func databaseOperationFixture(t *testing.T) (planner.Operation, bootstrapRecord,
 		ListenAddress: "127.0.0.1", Port: 25432, StoreRollbackGuarantee: "forward-only",
 		ForwardCutoverGuarantee: "lossless-after-bounded-write-fence", TransitionMechanism: "offline-logical-snapshot-with-bounded-write-fence",
 		TransitionCleanupPolicy: "retain-previous-generation",
-		Backup:                  config.DatabaseBackupPolicy{Mode: "required", Frequency: "1h0m0s", Retention: "168h0m0s"},
-		Recovery:                config.DatabaseRecoveryPolicy{PointObjective: "1h0m0s", TimeObjective: "4h0m0s", RestoreVerification: "isolated-generation", HostLoss: "off-host-backup-required"},
+		Backup:                  config.DatabaseBackupPolicy{Mode: "required", Frequency: "1h0m0s", Retention: "168h0m0s", Destination: "file:///var/lib/provision/backups/lab/postgresql"},
+		Recovery:                config.DatabaseRecoveryPolicy{PointObjective: "1h0m0s", TimeObjective: "4h0m0s", RestoreVerification: "isolated-generation", HostLoss: "not-declared"},
+		RestoreCandidate: planner.DatabaseRestoreCandidateInput{
+			GenerationID: qualifiedPostgreSQLGeneration + "-restore-check",
+			ServiceUnit:  "provision-lab-postgresql-restore.service", Container: "provision-lab-postgresql-restore",
+			DataPath:      filepath.Join(environmentHome, "services", "postgresql", "restore-candidates", qualifiedPostgreSQLGeneration+"-restore-check", "data"),
+			QuadletPath:   "/etc/containers/systemd/users/" + strconv.Itoa(uid) + "/provision-lab-postgresql-restore.container",
+			ListenAddress: "127.0.0.1", Port: 25434, Isolated: true,
+		},
 		TransitionValidation: planner.DatabaseTransitionValidation{
 			RequiredStoreRollbackGuarantee: "forward-only",
 			PhysicalReplicationRequired: []string{

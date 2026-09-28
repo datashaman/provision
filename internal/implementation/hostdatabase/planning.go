@@ -27,6 +27,7 @@ type Evaluation struct {
 
 func Evaluate(compiled config.Compiled, observation host.BootstrapStatus, target config.TargetSelection) Evaluation {
 	reasons := append([]string(nil), observation.Findings...)
+	_, component, _ := databaseComponent(compiled)
 	evaluation := Evaluation{
 		Contract: Contract,
 		Guarantees: []string{
@@ -58,6 +59,9 @@ func Evaluate(compiled config.Compiled, observation host.BootstrapStatus, target
 	}
 	if !target.Target.Local && observation.SSHHostKeyFingerprint == "" {
 		reasons = append(reasons, "SSH host key identity is not observed")
+	}
+	if !HostBackupDestinationExecutable(component.Database.Backup.Destination) {
+		reasons = append(reasons, "host renderer cannot execute off-host Database backup destinations yet")
 	}
 	database := observation.Database
 	if database == nil {
@@ -151,6 +155,7 @@ func Plan(compiled config.Compiled, observation host.BootstrapStatus) PlanningOu
 		RollbackWindow:          compiled.Environment.RollbackWindow,
 		Backup:                  component.Database.Backup,
 		Recovery:                component.Database.Recovery,
+		RestoreCandidate:        databaseRestoreCandidateInput(capability),
 		TransitionValidation:    databaseTransitionValidation(component, observation.Database.Deployment),
 		Binding: planmodel.DatabaseBindingInput{
 			Reference: implementation.Credential, Protocol: "postgresql", Host: capability.PostgreSQLListenAddress, Port: capability.PostgreSQLPort, Database: component.Database.DatabaseName,
@@ -159,6 +164,24 @@ func Plan(compiled config.Compiled, observation host.BootstrapStatus) PlanningOu
 		Observed:     observation.Database.Deployment,
 	}
 	return PlanningOutput{SensitiveValueReferences: []string{implementation.Credential}, Database: input, Candidate: databaseCandidateInput(input)}
+}
+
+func HostBackupDestinationExecutable(destination string) bool {
+	return strings.HasPrefix(destination, "file:///")
+}
+
+func databaseRestoreCandidateInput(capability host.DatabaseCapabilities) planmodel.DatabaseRestoreCandidateInput {
+	generationID := capability.PostgreSQLGeneration + "-restore-check"
+	return planmodel.DatabaseRestoreCandidateInput{
+		GenerationID:  generationID,
+		ServiceUnit:   strings.TrimSuffix(capability.PostgreSQLServiceUnit, ".service") + "-restore.service",
+		Container:     capability.PostgreSQLContainer + "-restore",
+		DataPath:      strings.Replace(capability.PostgreSQLGenerationDataPath, "/generations/"+capability.PostgreSQLGeneration+"/data", "/restore-candidates/"+generationID+"/data", 1),
+		QuadletPath:   strings.TrimSuffix(capability.PostgreSQLQuadletPath, ".container") + "-restore.container",
+		ListenAddress: capability.PostgreSQLListenAddress,
+		Port:          capability.PostgreSQLPort + 2,
+		Isolated:      true,
+	}
 }
 
 func databaseCandidateInput(input *planmodel.DatabaseOperationInput) *planmodel.DatabaseOperationInput {

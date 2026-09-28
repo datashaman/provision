@@ -40,3 +40,15 @@ func TestApprovalFingerprintPreservesExactEvidenceWithoutStalingOnExcludedTeleme
 		t.Fatal("decision-relevant capability change did not stale approval fingerprint")
 	}
 }
+
+func TestPlanIdentityRejectsUnsupportedSchemaVersion(t *testing.T) {
+	plan := Plan{SchemaVersion: "provision.dev/plan/v1alpha1", Application: "app", Environment: "lab", Revision: "revision-a"}
+	id, err := digest(plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan.ID = id
+	if err := plan.VerifyIdentity(); err == nil || !strings.Contains(err.Error(), "unsupported") {
+		t.Fatalf("old Plan schema was accepted: %v", err)
+	}
+}

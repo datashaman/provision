@@ -436,7 +436,7 @@ func TestPlanPreviewIsDeterministicAndReadOnly(t *testing.T) {
 	if err := json.Unmarshal(first, &plan); err != nil {
 		t.Fatalf("invalid plan JSON: %v\n%s", err, first)
 	}
-	if plan.SchemaVersion != "provision.dev/plan/v1alpha1" || !strings.HasPrefix(plan.ID, "sha256:") {
+	if plan.SchemaVersion != "provision.dev/plan/v1alpha2" || !strings.HasPrefix(plan.ID, "sha256:") {
 		t.Fatalf("unexpected plan identity: %+v", plan)
 	}
 	wantOperations := []string{"stageArtifact", "installGeneration", "startCandidate", "verifyCandidate", "switchEndpoint", "verifyActive", "drainPrevious", "retainPrevious"}
@@ -823,6 +823,13 @@ func TestDatabasePlanPreviewIsDeterministicAndFailsClosedForUnqualifiedTransitio
 	if input.Consequences.CandidateGeneration != "postgresql-17-6-b86568d3e0fe" || input.Consequences.PreviousGeneration != "none" || input.Consequences.Synchronization != "not-required-without-active-generation" || input.Consequences.TransitionApplicability == "" {
 		t.Fatalf("Database Plan omitted explicit Store Generation consequences: %+v", input.Consequences)
 	}
+	if input.TransitionValidation.RequiredStoreRollbackGuarantee != "forward-only" ||
+		!slices.Contains(input.TransitionValidation.PhysicalReplicationRequired, "same PostgreSQL major version family") ||
+		!slices.Contains(input.TransitionValidation.LogicalReplicationRequired, "schema compatibility is validated before subscription") ||
+		input.TransitionValidation.ForwardCutoverRequirement == "" ||
+		input.TransitionValidation.UnsupportedCandidateFailure != "fail-closed-before-authority-change" {
+		t.Fatalf("Database Plan omitted PostgreSQL transition validation gates: %+v", input.TransitionValidation)
+	}
 	if len(plan.SensitiveValueReferences) != 1 || plan.SensitiveValueReferences[0] != "secret://lab/postgresql-url" {
 		t.Fatalf("Plan omitted Database Secret Reference: %+v", plan.SensitiveValueReferences)
 	}
@@ -836,6 +843,11 @@ func TestDatabasePlanPreviewIsDeterministicAndFailsClosedForUnqualifiedTransitio
 		`"forwardCutoverGuarantee": "not-qualified-by-packaging-proof"`,
 		`"transitionMechanism": "none-qualified-by-packaging-proof"`,
 		`"transitionApplicability": "initial-generation-only; replacement-store-transition-fails-closed-until-qualified"`,
+		`"physicalReplicationRequired": [`,
+		`"same PostgreSQL major version family"`,
+		`"logicalReplicationRequired": [`,
+		`"schema compatibility is validated before subscription"`,
+		`"unsupportedCandidateFailure": "fail-closed-before-authority-change"`,
 		`"restoreVerification": "isolated-generation"`,
 	} {
 		if !strings.Contains(string(first), want) {
@@ -888,12 +900,16 @@ func TestDatabasePlanPreviewIsDeterministicAndFailsClosedForUnqualifiedTransitio
 	if transitionErr == nil || !strings.Contains(string(transition), "required Database Store Transition is not qualified") || strings.Contains(string(transition), `"operations"`) {
 		t.Fatalf("unqualified Database transition did not fail closed: %v\n%s", transitionErr, transition)
 	}
+	unsafeCandidate, unsafeCandidateErr := preview("FAKE_ACTIVE_DATABASE_EXACT=1", "FAKE_UNSAFE_DATABASE_CANDIDATE=1")
+	if unsafeCandidateErr == nil || !strings.Contains(string(unsafeCandidate), `failed PostgreSQL compatibility gate "physical-replication-version"`) || !strings.Contains(string(unsafeCandidate), `"active"`) || !strings.Contains(string(unsafeCandidate), `"candidate"`) || strings.Contains(string(unsafeCandidate), `"operations"`) {
+		t.Fatalf("unsafe Database candidate did not fail closed with active/candidate evidence: %v\n%s", unsafeCandidateErr, unsafeCandidate)
+	}
 
 	commands, err := os.ReadFile(sshLog)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Count(string(commands), "provision-host-executor inspect") != 9 {
+	if strings.Count(string(commands), "provision-host-executor inspect") != 10 {
 		t.Fatalf("Database preview did not perform exactly one read-only inspection per Plan:\n%s", commands)
 	}
 	for _, forbidden := range []string{"--apply", " install ", " start ", " reload ", " execute "} {
@@ -1465,7 +1481,10 @@ case "$*" in
       deployment='{"active":{"id":"postgresql-16-0-aaaaaaaaaaaa","logicalId":"provision-lab-data","ready":true,"postgresqlVersion":"16.0","imageManifest":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","serviceUnit":"provision-lab-postgresql.service","container":"provision-lab-postgresql","account":"provision-lab","dataPath":"/var/lib/provision/environments/lab/services/postgresql/generations/postgresql-16-0-aaaaaaaaaaaa/data","quadletPath":"/etc/containers/systemd/users/999/provision-lab-postgresql.container","database":"app","connectivity":true,"durableRestart":true}}'
     fi
     if [ "${FAKE_ACTIVE_DATABASE_EXACT:-0}" = 1 ]; then
-      deployment='{"active":{"id":"postgresql-17-6-b86568d3e0fe","logicalId":"provision-lab-data","ready":true,"postgresqlVersion":"17.6","imageManifest":"sha256:b86568d3e0fe1dfaeff52714f9da36f206a30e4c49131b82bf96982d78627409","serviceUnit":"provision-lab-postgresql.service","container":"provision-lab-postgresql","account":"provision-lab","dataPath":"/var/lib/provision/environments/lab/services/postgresql/generations/postgresql-17-6-b86568d3e0fe/data","quadletPath":"/etc/containers/systemd/users/999/provision-lab-postgresql.container","database":"app","connectivity":true,"durableRestart":true}}'
+      deployment='{"active":{"id":"postgresql-17-6-b86568d3e0fe","logicalId":"provision-lab-data","role":"active","authority":"authoritative","ready":true,"postgresqlVersion":"17.6","imageManifest":"sha256:b86568d3e0fe1dfaeff52714f9da36f206a30e4c49131b82bf96982d78627409","serviceUnit":"provision-lab-postgresql.service","container":"provision-lab-postgresql","account":"provision-lab","dataPath":"/var/lib/provision/environments/lab/services/postgresql/generations/postgresql-17-6-b86568d3e0fe/data","quadletPath":"/etc/containers/systemd/users/999/provision-lab-postgresql.container","database":"app","connectivity":true,"durableRestart":true}}'
+    fi
+    if [ "${FAKE_UNSAFE_DATABASE_CANDIDATE:-0}" = 1 ]; then
+      deployment='{"active":{"id":"postgresql-17-6-b86568d3e0fe","logicalId":"provision-lab-data","role":"active","authority":"authoritative","ready":true,"postgresqlVersion":"17.6","imageManifest":"sha256:b86568d3e0fe1dfaeff52714f9da36f206a30e4c49131b82bf96982d78627409","serviceUnit":"provision-lab-postgresql.service","container":"provision-lab-postgresql","account":"provision-lab","dataPath":"/var/lib/provision/environments/lab/services/postgresql/generations/postgresql-17-6-b86568d3e0fe/data","quadletPath":"/etc/containers/systemd/users/999/provision-lab-postgresql.container","database":"app","connectivity":true,"durableRestart":true},"candidate":{"id":"postgresql-18-0-bbbbbbbbbbbb","logicalId":"provision-lab-data","role":"candidate","authority":"none","ready":false,"postgresqlVersion":"18.0","imageManifest":"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","serviceUnit":"provision-lab-postgresql-candidate.service","container":"provision-lab-postgresql-candidate","account":"provision-lab","dataPath":"/var/lib/provision/environments/lab/services/postgresql/generations/postgresql-18-0-bbbbbbbbbbbb/data","quadletPath":"/etc/containers/systemd/users/999/provision-lab-postgresql-candidate.container","database":"app","connectivity":false,"durableRestart":false,"health":"failed","reason":"PostgreSQL 18 candidate cannot use physical replication from PostgreSQL 17 active generation and logical replication restrictions were not validated","recoveryAction":"discard the candidate generation or re-plan with validated logical replication evidence","compatibilityGate":"physical-replication-version"}}'
     fi
     printf '{"schemaVersion":"provision.dev/host-inspection/v1alpha1","environment":"lab","operator":"marlinf","account":"provision-lab","os":"ubuntu","osVersion":"26.04","architecture":"x86_64","systemdVersion":"systemd 259 (259.5-0ubuntu3.4)","sshServerVersion":"OpenSSH_10.2p1","caddyVersion":"2.6.2","caddyActive":true,"journaldActive":true,"cgroupV2":true,"executorDigest":"%s","authorityKeyId":"sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc","sshHostKeyFingerprint":"SHA256:ddddddddddddddddddddddddddddddddddddddddddd","generationStorageReady":true,"caddyConfigValid":true,"caddyAdminReachable":true,"caddyConfigDurable":true,"deployment":%s,"allowedOperations":["inspect","stageArtifact","installGeneration","startCandidate","verifyCandidate","switchEndpoint","verifyActive","drainPrevious","retainPrevious","prepareQueue","installTaskGeneration","verifyTaskGeneration","installWorkerGeneration","startWorkerCandidate","verifyWorkerCandidate","fenceWorkerIntake","drainWorkerPrevious","activateWorkerIntake","verifyWorkerActive","installScheduleRuntime","handoffSchedule","verifySchedule","retainWorkerPrevious","prepareDatabase"],"ready":true,"findings":[],"database":{"schemaVersion":"provision.dev/host-database-inspection/v1alpha1","observationComplete":true,"findings":[],"capabilities":{"podmanVersion":"%s","quadlet":true,"rootlessEnvironmentAccount":true,"systemdCredentials":true,"subordinateIds":true,"lingeringUserManager":true,"quadletDefinitionRootOwned":true,"generationDataPathOwned":true,"encryptedCredentialObserved":%s,"postgresqlQualificationDigest":"sha256:892fb587ac7323ba4f04d38b1fc165f9e2304219f3de14e7e365cb60b4960eff","postgresqlVersion":"17.6","postgresqlImageIndex":"sha256:00bc86618629af00d2937fdc5a5d63db3ff8450acf52f0636ec813c7f4902929","postgresqlImageManifest":"%s","postgresqlImageReference":"docker.io/library/postgres@%s","postgresqlServiceUnit":"provision-lab-postgresql.service","postgresqlContainer":"provision-lab-postgresql","postgresqlAccount":"provision-lab","postgresqlGeneration":"postgresql-17-6-b86568d3e0fe","postgresqlGenerationDataPath":"/var/lib/provision/environments/lab/services/postgresql/generations/postgresql-17-6-b86568d3e0fe/data","postgresqlQuadletPath":"/etc/containers/systemd/users/999/provision-lab-postgresql.container","postgresqlCredentialReference":"%s","postgresqlListenAddress":"127.0.0.1","postgresqlPort":25432,"storeRollbackGuarantee":"not-qualified-by-packaging-proof","forwardCutoverGuarantee":"not-qualified-by-packaging-proof","supportedTransitionMechanism":"none-qualified-by-packaging-proof"},"deployment":%s}}\n' "$executor_digest" "$host_deployment" "$podman_version" "$encrypted_credential" "$postgres_manifest" "$postgres_manifest" "$credential_reference" "$deployment"
     ;;

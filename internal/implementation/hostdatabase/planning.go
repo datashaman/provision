@@ -33,6 +33,8 @@ func Evaluate(compiled config.Compiled, observation host.BootstrapStatus, target
 			"initial-store-generation-plan-preview",
 			"host-capability-bound-plan-identity",
 			"secret-reference-only-plan",
+			"candidate-store-generation-inspection",
+			"postgresql-transition-compatibility-gates",
 			"rollback-classification-exposed-separately-from-retention",
 		},
 	}
@@ -146,6 +148,7 @@ func Plan(compiled config.Compiled, observation host.BootstrapStatus) PlanningOu
 		RollbackWindow:          compiled.Environment.RollbackWindow,
 		Backup:                  component.Database.Backup,
 		Recovery:                component.Database.Recovery,
+		TransitionValidation:    databaseTransitionValidation(component, observation.Database.Deployment),
 		Binding: planmodel.DatabaseBindingInput{
 			Reference: implementation.Credential, Protocol: "postgresql", Host: capability.PostgreSQLListenAddress, Port: capability.PostgreSQLPort, Database: component.Database.DatabaseName,
 		},
@@ -153,6 +156,28 @@ func Plan(compiled config.Compiled, observation host.BootstrapStatus) PlanningOu
 		Observed:     observation.Database.Deployment,
 	}
 	return PlanningOutput{SensitiveValueReferences: []string{implementation.Credential}, Database: input}
+}
+
+func databaseTransitionValidation(component config.Component, deployment host.DatabaseDeploymentStatus) planmodel.DatabaseTransitionValidation {
+	return planmodel.DatabaseTransitionValidation{
+		RequiredStoreRollbackGuarantee: component.Database.StoreRollbackGuarantee,
+		PhysicalReplicationRequired: []string{
+			"same PostgreSQL major version family",
+			"compatible server parameters and extensions",
+			"base backup or streaming replication source remains the active generation",
+			"candidate reaches verified replay position before any authority change",
+		},
+		LogicalReplicationRequired: []string{
+			"schema compatibility is validated before subscription",
+			"DDL changes are outside the replication window or explicitly coordinated",
+			"sequence semantics and gaps are explicitly accepted",
+			"extension and workload restrictions are validated",
+			"bounded final write fence is declared and within policy",
+		},
+		ForwardCutoverRequirement:      "no acknowledged writes may be lost before candidate authority",
+		RollbackClassificationRequired: component.Database.StoreRollbackGuarantee,
+		UnsupportedCandidateFailure:    unsupportedCandidateSummary(deployment.Candidate),
+	}
 }
 
 func databaseConsequences(compiled config.Compiled, component config.Component, capability host.DatabaseCapabilities, deployment host.DatabaseDeploymentStatus) planmodel.DatabaseStoreConsequences {
@@ -184,7 +209,13 @@ func databaseConsequences(compiled config.Compiled, component config.Component, 
 func ReplacementReason(compiled config.Compiled, database host.DatabaseStatus) string {
 	_, _, implementation := databaseComponent(compiled)
 	if implementation.Rollout != "required" || database.Deployment.Active == nil {
+		if reason := unsafeCandidateReason(database.Deployment.Candidate); reason != "" {
+			return reason
+		}
 		return ""
+	}
+	if reason := unsafeCandidateReason(database.Deployment.Candidate); reason != "" {
+		return reason
 	}
 	active := database.Deployment.Active
 	if active.ID == database.Capabilities.PostgreSQLGeneration && active.Ready && active.Connectivity && active.ImageManifest == database.Capabilities.PostgreSQLImageManifest {
@@ -194,6 +225,39 @@ func ReplacementReason(compiled config.Compiled, database host.DatabaseStatus) s
 		return ""
 	}
 	return "required Database Store Transition is not qualified for isolated candidate generation, synchronization, verification, cutover, and retention"
+}
+
+func unsafeCandidateReason(candidate *host.DatabaseGenerationStatus) string {
+	if candidate == nil {
+		return ""
+	}
+	if candidate.CompatibilityGate != "" {
+		return fmt.Sprintf("candidate Database generation %s failed PostgreSQL compatibility gate %q: %s", candidate.ID, candidate.CompatibilityGate, candidateReason(candidate))
+	}
+	return fmt.Sprintf("candidate Database generation %s is not verified safe for required Store Transition: %s", candidate.ID, candidateReason(candidate))
+}
+
+func unsupportedCandidateSummary(candidate *host.DatabaseGenerationStatus) string {
+	if candidate == nil {
+		return "fail-closed-before-authority-change"
+	}
+	if candidate.CompatibilityGate != "" {
+		return "fail-closed-before-authority-change:" + candidate.CompatibilityGate
+	}
+	return "fail-closed-before-authority-change"
+}
+
+func candidateReason(candidate *host.DatabaseGenerationStatus) string {
+	if candidate == nil {
+		return "no candidate observed"
+	}
+	if candidate.Reason != "" {
+		return candidate.Reason
+	}
+	if candidate.Health != "" {
+		return "candidate health is " + candidate.Health
+	}
+	return "candidate compatibility is unverified"
 }
 
 func DecisionObservation(observation host.BootstrapStatus) host.BootstrapStatus {

@@ -156,6 +156,8 @@ func runObserveOperation(args []string) error {
 	var observed host.OperationObservation
 	if planned.Kind == planner.PrepareQueue {
 		observed, err = observeQueueOperation(context.Background(), planned, record, paths)
+	} else if planned.Kind == planner.PrepareDatabase {
+		observed, err = observeDatabaseOperation(context.Background(), *planID, planned, record, paths)
 	} else if isAsyncWorkloadKind(planned.Kind) {
 		observed, err = observeAsyncWorkloadOperation(context.Background(), *planID, planned, record, paths)
 	} else {
@@ -251,6 +253,13 @@ func executeAuthorized(ctx context.Context, envelope operation.Envelope, record 
 		if _, err := validateQueueSensitiveValues(envelope.SensitiveValues, *envelope.Operation.Input.Async.Queue); err != nil {
 			return operation.Result{}, err
 		}
+	} else if envelope.Operation.Kind == planner.PrepareDatabase {
+		if err := validateDatabaseOperation(envelope.Operation, record, paths); err != nil {
+			return operation.Result{}, err
+		}
+		if _, _, err := validateDatabaseSensitiveValues(envelope.SensitiveValues, *envelope.Operation.Input.Database); err != nil {
+			return operation.Result{}, err
+		}
 	} else if len(envelope.SensitiveValues) != 0 {
 		return operation.Result{}, errors.New("resolved Secret References are not accepted by this operation kind")
 	} else if envelope.Operation.Kind == planner.StageArtifact {
@@ -289,6 +298,8 @@ func executeAuthorized(ctx context.Context, envelope operation.Envelope, record 
 			}
 		} else if envelope.Operation.Kind == planner.PrepareQueue {
 			encoded, actionErr = applyQueueOperation(ctx, envelope.Operation, record, paths, envelope.SensitiveValues)
+		} else if envelope.Operation.Kind == planner.PrepareDatabase {
+			encoded, actionErr = applyDatabaseOperation(ctx, envelope.Operation, claim, record, paths, envelope.SensitiveValues)
 		} else if isAsyncWorkloadKind(envelope.Operation.Kind) {
 			encoded, actionErr = applyAsyncWorkloadOperation(ctx, envelope.Operation, claim, record, paths)
 		} else if envelope.Operation.Kind == planner.SwitchEndpoint {
@@ -345,6 +356,24 @@ func executeAuthorized(ctx context.Context, envelope operation.Envelope, record 
 			observed.Health = "failed"
 			observed.Reason = actionErr.Error()
 			observed.RecoveryAction = "observe the exact managed Queue generation before retrying"
+			var encodeErr error
+			encoded, encodeErr = json.Marshal(observed)
+			if encodeErr != nil {
+				return operation.Result{}, encodeErr
+			}
+		} else if envelope.Operation.Kind == planner.PrepareDatabase {
+			observed := databaseOperationIdentity(*envelope.Operation.Input.Database)
+			if len(encoded) != 0 {
+				_ = json.Unmarshal(encoded, &observed)
+			}
+			observed.Status = "failed"
+			observed.Verified = false
+			observed.FailureCategory = databaseFailureCategory(actionErr.Error())
+			observed.Reason = actionErr.Error()
+			observed.RecoveryAction = "observe the exact managed Database generation before retrying"
+			observed.Database.Health = "failed"
+			observed.Database.Reason = observed.Reason
+			observed.Database.RecoveryAction = observed.RecoveryAction
 			var encodeErr error
 			encoded, encodeErr = json.Marshal(observed)
 			if encodeErr != nil {

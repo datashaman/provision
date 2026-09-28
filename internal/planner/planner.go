@@ -97,6 +97,7 @@ const (
 	HandoffSchedule         = planmodel.HandoffSchedule
 	VerifySchedule          = planmodel.VerifySchedule
 	RetainWorkerPrevious    = planmodel.RetainWorkerPrevious
+	PrepareDatabase         = planmodel.PrepareDatabase
 )
 
 type RecoveryMode = planmodel.RecoveryMode
@@ -117,6 +118,7 @@ const (
 	ReleaseInflight              = planmodel.ReleaseInflight
 	RestorePreviousScheduleFence = planmodel.RestorePreviousScheduleFence
 	RetainBothWorkerGenerations  = planmodel.RetainBothWorkerGenerations
+	RetainDatabase               = planmodel.RetainDatabase
 )
 
 type Operation = planmodel.Operation
@@ -272,6 +274,18 @@ func buildDatabase(compiled config.Compiled, observation host.BootstrapStatus) (
 		return Preview{}, err
 	}
 	adapterPlan := hostdatabase.Plan(compiled, planObservation)
+	operations := databaseOperations(adapterPlan)
+	for _, operation := range operations {
+		if !slices.Contains(observation.AllowedOperations, string(operation.Kind)) {
+			reasons = append(reasons, fmt.Sprintf("host executor does not allow typed %s operations", operation.Kind))
+		}
+	}
+	if len(reasons) != 0 {
+		preview.Executable = false
+		preview.Reasons = unique(reasons)
+		preview.Capability.Decision = "unsupported"
+		return preview, nil
+	}
 	plan := Plan{
 		SchemaVersion:       SchemaVersion,
 		Application:         compiled.Application.Name,
@@ -287,7 +301,7 @@ func buildDatabase(compiled config.Compiled, observation host.BootstrapStatus) (
 		}},
 		SensitiveValueReferences: adapterPlan.SensitiveValueReferences,
 		Database:                 adapterPlan.Database,
-		Operations:               []Operation{},
+		Operations:               operations,
 	}
 	plan.ID, err = digest(plan)
 	if err != nil {
@@ -295,6 +309,31 @@ func buildDatabase(compiled config.Compiled, observation host.BootstrapStatus) (
 	}
 	preview.Plan = &plan
 	return preview, nil
+}
+
+func databaseOperations(adapterPlan hostdatabase.PlanningOutput) []Operation {
+	if adapterPlan.Database == nil {
+		return nil
+	}
+	input := adapterPlan.Database
+	if active := input.Observed.Active; active != nil && active.ID == input.GenerationID && active.Ready && active.Connectivity && active.ImageManifest == input.ImageManifest {
+		return []Operation{}
+	}
+	return []Operation{{
+		ID:        "op-01",
+		Kind:      PrepareDatabase,
+		DependsOn: []string{},
+		Input:     OperationInput{Database: input},
+		Preconditions: []TypedCondition{
+			{Kind: "database-secret-reference", Subject: input.CredentialReference, Expected: "resolved-at-execution"},
+			{Kind: "postgresql-generation", Subject: input.GenerationID, Expected: "absent-or-exact"},
+		},
+		ExpectedObservations: []TypedCondition{
+			{Kind: "database-generation", Subject: input.LogicalID, Expected: input.GenerationID},
+			{Kind: "postgresql-connectivity", Subject: input.DatabaseName, Expected: "verified"},
+		},
+		Recovery: RetainDatabase,
+	}}
 }
 
 func buildAsync(compiled config.Compiled, observation host.BootstrapStatus) (Preview, error) {

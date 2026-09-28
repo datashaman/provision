@@ -122,6 +122,8 @@ func verifyHostResult(envelope operation.Envelope, result operation.Result) erro
 	switch envelope.Operation.Kind {
 	case planner.PrepareQueue:
 		return verifyQueueResult(envelope, result)
+	case planner.PrepareDatabase:
+		return verifyDatabaseResult(envelope, result)
 	case planner.StageArtifact:
 		return verifyArtifactResult(envelope, result)
 	case planner.InstallGeneration:
@@ -156,6 +158,28 @@ func verifyHostResult(envelope operation.Envelope, result operation.Result) erro
 	default:
 		return errors.New("host operation result kind is unsupported")
 	}
+}
+
+func verifyDatabaseResult(envelope operation.Envelope, result operation.Result) error {
+	if envelope.Operation.Input.Database == nil {
+		return errors.New("host Database observation has no planned Database")
+	}
+	input := envelope.Operation.Input.Database
+	var observed host.DatabaseOperationObservation
+	if err := decodeObservation(result.Observation, &observed); err != nil {
+		return errors.New("host Database observation is invalid")
+	}
+	if observed.Database.ID != input.GenerationID || observed.Database.LogicalID != input.LogicalID || observed.Database.PostgreSQLVersion != input.PostgreSQLVersion || observed.Database.ImageManifest != input.ImageManifest || observed.Database.ServiceUnit != input.ServiceUnit || observed.Database.Container != input.Container || observed.Database.Account != input.Account || observed.Database.DataPath != input.DataPath || observed.Database.QuadletPath != input.QuadletPath || observed.Database.Database != input.DatabaseName {
+		return errors.New("host Database observation does not match the Plan")
+	}
+	if result.Outcome == operation.OutcomeSucceeded {
+		if observed.Status != "verified" || !observed.Verified || !observed.Database.Ready || !observed.Database.Connectivity || observed.Database.Health != "healthy" || !observed.Checks.ServiceHealth || !observed.Checks.SQLConnectivity || !observed.Checks.DatabaseIdentity || !observed.Checks.GenerationIdentity || !observed.Checks.CredentialBoundary || len(observed.Database.SupportedGuarantees) == 0 || len(observed.Database.OwnedResources) == 0 {
+			return errors.New("host Database success observation is invalid")
+		}
+	} else if result.Outcome == operation.OutcomeFailed && (observed.Status != "failed" || observed.FailureCategory == "" || observed.Reason == "" || observed.RecoveryAction == "") {
+		return errors.New("host Database failure observation is invalid")
+	}
+	return nil
 }
 
 func verifyAsyncWorkerActiveVerificationResult(envelope operation.Envelope, result operation.Result) error {

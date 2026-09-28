@@ -187,7 +187,7 @@ func ReplacementReason(compiled config.Compiled, database host.DatabaseStatus) s
 		return ""
 	}
 	active := database.Deployment.Active
-	if active.ID == database.Capabilities.PostgreSQLGeneration && active.Ready && active.Connectivity && active.DurableRestart && active.ImageManifest == database.Capabilities.PostgreSQLImageManifest {
+	if active.ID == database.Capabilities.PostgreSQLGeneration && active.Ready && active.Connectivity && active.ImageManifest == database.Capabilities.PostgreSQLImageManifest {
 		return ""
 	}
 	if database.Capabilities.SupportedTransitionMechanism != "none-qualified-by-packaging-proof" {

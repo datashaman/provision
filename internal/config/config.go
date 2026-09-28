@@ -82,9 +82,10 @@ type DatabaseContract struct {
 }
 
 type DatabaseBackupPolicy struct {
-	Mode      string `yaml:"mode" json:"mode"`
-	Frequency string `yaml:"frequency" json:"frequency"`
-	Retention string `yaml:"retention" json:"retention"`
+	Mode        string `yaml:"mode" json:"mode"`
+	Frequency   string `yaml:"frequency" json:"frequency"`
+	Retention   string `yaml:"retention" json:"retention"`
+	Destination string `yaml:"destination" json:"destination"`
 }
 
 type DatabaseRecoveryPolicy struct {
@@ -1017,11 +1018,14 @@ func validateDatabaseContract(name string, component Component, rollbackWindow r
 	if contract.TransitionCleanupPolicy != "retain-previous-generation" {
 		return fmt.Errorf("Database %q requires previous Store Generation retention policy", name)
 	}
-	if contract.Backup.Mode != "required" || validateCanonicalDuration(contract.Backup.Frequency, time.Minute, 24*time.Hour) != nil || validateCanonicalDuration(contract.Backup.Retention, time.Hour, 24*30*time.Hour) != nil {
+	if contract.Backup.Mode != "required" || validateCanonicalDuration(contract.Backup.Frequency, time.Minute, 24*time.Hour) != nil || validateCanonicalDuration(contract.Backup.Retention, time.Hour, 24*30*time.Hour) != nil || databaseBackupDestinationClass(contract.Backup.Destination) == "" {
 		return fmt.Errorf("Database %q requires a bounded backup policy", name)
 	}
-	if validateCanonicalDuration(contract.Recovery.PointObjective, time.Minute, 24*time.Hour) != nil || validateCanonicalDuration(contract.Recovery.TimeObjective, time.Minute, 24*time.Hour) != nil || contract.Recovery.RestoreVerification != "isolated-generation" || contract.Recovery.HostLoss != "off-host-backup-required" {
+	if validateCanonicalDuration(contract.Recovery.PointObjective, time.Minute, 24*time.Hour) != nil || validateCanonicalDuration(contract.Recovery.TimeObjective, time.Minute, 24*time.Hour) != nil || contract.Recovery.RestoreVerification != "isolated-generation" || contract.Recovery.HostLoss != "not-declared" && contract.Recovery.HostLoss != "off-host-backup-required" {
 		return fmt.Errorf("Database %q requires an explicit restore-verified recovery policy", name)
+	}
+	if contract.Recovery.HostLoss == "off-host-backup-required" && databaseBackupDestinationClass(contract.Backup.Destination) != "off-host-ssh" {
+		return fmt.Errorf("Database %q declares host-loss recovery and requires an off-host backup destination", name)
 	}
 	backupFrequency, _ := time.ParseDuration(contract.Backup.Frequency)
 	backupRetention, _ := time.ParseDuration(contract.Backup.Retention)
@@ -1034,6 +1038,27 @@ func validateDatabaseContract(name string, component Component, rollbackWindow r
 		return fmt.Errorf("Database %q backup retention must cover the rollbackWindow", name)
 	}
 	return nil
+}
+
+func databaseBackupDestinationClass(destination string) string {
+	parsed, err := url.Parse(destination)
+	if err != nil || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" || parsed.Path == "" {
+		return ""
+	}
+	switch parsed.Scheme {
+	case "file":
+		if parsed.Host != "" || !strings.HasPrefix(destination, "file:///") {
+			return ""
+		}
+		return "host-filesystem"
+	case "ssh":
+		if parsed.Hostname() == "" {
+			return ""
+		}
+		return "off-host-ssh"
+	default:
+		return ""
+	}
 }
 
 func validateCanonicalDuration(value string, minimum, maximum time.Duration) error {

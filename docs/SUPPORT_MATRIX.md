@@ -66,6 +66,18 @@ production data migration, major-version upgrades, logical-replication DDL or
 sequence restrictions, reverse synchronization, automatic zero-loss rollback,
 backup/restore, host-loss recovery, RDS, or external PostgreSQL.
 
+## Managed PostgreSQL Host backup and isolated restore contract
+
+| Test seam | Qualified input | Operation contract | Result |
+| --- | --- | --- | --- |
+| Go config, planner, restricted-executor, and local result-verifier tests for issue #74 | Managed authoritative PostgreSQL `17.6` with a declared local `file://` backup destination outside the active Store Generation and `hostLoss: not-declared` | `backupDatabase` and `verifyDatabaseRestore` | Plans create non-secret backup evidence after the authoritative generation/transition, then verify restore into an isolated restore candidate. Same-host `file://` storage is rejected for declared host-loss recovery; `ssh://` is recognized as the off-host contract shape but is not yet executable by the Host renderer. |
+
+This row qualifies backup/restore contract shape, same-host logical backup
+evidence, and isolated restore-verification guardrails. It does not qualify
+Host-loss recovery, off-host transfer execution, encrypted backing media,
+retention expiry cleanup, RDS snapshots/PITR, or production recovery-time
+behavior.
+
 ## First scheduled-message Host path
 
 | Provision build | Host OS and runtime | Application generations | Result |

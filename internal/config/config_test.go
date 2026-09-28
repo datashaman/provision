@@ -231,7 +231,10 @@ func TestRejectsUnsafeDatabasePolicies(t *testing.T) {
 		{"missing backup", "application.yaml", "mode: required", "mode: optional", "bounded backup policy"},
 		{"backup misses rpo", "application.yaml", "pointObjective: 1h0m0s", "pointObjective: 30m0s", "backup frequency cannot exceed recovery point objective"},
 		{"backup retention misses rollback", "environment.yaml", "rollbackWindow: 30m0s", "rollbackWindow: 200h0m0s", "backup retention must cover the rollbackWindow"},
+		{"backup destination with userinfo", "application.yaml", "destination: file:///var/lib/provision/backups/lab/postgresql", "destination: ssh://backup-user:super-secret@backup.local/provision/lab/postgresql", "bounded backup policy"},
+		{"backup destination with query", "application.yaml", "destination: file:///var/lib/provision/backups/lab/postgresql", "destination: file:///var/lib/provision/backups/lab/postgresql?token=super-secret", "bounded backup policy"},
 		{"in-place restore", "application.yaml", "restoreVerification: isolated-generation", "restoreVerification: in-place", "restore-verified recovery policy"},
+		{"host loss requires off host", "application.yaml", "hostLoss: not-declared", "hostLoss: off-host-backup-required", "off-host backup destination"},
 		{"resolved credential", "environment.yaml", "secret://lab/postgresql-url", "postgres://user:super-secret@127.0.0.1/app", "Database credential Secret Reference"},
 	}
 	for _, test := range tests {
@@ -395,6 +398,30 @@ func TestRejectsReferenceTraversalAndSymlinkEscape(t *testing.T) {
 	}
 	if _, err := Load(root); err == nil || !strings.Contains(err.Error(), "escapes") {
 		t.Fatalf("symlink error = %v", err)
+	}
+}
+
+func TestDatabaseHostLossRecoveryAcceptsBoundedOffHostBackupDestination(t *testing.T) {
+	dir := copyDatabaseExample(t)
+	path := filepath.Join(dir, "application.yaml")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	changed := strings.Replace(string(data), "destination: file:///var/lib/provision/backups/lab/postgresql", "destination: ssh://backup.local/provision/lab/postgresql", 1)
+	changed = strings.Replace(changed, "hostLoss: not-declared", "hostLoss: off-host-backup-required", 1)
+	if changed == string(data) {
+		t.Fatal("test substitution did not match")
+	}
+	if err := os.WriteFile(path, []byte(changed), 0600); err != nil {
+		t.Fatal(err)
+	}
+	compiled, err := Load(filepath.Join(dir, "root.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := compiled.Application.Components["data"].Database.Backup.Destination; got != "ssh://backup.local/provision/lab/postgresql" {
+		t.Fatalf("backup destination = %q", got)
 	}
 }
 

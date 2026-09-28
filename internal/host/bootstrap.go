@@ -16,7 +16,7 @@ import (
 const ExecutorPath = "/usr/local/libexec/provision-host-executor"
 
 func AllowedOperations() []string {
-	return []string{"inspect", "stageArtifact", "installGeneration", "startCandidate", "verifyCandidate", "switchEndpoint", "verifyActive", "drainPrevious", "retainPrevious", "prepareQueue", "installTaskGeneration", "verifyTaskGeneration", "installWorkerGeneration", "startWorkerCandidate", "verifyWorkerCandidate", "fenceWorkerIntake", "drainWorkerPrevious", "activateWorkerIntake", "verifyWorkerActive", "installScheduleRuntime", "handoffSchedule", "verifySchedule", "retainWorkerPrevious", "prepareDatabase", "prepareDatabaseCandidate", "synchronizeDatabaseCandidate", "fenceDatabaseWrites", "switchDatabaseAuthority", "verifyDatabaseActive", "retainDatabasePrevious"}
+	return []string{"inspect", "stageArtifact", "installGeneration", "startCandidate", "verifyCandidate", "switchEndpoint", "verifyActive", "drainPrevious", "retainPrevious", "prepareQueue", "installTaskGeneration", "verifyTaskGeneration", "installWorkerGeneration", "startWorkerCandidate", "verifyWorkerCandidate", "fenceWorkerIntake", "drainWorkerPrevious", "activateWorkerIntake", "verifyWorkerActive", "installScheduleRuntime", "handoffSchedule", "verifySchedule", "retainWorkerPrevious", "prepareDatabase", "backupDatabase", "verifyDatabaseRestore", "prepareDatabaseCandidate", "synchronizeDatabaseCandidate", "fenceDatabaseWrites", "switchDatabaseAuthority", "verifyDatabaseActive", "retainDatabasePrevious"}
 }
 
 var environmentPattern = regexp.MustCompile(`^[a-z][a-z0-9-]{0,19}$`)
@@ -132,6 +132,8 @@ type DatabaseOperationObservation struct {
 	Database        DatabaseGenerationStatus            `json:"database"`
 	Verified        bool                                `json:"verified"`
 	Checks          DatabaseVerificationChecks          `json:"checks"`
+	Backup          *DatabaseBackupObservation          `json:"backup,omitempty"`
+	Restore         *DatabaseRestoreObservation         `json:"restore,omitempty"`
 	TransitionPhase string                              `json:"transitionPhase,omitempty"`
 	Synchronization string                              `json:"synchronization,omitempty"`
 	WriteFence      string                              `json:"writeFence,omitempty"`
@@ -141,6 +143,26 @@ type DatabaseOperationObservation struct {
 	FailureCategory string                              `json:"failureCategory,omitempty"`
 	Reason          string                              `json:"reason,omitempty"`
 	RecoveryAction  string                              `json:"recoveryAction,omitempty"`
+}
+
+type DatabaseBackupObservation struct {
+	SchemaVersion         string `json:"schemaVersion"`
+	BackupID              string `json:"backupId"`
+	SourceGeneration      string `json:"sourceGeneration"`
+	DestinationClass      string `json:"destinationClass"`
+	DestinationReference  string `json:"destinationReference"`
+	Path                  string `json:"path,omitempty"`
+	AchievedRecoveryPoint string `json:"achievedRecoveryPoint"`
+	Format                string `json:"format"`
+	OutsideGeneration     bool   `json:"outsideGeneration"`
+}
+
+type DatabaseRestoreObservation struct {
+	SchemaVersion       string                   `json:"schemaVersion"`
+	BackupID            string                   `json:"backupId"`
+	CandidateGeneration DatabaseGenerationStatus `json:"candidateGeneration"`
+	Isolated            bool                     `json:"isolated"`
+	Verified            bool                     `json:"verified"`
 }
 
 type AsyncStatus struct {

@@ -840,9 +840,9 @@ func TestDatabasePlanPreviewIsDeterministicAndFailsClosedForUnqualifiedTransitio
 		`"imageManifest": "sha256:b86568d3e0fe1dfaeff52714f9da36f206a30e4c49131b82bf96982d78627409"`,
 		`"databaseName": "app"`,
 		`"storeRollbackGuarantee": "forward-only"`,
-		`"forwardCutoverGuarantee": "not-qualified-by-packaging-proof"`,
-		`"transitionMechanism": "none-qualified-by-packaging-proof"`,
-		`"transitionApplicability": "initial-generation-only; replacement-store-transition-fails-closed-until-qualified"`,
+		`"forwardCutoverGuarantee": "lossless-after-bounded-write-fence"`,
+		`"transitionMechanism": "offline-logical-snapshot-with-bounded-write-fence"`,
+		`"transitionApplicability": "initial-generation-or-qualified-forward-only-transition"`,
 		`"physicalReplicationRequired": [`,
 		`"same PostgreSQL major version family"`,
 		`"logicalReplicationRequired": [`,
@@ -900,6 +900,58 @@ func TestDatabasePlanPreviewIsDeterministicAndFailsClosedForUnqualifiedTransitio
 	if transitionErr == nil || !strings.Contains(string(transition), "required Database Store Transition is not qualified") || strings.Contains(string(transition), `"operations"`) {
 		t.Fatalf("unqualified Database transition did not fail closed: %v\n%s", transitionErr, transition)
 	}
+	compatibleTransition, compatibleTransitionErr := preview("FAKE_ACTIVE_DATABASE_COMPATIBLE=1")
+	if compatibleTransitionErr != nil {
+		t.Fatalf("compatible Database Store Transition did not preview cleanly: %v\n%s", compatibleTransitionErr, compatibleTransition)
+	}
+	var transitionPlan planner.Plan
+	if err := json.Unmarshal(compatibleTransition, &transitionPlan); err != nil {
+		t.Fatalf("invalid compatible transition Plan JSON: %v\n%s", err, compatibleTransition)
+	}
+	wantTransitionOps := []planner.OperationKind{
+		planner.PrepareDatabaseCandidate,
+		planner.SynchronizeDatabaseCandidate,
+		planner.FenceDatabaseWrites,
+		planner.SwitchDatabaseAuthority,
+		planner.VerifyDatabaseActive,
+		planner.RetainDatabasePrevious,
+	}
+	if len(transitionPlan.Operations) != len(wantTransitionOps) {
+		t.Fatalf("transition operation count = %d, want %d:\n%s", len(transitionPlan.Operations), len(wantTransitionOps), compatibleTransition)
+	}
+	for index, want := range wantTransitionOps {
+		if transitionPlan.Operations[index].Kind != want || transitionPlan.Operations[index].Input.Database == nil {
+			t.Fatalf("transition operation %d = %+v, want %q with Database input", index, transitionPlan.Operations[index], want)
+		}
+		if index > 0 && !slices.Contains(transitionPlan.Operations[index].DependsOn, transitionPlan.Operations[index-1].ID) {
+			t.Fatalf("transition operation %s does not depend on %s", transitionPlan.Operations[index].ID, transitionPlan.Operations[index-1].ID)
+		}
+	}
+	if transitionPlan.Database == nil ||
+		transitionPlan.Database.Consequences.ActiveGeneration != "postgresql-17-6-b86568d3e0fe" ||
+		transitionPlan.Database.Consequences.CandidateGeneration != "postgresql-17-6-b86568d3e0fe" ||
+		transitionPlan.Database.Consequences.PreviousGeneration != "postgresql-17-6-aaaaaaaaaaaa" ||
+		transitionPlan.Database.Consequences.Synchronization != "offline-logical-snapshot-after-bounded-write-fence" ||
+		transitionPlan.Database.Consequences.Cutover != "lossless-forward-authority-switch-after-write-fence" ||
+		transitionPlan.Database.Consequences.StoreRollbackGuarantee != "forward-only" {
+		t.Fatalf("transition Plan omitted lossless forward cutover and honest rollback consequences: %+v", transitionPlan.Database)
+	}
+	for _, want := range []string{
+		`"prepareDatabaseCandidate"`,
+		`"synchronizeDatabaseCandidate"`,
+		`"fenceDatabaseWrites"`,
+		`"switchDatabaseAuthority"`,
+		`"verifyDatabaseActive"`,
+		`"retainDatabasePrevious"`,
+		`"previousGeneration": "postgresql-17-6-aaaaaaaaaaaa"`,
+		`"synchronization": "offline-logical-snapshot-after-bounded-write-fence"`,
+		`"cutover": "lossless-forward-authority-switch-after-write-fence"`,
+		`"storeRollbackGuarantee": "forward-only"`,
+	} {
+		if !strings.Contains(string(compatibleTransition), want) {
+			t.Fatalf("compatible transition Plan omitted %s:\n%s", want, compatibleTransition)
+		}
+	}
 	unsafeCandidate, unsafeCandidateErr := preview("FAKE_ACTIVE_DATABASE_EXACT=1", "FAKE_UNSAFE_DATABASE_CANDIDATE=1")
 	if unsafeCandidateErr == nil || !strings.Contains(string(unsafeCandidate), `failed PostgreSQL compatibility gate "physical-replication-version"`) || !strings.Contains(string(unsafeCandidate), `"active"`) || !strings.Contains(string(unsafeCandidate), `"candidate"`) || strings.Contains(string(unsafeCandidate), `"operations"`) {
 		t.Fatalf("unsafe Database candidate did not fail closed with active/candidate evidence: %v\n%s", unsafeCandidateErr, unsafeCandidate)
@@ -909,7 +961,7 @@ func TestDatabasePlanPreviewIsDeterministicAndFailsClosedForUnqualifiedTransitio
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Count(string(commands), "provision-host-executor inspect") != 10 {
+	if strings.Count(string(commands), "provision-host-executor inspect") != 11 {
 		t.Fatalf("Database preview did not perform exactly one read-only inspection per Plan:\n%s", commands)
 	}
 	for _, forbidden := range []string{"--apply", " install ", " start ", " reload ", " execute "} {
@@ -1002,6 +1054,27 @@ func TestDatabaseBoundHTTPPlanBindsAppToActiveDatabase(t *testing.T) {
 	}
 	if len(exactActivePlan.Operations) != 0 || exactActivePlan.Database == nil {
 		t.Fatalf("unchanged Database-bound HTTP was not a no-op Plan: %s", exactActive)
+	}
+	databaseTransitionWithExactHTTP, databaseTransitionWithExactHTTPErr := preview("FAKE_ACTIVE_DATABASE_COMPATIBLE=1", "FAKE_ACTIVE_HTTP_COMPONENT_EXACT=1")
+	if databaseTransitionWithExactHTTPErr != nil {
+		t.Fatalf("compatible Database transition with exact HTTP did not preview cleanly: %v\n%s", databaseTransitionWithExactHTTPErr, databaseTransitionWithExactHTTP)
+	}
+	var transitionWithHTTPPlan planner.Plan
+	if err := json.Unmarshal(databaseTransitionWithExactHTTP, &transitionWithHTTPPlan); err != nil {
+		t.Fatalf("invalid Database-bound transition Plan JSON: %v\n%s", err, databaseTransitionWithExactHTTP)
+	}
+	if len(transitionWithHTTPPlan.Operations) < 12 {
+		t.Fatalf("Database-bound transition skipped post-transition HTTP verification: %s", databaseTransitionWithExactHTTP)
+	}
+	if transitionWithHTTPPlan.Operations[0].Kind != planner.PrepareDatabaseCandidate ||
+		transitionWithHTTPPlan.Operations[5].Kind != planner.RetainDatabasePrevious ||
+		transitionWithHTTPPlan.Operations[6].Kind != planner.StageArtifact ||
+		!slices.Contains(transitionWithHTTPPlan.Operations[6].DependsOn, "op-06") {
+		t.Fatalf("Database-bound HTTP transition is not ordered after Database retention: %+v", transitionWithHTTPPlan.Operations[:7])
+	}
+	activeVerification := transitionWithHTTPPlan.Operations[11]
+	if activeVerification.Kind != planner.VerifyActive || activeVerification.Input.Health == nil || len(activeVerification.Input.Health.DatabaseBindings) != 1 || activeVerification.Input.Health.DatabaseBindings[0].GenerationID != "postgresql-17-6-b86568d3e0fe" {
+		t.Fatalf("post-transition HTTP active verification lacks deterministic target Database binding: %+v", activeVerification)
 	}
 	missingActiveBinding, missingActiveBindingErr := preview("FAKE_ACTIVE_DATABASE_EXACT=1", "FAKE_ACTIVE_HTTP_COMPONENT_EXACT=1", "FAKE_ACTIVE_HTTP_COMPONENT_DATABASE_BINDING=false")
 	if missingActiveBindingErr != nil {
@@ -1414,7 +1487,7 @@ case "$*" in
     ports='18080,28181'
     if [ "${FAKE_CANDIDATE_BUSY:-0}" = 1 ]; then ports='18080,27811,28181'; fi
     executor_digest="${FAKE_EXECUTOR_DIGEST:-sha256:e066cdc1a1b8a625dfc32db5ec74c1e4ba7bc459a3a3fc09ccc6488c44d606c5}"
-    printf '{"schemaVersion":"provision.dev/host-inspection/v1alpha1","environment":"lab","operator":"marlinf","account":"provision-lab","os":"ubuntu","osVersion":"26.04","architecture":"x86_64","systemdVersion":"systemd 259 (259.5-0ubuntu3.4)","sshServerVersion":"OpenSSH_10.2p1","caddyVersion":"%s","caddyActive":true,"journaldActive":true,"cgroupV2":true,"executorDigest":"%s","authorityKeyId":"sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc","sshHostKeyFingerprint":"SHA256:ddddddddddddddddddddddddddddddddddddddddddd","generationStorageReady":true,"caddyConfigValid":true,"caddyAdminReachable":true,"caddyConfigDurable":true,"listeningTcpPorts":[%s],"deployment":{"active":{"id":"provision-example-http-v0-aaaaaaaaaaaa","revision":"provision-example-http-v0","artifactDigest":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","systemdUnit":"provision-lab-web-aaaaaaaaaaaa.service","releaseDirectory":"/var/lib/provision/environments/lab/releases/provision-example-http-v0-aaaaaaaaaaaa","port":28181,"routeId":"provision-lab-web","unitActive":true,"unitMatches":true,"routeObserved":true,"routeUpstream":"127.0.0.1:28181","routeMatches":true}},"allowedOperations":["inspect","stageArtifact","installGeneration","startCandidate","verifyCandidate","switchEndpoint","verifyActive","drainPrevious","retainPrevious","prepareQueue","installTaskGeneration","verifyTaskGeneration","installWorkerGeneration","startWorkerCandidate","verifyWorkerCandidate","fenceWorkerIntake","drainWorkerPrevious","activateWorkerIntake","verifyWorkerActive","installScheduleRuntime","handoffSchedule","verifySchedule","retainWorkerPrevious","prepareDatabase"],"ready":true,"findings":[]}\n' "${FAKE_CADDY_VERSION:-2.6.2}" "$executor_digest" "$ports"
+    printf '{"schemaVersion":"provision.dev/host-inspection/v1alpha1","environment":"lab","operator":"marlinf","account":"provision-lab","os":"ubuntu","osVersion":"26.04","architecture":"x86_64","systemdVersion":"systemd 259 (259.5-0ubuntu3.4)","sshServerVersion":"OpenSSH_10.2p1","caddyVersion":"%s","caddyActive":true,"journaldActive":true,"cgroupV2":true,"executorDigest":"%s","authorityKeyId":"sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc","sshHostKeyFingerprint":"SHA256:ddddddddddddddddddddddddddddddddddddddddddd","generationStorageReady":true,"caddyConfigValid":true,"caddyAdminReachable":true,"caddyConfigDurable":true,"listeningTcpPorts":[%s],"deployment":{"active":{"id":"provision-example-http-v0-aaaaaaaaaaaa","revision":"provision-example-http-v0","artifactDigest":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","systemdUnit":"provision-lab-web-aaaaaaaaaaaa.service","releaseDirectory":"/var/lib/provision/environments/lab/releases/provision-example-http-v0-aaaaaaaaaaaa","port":28181,"routeId":"provision-lab-web","unitActive":true,"unitMatches":true,"routeObserved":true,"routeUpstream":"127.0.0.1:28181","routeMatches":true}},"allowedOperations":["inspect","stageArtifact","installGeneration","startCandidate","verifyCandidate","switchEndpoint","verifyActive","drainPrevious","retainPrevious","prepareQueue","installTaskGeneration","verifyTaskGeneration","installWorkerGeneration","startWorkerCandidate","verifyWorkerCandidate","fenceWorkerIntake","drainWorkerPrevious","activateWorkerIntake","verifyWorkerActive","installScheduleRuntime","handoffSchedule","verifySchedule","retainWorkerPrevious","prepareDatabase","prepareDatabaseCandidate","synchronizeDatabaseCandidate","fenceDatabaseWrites","switchDatabaseAuthority","verifyDatabaseActive","retainDatabasePrevious"],"ready":true,"findings":[]}\n' "${FAKE_CADDY_VERSION:-2.6.2}" "$executor_digest" "$ports"
     ;;
   *) exit 23 ;;
 esac
@@ -1446,7 +1519,7 @@ case "$*" in
 		observation_complete="${FAKE_ASYNC_OBSERVATION_COMPLETE:-true}"
 		packaging_complete="${FAKE_ASYNC_PACKAGING_COMPLETE:-true}"
 		ledger_digest="${FAKE_LEDGER_DIGEST:-sha256:9999999999999999999999999999999999999999999999999999999999999999}"
-		printf '{"schemaVersion":"provision.dev/host-inspection/v1alpha1","environment":"lab","operator":"marlinf","account":"provision-lab","os":"ubuntu","osVersion":"26.04","architecture":"x86_64","systemdVersion":"systemd 259 (259.5-0ubuntu3.4)","sshServerVersion":"OpenSSH_10.2p1","caddyVersion":"2.6.2","caddyActive":true,"journaldActive":true,"cgroupV2":true,"executorDigest":"sha256:e066cdc1a1b8a625dfc32db5ec74c1e4ba7bc459a3a3fc09ccc6488c44d606c5","authorityKeyId":"sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc","sshHostKeyFingerprint":"SHA256:ddddddddddddddddddddddddddddddddddddddddddd","generationStorageReady":true,"caddyConfigValid":true,"caddyAdminReachable":true,"caddyConfigDurable":true,"allowedOperations":["inspect","stageArtifact","installGeneration","startCandidate","verifyCandidate","switchEndpoint","verifyActive","drainPrevious","retainPrevious","prepareQueue","installTaskGeneration","verifyTaskGeneration","installWorkerGeneration","startWorkerCandidate","verifyWorkerCandidate","fenceWorkerIntake","drainWorkerPrevious","activateWorkerIntake","verifyWorkerActive","installScheduleRuntime","handoffSchedule","verifySchedule","retainWorkerPrevious","prepareDatabase"],"ready":true,"findings":[],"async":{"schemaVersion":"provision.dev/host-async-inspection/v1alpha1","observationComplete":%s,"capabilities":{"podmanVersion":"5.7.0+ds2-3build1","quadlet":true,"rootlessEnvironmentAccount":true,"systemdCredentials":true,"subordinateIds":%s,"lingeringUserManager":%s,"quadletDefinitionRootOwned":%s,"dataPathEnvironmentOwned":%s,"encryptedCredentialObserved":%s,"workerAdmissionGate":%s,"rabbitmqQualificationDigest":"sha256:af41714b1aa2270ba6cd151bd24876ac117218e401e1e87515451a7081ac4c6d","rabbitmqVersion":"4.3.6","rabbitmqImageIndex":"sha256:d0bffe70e755f348625415f32b0a090662e5f06b3ba3f82a4c7aaa18621b1279","rabbitmqImageManifest":"sha256:34fc91a9de04d612a340507b8e7e19c0ee1ec9839e09dc5fc98f54991633ce91","scheduleAppletDigest":"%s","scheduleLedgerSchema":"provision.dev/schedule-ledger/v1alpha1"},"deployment":{"queue":{"id":"provision-lab-messages","exists":true,"ready":true,"queueType":"quorum","members":1,"durable":true,"imageManifest":"sha256:34fc91a9de04d612a340507b8e7e19c0ee1ec9839e09dc5fc98f54991633ce91"},"activeWorker":{"id":"%s","revision":"provision-example-async-v0","artifactDigest":"%s","systemdUnit":"%s","active":true,"gate":"open","unitActive":true,"queueConnected":true,"inFlight":0},"activeTask":{"id":"provision-example-async-v0-ce1dc7e13900","revision":"provision-example-async-v0","artifactDigest":"sha256:ce1dc7e13900742b3139beb521e9bcd30005470370462b9aa01383f078c999e5","systemdUnit":"provision-lab-publish-ce1dc7e13900@.service","queue":"provision-lab-messages","configurationDigest":"sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee","timeout":"1m0s"},"schedule":{"component":"every-minute","timerUnit":"provision-lab-every-minute.timer","taskGenerationId":"provision-example-async-v0-ce1dc7e13900","appletDigest":"%s","ledgerSchema":"provision.dev/schedule-ledger/v1alpha1","ledgerDigest":"%s","fencingToken":7,"timezone":"Africa/Johannesburg","expression":"* * * * *","daylightSaving":"wall-clock","overlap":"forbid","retry":{"maxAttempts":1,"delay":"10s"},"missedRun":{"mode":"skip","maxOccurrences":0},"failure":"record","active":true}}}}\n' "$observation_complete" "$packaging_complete" "$packaging_complete" "$packaging_complete" "$packaging_complete" "$packaging_complete" "$worker_gate" "$applet_digest" "$active_worker_id" "$active_worker_digest" "$active_worker_unit" "$applet_digest" "$ledger_digest"
+		printf '{"schemaVersion":"provision.dev/host-inspection/v1alpha1","environment":"lab","operator":"marlinf","account":"provision-lab","os":"ubuntu","osVersion":"26.04","architecture":"x86_64","systemdVersion":"systemd 259 (259.5-0ubuntu3.4)","sshServerVersion":"OpenSSH_10.2p1","caddyVersion":"2.6.2","caddyActive":true,"journaldActive":true,"cgroupV2":true,"executorDigest":"sha256:e066cdc1a1b8a625dfc32db5ec74c1e4ba7bc459a3a3fc09ccc6488c44d606c5","authorityKeyId":"sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc","sshHostKeyFingerprint":"SHA256:ddddddddddddddddddddddddddddddddddddddddddd","generationStorageReady":true,"caddyConfigValid":true,"caddyAdminReachable":true,"caddyConfigDurable":true,"allowedOperations":["inspect","stageArtifact","installGeneration","startCandidate","verifyCandidate","switchEndpoint","verifyActive","drainPrevious","retainPrevious","prepareQueue","installTaskGeneration","verifyTaskGeneration","installWorkerGeneration","startWorkerCandidate","verifyWorkerCandidate","fenceWorkerIntake","drainWorkerPrevious","activateWorkerIntake","verifyWorkerActive","installScheduleRuntime","handoffSchedule","verifySchedule","retainWorkerPrevious","prepareDatabase","prepareDatabaseCandidate","synchronizeDatabaseCandidate","fenceDatabaseWrites","switchDatabaseAuthority","verifyDatabaseActive","retainDatabasePrevious"],"ready":true,"findings":[],"async":{"schemaVersion":"provision.dev/host-async-inspection/v1alpha1","observationComplete":%s,"capabilities":{"podmanVersion":"5.7.0+ds2-3build1","quadlet":true,"rootlessEnvironmentAccount":true,"systemdCredentials":true,"subordinateIds":%s,"lingeringUserManager":%s,"quadletDefinitionRootOwned":%s,"dataPathEnvironmentOwned":%s,"encryptedCredentialObserved":%s,"workerAdmissionGate":%s,"rabbitmqQualificationDigest":"sha256:af41714b1aa2270ba6cd151bd24876ac117218e401e1e87515451a7081ac4c6d","rabbitmqVersion":"4.3.6","rabbitmqImageIndex":"sha256:d0bffe70e755f348625415f32b0a090662e5f06b3ba3f82a4c7aaa18621b1279","rabbitmqImageManifest":"sha256:34fc91a9de04d612a340507b8e7e19c0ee1ec9839e09dc5fc98f54991633ce91","scheduleAppletDigest":"%s","scheduleLedgerSchema":"provision.dev/schedule-ledger/v1alpha1"},"deployment":{"queue":{"id":"provision-lab-messages","exists":true,"ready":true,"queueType":"quorum","members":1,"durable":true,"imageManifest":"sha256:34fc91a9de04d612a340507b8e7e19c0ee1ec9839e09dc5fc98f54991633ce91"},"activeWorker":{"id":"%s","revision":"provision-example-async-v0","artifactDigest":"%s","systemdUnit":"%s","active":true,"gate":"open","unitActive":true,"queueConnected":true,"inFlight":0},"activeTask":{"id":"provision-example-async-v0-ce1dc7e13900","revision":"provision-example-async-v0","artifactDigest":"sha256:ce1dc7e13900742b3139beb521e9bcd30005470370462b9aa01383f078c999e5","systemdUnit":"provision-lab-publish-ce1dc7e13900@.service","queue":"provision-lab-messages","configurationDigest":"sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee","timeout":"1m0s"},"schedule":{"component":"every-minute","timerUnit":"provision-lab-every-minute.timer","taskGenerationId":"provision-example-async-v0-ce1dc7e13900","appletDigest":"%s","ledgerSchema":"provision.dev/schedule-ledger/v1alpha1","ledgerDigest":"%s","fencingToken":7,"timezone":"Africa/Johannesburg","expression":"* * * * *","daylightSaving":"wall-clock","overlap":"forbid","retry":{"maxAttempts":1,"delay":"10s"},"missedRun":{"mode":"skip","maxOccurrences":0},"failure":"record","active":true}}}}\n' "$observation_complete" "$packaging_complete" "$packaging_complete" "$packaging_complete" "$packaging_complete" "$packaging_complete" "$worker_gate" "$applet_digest" "$active_worker_id" "$active_worker_digest" "$active_worker_unit" "$applet_digest" "$ledger_digest"
     ;;
   *) exit 23 ;;
 esac
@@ -1477,16 +1550,19 @@ case "$*" in
       host_deployment='{"active":{"id":"provision-example-database-http-v1-4ac304a88517","revision":"provision-example-database-http-v1","artifactDigest":"sha256:4ac304a885179a21fc889fef25cf09f12d8af19e30aa49c1c05e719d10f031b5","systemdUnit":"provision-lab-web-4ac304a88517.service","releaseDirectory":"/var/lib/provision/environments/lab/releases/provision-example-database-http-v1-4ac304a88517","port":39139,"routeId":"provision-lab-web"'"$http_database_binding"',"unitActive":true,"unitMatches":true,"routeObserved":true,"routeUpstream":"127.0.0.1:39139","routeMatches":true}}'
     fi
     deployment='{}'
-    if [ "${FAKE_ACTIVE_DATABASE_DIFFERENT:-0}" = 1 ]; then
-      deployment='{"active":{"id":"postgresql-16-0-aaaaaaaaaaaa","logicalId":"provision-lab-data","ready":true,"postgresqlVersion":"16.0","imageManifest":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","serviceUnit":"provision-lab-postgresql.service","container":"provision-lab-postgresql","account":"provision-lab","dataPath":"/var/lib/provision/environments/lab/services/postgresql/generations/postgresql-16-0-aaaaaaaaaaaa/data","quadletPath":"/etc/containers/systemd/users/999/provision-lab-postgresql.container","database":"app","connectivity":true,"durableRestart":true}}'
-    fi
+	if [ "${FAKE_ACTIVE_DATABASE_DIFFERENT:-0}" = 1 ]; then
+		deployment='{"active":{"id":"postgresql-16-0-aaaaaaaaaaaa","logicalId":"provision-lab-data","ready":true,"postgresqlVersion":"16.0","imageManifest":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","serviceUnit":"provision-lab-postgresql.service","container":"provision-lab-postgresql","account":"provision-lab","dataPath":"/var/lib/provision/environments/lab/services/postgresql/generations/postgresql-16-0-aaaaaaaaaaaa/data","quadletPath":"/etc/containers/systemd/users/999/provision-lab-postgresql.container","database":"app","connectivity":true,"durableRestart":true}}'
+	fi
+	if [ "${FAKE_ACTIVE_DATABASE_COMPATIBLE:-0}" = 1 ]; then
+		deployment='{"active":{"id":"postgresql-17-6-aaaaaaaaaaaa","logicalId":"provision-lab-data","role":"active","authority":"authoritative","ready":true,"postgresqlVersion":"17.6","imageManifest":"sha256:b86568d3e0fe1dfaeff52714f9da36f206a30e4c49131b82bf96982d78627409","serviceUnit":"provision-lab-postgresql-old.service","container":"provision-lab-postgresql-old","account":"provision-lab","dataPath":"/var/lib/provision/environments/lab/services/postgresql/generations/postgresql-17-6-aaaaaaaaaaaa/data","quadletPath":"/etc/containers/systemd/users/999/provision-lab-postgresql-old.container","database":"app","connectivity":true,"durableRestart":true,"health":"healthy"}}'
+	fi
     if [ "${FAKE_ACTIVE_DATABASE_EXACT:-0}" = 1 ]; then
       deployment='{"active":{"id":"postgresql-17-6-b86568d3e0fe","logicalId":"provision-lab-data","role":"active","authority":"authoritative","ready":true,"postgresqlVersion":"17.6","imageManifest":"sha256:b86568d3e0fe1dfaeff52714f9da36f206a30e4c49131b82bf96982d78627409","serviceUnit":"provision-lab-postgresql.service","container":"provision-lab-postgresql","account":"provision-lab","dataPath":"/var/lib/provision/environments/lab/services/postgresql/generations/postgresql-17-6-b86568d3e0fe/data","quadletPath":"/etc/containers/systemd/users/999/provision-lab-postgresql.container","database":"app","connectivity":true,"durableRestart":true}}'
     fi
     if [ "${FAKE_UNSAFE_DATABASE_CANDIDATE:-0}" = 1 ]; then
       deployment='{"active":{"id":"postgresql-17-6-b86568d3e0fe","logicalId":"provision-lab-data","role":"active","authority":"authoritative","ready":true,"postgresqlVersion":"17.6","imageManifest":"sha256:b86568d3e0fe1dfaeff52714f9da36f206a30e4c49131b82bf96982d78627409","serviceUnit":"provision-lab-postgresql.service","container":"provision-lab-postgresql","account":"provision-lab","dataPath":"/var/lib/provision/environments/lab/services/postgresql/generations/postgresql-17-6-b86568d3e0fe/data","quadletPath":"/etc/containers/systemd/users/999/provision-lab-postgresql.container","database":"app","connectivity":true,"durableRestart":true},"candidate":{"id":"postgresql-18-0-bbbbbbbbbbbb","logicalId":"provision-lab-data","role":"candidate","authority":"none","ready":false,"postgresqlVersion":"18.0","imageManifest":"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","serviceUnit":"provision-lab-postgresql-candidate.service","container":"provision-lab-postgresql-candidate","account":"provision-lab","dataPath":"/var/lib/provision/environments/lab/services/postgresql/generations/postgresql-18-0-bbbbbbbbbbbb/data","quadletPath":"/etc/containers/systemd/users/999/provision-lab-postgresql-candidate.container","database":"app","connectivity":false,"durableRestart":false,"health":"failed","reason":"PostgreSQL 18 candidate cannot use physical replication from PostgreSQL 17 active generation and logical replication restrictions were not validated","recoveryAction":"discard the candidate generation or re-plan with validated logical replication evidence","compatibilityGate":"physical-replication-version"}}'
     fi
-    printf '{"schemaVersion":"provision.dev/host-inspection/v1alpha1","environment":"lab","operator":"marlinf","account":"provision-lab","os":"ubuntu","osVersion":"26.04","architecture":"x86_64","systemdVersion":"systemd 259 (259.5-0ubuntu3.4)","sshServerVersion":"OpenSSH_10.2p1","caddyVersion":"2.6.2","caddyActive":true,"journaldActive":true,"cgroupV2":true,"executorDigest":"%s","authorityKeyId":"sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc","sshHostKeyFingerprint":"SHA256:ddddddddddddddddddddddddddddddddddddddddddd","generationStorageReady":true,"caddyConfigValid":true,"caddyAdminReachable":true,"caddyConfigDurable":true,"deployment":%s,"allowedOperations":["inspect","stageArtifact","installGeneration","startCandidate","verifyCandidate","switchEndpoint","verifyActive","drainPrevious","retainPrevious","prepareQueue","installTaskGeneration","verifyTaskGeneration","installWorkerGeneration","startWorkerCandidate","verifyWorkerCandidate","fenceWorkerIntake","drainWorkerPrevious","activateWorkerIntake","verifyWorkerActive","installScheduleRuntime","handoffSchedule","verifySchedule","retainWorkerPrevious","prepareDatabase"],"ready":true,"findings":[],"database":{"schemaVersion":"provision.dev/host-database-inspection/v1alpha1","observationComplete":true,"findings":[],"capabilities":{"podmanVersion":"%s","quadlet":true,"rootlessEnvironmentAccount":true,"systemdCredentials":true,"subordinateIds":true,"lingeringUserManager":true,"quadletDefinitionRootOwned":true,"generationDataPathOwned":true,"encryptedCredentialObserved":%s,"postgresqlQualificationDigest":"sha256:892fb587ac7323ba4f04d38b1fc165f9e2304219f3de14e7e365cb60b4960eff","postgresqlVersion":"17.6","postgresqlImageIndex":"sha256:00bc86618629af00d2937fdc5a5d63db3ff8450acf52f0636ec813c7f4902929","postgresqlImageManifest":"%s","postgresqlImageReference":"docker.io/library/postgres@%s","postgresqlServiceUnit":"provision-lab-postgresql.service","postgresqlContainer":"provision-lab-postgresql","postgresqlAccount":"provision-lab","postgresqlGeneration":"postgresql-17-6-b86568d3e0fe","postgresqlGenerationDataPath":"/var/lib/provision/environments/lab/services/postgresql/generations/postgresql-17-6-b86568d3e0fe/data","postgresqlQuadletPath":"/etc/containers/systemd/users/999/provision-lab-postgresql.container","postgresqlCredentialReference":"%s","postgresqlListenAddress":"127.0.0.1","postgresqlPort":25432,"storeRollbackGuarantee":"not-qualified-by-packaging-proof","forwardCutoverGuarantee":"not-qualified-by-packaging-proof","supportedTransitionMechanism":"none-qualified-by-packaging-proof"},"deployment":%s}}\n' "$executor_digest" "$host_deployment" "$podman_version" "$encrypted_credential" "$postgres_manifest" "$postgres_manifest" "$credential_reference" "$deployment"
+    printf '{"schemaVersion":"provision.dev/host-inspection/v1alpha1","environment":"lab","operator":"marlinf","account":"provision-lab","os":"ubuntu","osVersion":"26.04","architecture":"x86_64","systemdVersion":"systemd 259 (259.5-0ubuntu3.4)","sshServerVersion":"OpenSSH_10.2p1","caddyVersion":"2.6.2","caddyActive":true,"journaldActive":true,"cgroupV2":true,"executorDigest":"%s","authorityKeyId":"sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc","sshHostKeyFingerprint":"SHA256:ddddddddddddddddddddddddddddddddddddddddddd","generationStorageReady":true,"caddyConfigValid":true,"caddyAdminReachable":true,"caddyConfigDurable":true,"deployment":%s,"allowedOperations":["inspect","stageArtifact","installGeneration","startCandidate","verifyCandidate","switchEndpoint","verifyActive","drainPrevious","retainPrevious","prepareQueue","installTaskGeneration","verifyTaskGeneration","installWorkerGeneration","startWorkerCandidate","verifyWorkerCandidate","fenceWorkerIntake","drainWorkerPrevious","activateWorkerIntake","verifyWorkerActive","installScheduleRuntime","handoffSchedule","verifySchedule","retainWorkerPrevious","prepareDatabase","prepareDatabaseCandidate","synchronizeDatabaseCandidate","fenceDatabaseWrites","switchDatabaseAuthority","verifyDatabaseActive","retainDatabasePrevious"],"ready":true,"findings":[],"database":{"schemaVersion":"provision.dev/host-database-inspection/v1alpha1","observationComplete":true,"findings":[],"capabilities":{"podmanVersion":"%s","quadlet":true,"rootlessEnvironmentAccount":true,"systemdCredentials":true,"subordinateIds":true,"lingeringUserManager":true,"quadletDefinitionRootOwned":true,"generationDataPathOwned":true,"encryptedCredentialObserved":%s,"postgresqlQualificationDigest":"sha256:892fb587ac7323ba4f04d38b1fc165f9e2304219f3de14e7e365cb60b4960eff","postgresqlVersion":"17.6","postgresqlImageIndex":"sha256:00bc86618629af00d2937fdc5a5d63db3ff8450acf52f0636ec813c7f4902929","postgresqlImageManifest":"%s","postgresqlImageReference":"docker.io/library/postgres@%s","postgresqlServiceUnit":"provision-lab-postgresql.service","postgresqlContainer":"provision-lab-postgresql","postgresqlAccount":"provision-lab","postgresqlGeneration":"postgresql-17-6-b86568d3e0fe","postgresqlGenerationDataPath":"/var/lib/provision/environments/lab/services/postgresql/generations/postgresql-17-6-b86568d3e0fe/data","postgresqlQuadletPath":"/etc/containers/systemd/users/999/provision-lab-postgresql.container","postgresqlCredentialReference":"%s","postgresqlListenAddress":"127.0.0.1","postgresqlPort":25432,"storeRollbackGuarantee":"forward-only","forwardCutoverGuarantee":"lossless-after-bounded-write-fence","supportedTransitionMechanism":"offline-logical-snapshot-with-bounded-write-fence"},"deployment":%s}}\n' "$executor_digest" "$host_deployment" "$podman_version" "$encrypted_credential" "$postgres_manifest" "$postgres_manifest" "$credential_reference" "$deployment"
     ;;
   *) exit 23 ;;
 esac

@@ -419,9 +419,9 @@ func (b *sqliteBackend) BeginOperation(ctx context.Context, request BeginOperati
 		return OperationAttempt{}, errors.New("operation is not present in the approved Plan")
 	}
 	switch operation.Kind {
-	case planner.PrepareQueue:
+	case planner.PrepareQueue, planner.PrepareDatabase, planner.PrepareDatabaseCandidate:
 		if len(operation.DependsOn) != 0 {
-			return OperationAttempt{}, errors.New("Queue preparation cannot have operation dependencies")
+			return OperationAttempt{}, errors.New("preparation operation cannot have operation dependencies")
 		}
 	case planner.StageArtifact:
 		// HTTP artifacts may be the first operation, while asynchronous
@@ -430,7 +430,8 @@ func (b *sqliteBackend) BeginOperation(ctx context.Context, request BeginOperati
 	case planner.InstallGeneration, planner.StartCandidate, planner.VerifyCandidate, planner.SwitchEndpoint, planner.VerifyActive, planner.DrainPrevious, planner.RetainPrevious,
 		planner.InstallTaskGeneration, planner.VerifyTaskGeneration,
 		planner.InstallWorkerGeneration, planner.StartWorkerCandidate, planner.VerifyWorkerCandidate, planner.FenceWorkerIntake, planner.DrainWorkerPrevious, planner.ActivateWorkerIntake, planner.VerifyWorkerActive, planner.RetainWorkerPrevious,
-		planner.InstallScheduleRuntime, planner.HandoffSchedule, planner.VerifySchedule:
+		planner.InstallScheduleRuntime, planner.HandoffSchedule, planner.VerifySchedule,
+		planner.SynchronizeDatabaseCandidate, planner.FenceDatabaseWrites, planner.SwitchDatabaseAuthority, planner.VerifyDatabaseActive, planner.RetainDatabasePrevious:
 		if len(operation.DependsOn) == 0 {
 			return OperationAttempt{}, errors.New("candidate operation requires a successful dependency")
 		}

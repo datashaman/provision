@@ -91,8 +91,10 @@ func Evaluate(compiled config.Compiled, observation host.BootstrapStatus, target
 	if capability.PostgreSQLServiceUnit == "" || capability.PostgreSQLContainer == "" || capability.PostgreSQLAccount == "" || capability.PostgreSQLGeneration == "" || capability.PostgreSQLGenerationDataPath == "" || capability.PostgreSQLQuadletPath == "" || capability.PostgreSQLListenAddress == "" || capability.PostgreSQLPort == 0 {
 		reasons = append(reasons, "PostgreSQL service, generation, container, account, data path, Quadlet identity, or listener binding is incomplete")
 	}
-	if capability.StoreRollbackGuarantee != "not-qualified-by-packaging-proof" || capability.ForwardCutoverGuarantee != "not-qualified-by-packaging-proof" || capability.SupportedTransitionMechanism != "none-qualified-by-packaging-proof" {
-		reasons = append(reasons, "PostgreSQL Store Transition capability is not honestly classified as unqualified forward-only packaging")
+	if capability.StoreRollbackGuarantee != "forward-only" ||
+		capability.ForwardCutoverGuarantee != "lossless-after-bounded-write-fence" ||
+		capability.SupportedTransitionMechanism != "offline-logical-snapshot-with-bounded-write-fence" {
+		reasons = append(reasons, "PostgreSQL Store Transition capability is not the qualified offline logical snapshot with bounded write fence")
 	}
 	_, _, implementation := databaseComponent(compiled)
 	if implementation.Credential != "" && capability.PostgreSQLCredentialReference != implementation.Credential {
@@ -118,6 +120,7 @@ func Evaluate(compiled config.Compiled, observation host.BootstrapStatus, target
 type PlanningOutput struct {
 	SensitiveValueReferences []string
 	Database                 *planmodel.DatabaseOperationInput
+	Candidate                *planmodel.DatabaseOperationInput
 }
 
 func Plan(compiled config.Compiled, observation host.BootstrapStatus) PlanningOutput {
@@ -155,7 +158,17 @@ func Plan(compiled config.Compiled, observation host.BootstrapStatus) PlanningOu
 		Consequences: databaseConsequences(compiled, component, capability, observation.Database.Deployment),
 		Observed:     observation.Database.Deployment,
 	}
-	return PlanningOutput{SensitiveValueReferences: []string{implementation.Credential}, Database: input}
+	return PlanningOutput{SensitiveValueReferences: []string{implementation.Credential}, Database: input, Candidate: databaseCandidateInput(input)}
+}
+
+func databaseCandidateInput(input *planmodel.DatabaseOperationInput) *planmodel.DatabaseOperationInput {
+	candidate := *input
+	candidate.ServiceUnit = strings.TrimSuffix(input.ServiceUnit, ".service") + "-candidate.service"
+	candidate.Container = input.Container + "-candidate"
+	candidate.Port = input.Port + 1
+	candidate.QuadletPath = strings.TrimSuffix(input.QuadletPath, ".container") + "-candidate.container"
+	candidate.Binding.Port = candidate.Port
+	return &candidate
 }
 
 func databaseTransitionValidation(component config.Component, deployment host.DatabaseDeploymentStatus) planmodel.DatabaseTransitionValidation {
@@ -175,6 +188,8 @@ func databaseTransitionValidation(component config.Component, deployment host.Da
 			"bounded final write fence is declared and within policy",
 		},
 		ForwardCutoverRequirement:      "no acknowledged writes may be lost before candidate authority",
+		WriteFenceRequirement:          "active-database-read-only-with-session-termination",
+		WriteFenceMaximum:              "30s",
 		RollbackClassificationRequired: component.Database.StoreRollbackGuarantee,
 		UnsupportedCandidateFailure:    unsupportedCandidateSummary(deployment.Candidate),
 	}
@@ -182,10 +197,17 @@ func databaseTransitionValidation(component config.Component, deployment host.Da
 
 func databaseConsequences(compiled config.Compiled, component config.Component, capability host.DatabaseCapabilities, deployment host.DatabaseDeploymentStatus) planmodel.DatabaseStoreConsequences {
 	previous := "none"
+	synchronization := "not-required-without-active-generation"
+	cutover := "initial-authority-after-verification"
+	applicability := "initial-generation-or-qualified-forward-only-transition"
 	if deployment.Active != nil {
 		previous = deployment.Active.ID
 		if deployment.Active.ID == capability.PostgreSQLGeneration {
 			previous = "none"
+		} else if compatibleActiveGeneration(deployment.Active, capability) && capability.SupportedTransitionMechanism == "offline-logical-snapshot-with-bounded-write-fence" {
+			synchronization = "offline-logical-snapshot-after-bounded-write-fence"
+			cutover = "lossless-forward-authority-switch-after-write-fence"
+			applicability = "qualified-forward-only-store-transition"
 		}
 	}
 	retained := make([]string, 0, len(deployment.Retained))
@@ -197,12 +219,12 @@ func databaseConsequences(compiled config.Compiled, component config.Component, 
 		CandidateGeneration:     capability.PostgreSQLGeneration,
 		PreviousGeneration:      previous,
 		RetainedGenerations:     retained,
-		Synchronization:         "not-required-without-active-generation",
-		Cutover:                 "initial-authority-after-verification",
+		Synchronization:         synchronization,
+		Cutover:                 cutover,
 		Retention:               component.Database.TransitionCleanupPolicy,
 		StoreRollbackGuarantee:  component.Database.StoreRollbackGuarantee,
 		RollbackWindow:          compiled.Environment.RollbackWindow,
-		TransitionApplicability: "initial-generation-only; replacement-store-transition-fails-closed-until-qualified",
+		TransitionApplicability: applicability,
 	}
 }
 
@@ -221,10 +243,20 @@ func ReplacementReason(compiled config.Compiled, database host.DatabaseStatus) s
 	if active.ID == database.Capabilities.PostgreSQLGeneration && active.Ready && active.Connectivity && active.ImageManifest == database.Capabilities.PostgreSQLImageManifest {
 		return ""
 	}
-	if database.Capabilities.SupportedTransitionMechanism != "none-qualified-by-packaging-proof" {
+	if compatibleActiveGeneration(active, database.Capabilities) && database.Capabilities.SupportedTransitionMechanism == "offline-logical-snapshot-with-bounded-write-fence" {
 		return ""
 	}
 	return "required Database Store Transition is not qualified for isolated candidate generation, synchronization, verification, cutover, and retention"
+}
+
+func compatibleActiveGeneration(active *host.DatabaseGenerationStatus, capability host.DatabaseCapabilities) bool {
+	return active != nil &&
+		active.Ready &&
+		active.Connectivity &&
+		active.PostgreSQLVersion == capability.PostgreSQLVersion &&
+		active.ImageManifest == capability.PostgreSQLImageManifest &&
+		active.Database != "" &&
+		active.LogicalID != ""
 }
 
 func unsafeCandidateReason(candidate *host.DatabaseGenerationStatus) string {

@@ -16,29 +16,35 @@ import (
 type OperationKind string
 
 const (
-	StageArtifact           OperationKind = "stageArtifact"
-	InstallGeneration       OperationKind = "installGeneration"
-	StartCandidate          OperationKind = "startCandidate"
-	VerifyCandidate         OperationKind = "verifyCandidate"
-	SwitchEndpoint          OperationKind = "switchEndpoint"
-	VerifyActive            OperationKind = "verifyActive"
-	DrainPrevious           OperationKind = "drainPrevious"
-	RetainPrevious          OperationKind = "retainPrevious"
-	PrepareQueue            OperationKind = "prepareQueue"
-	InstallTaskGeneration   OperationKind = "installTaskGeneration"
-	VerifyTaskGeneration    OperationKind = "verifyTaskGeneration"
-	InstallWorkerGeneration OperationKind = "installWorkerGeneration"
-	StartWorkerCandidate    OperationKind = "startWorkerCandidate"
-	VerifyWorkerCandidate   OperationKind = "verifyWorkerCandidate"
-	FenceWorkerIntake       OperationKind = "fenceWorkerIntake"
-	DrainWorkerPrevious     OperationKind = "drainWorkerPrevious"
-	ActivateWorkerIntake    OperationKind = "activateWorkerIntake"
-	VerifyWorkerActive      OperationKind = "verifyWorkerActive"
-	InstallScheduleRuntime  OperationKind = "installScheduleRuntime"
-	HandoffSchedule         OperationKind = "handoffSchedule"
-	VerifySchedule          OperationKind = "verifySchedule"
-	RetainWorkerPrevious    OperationKind = "retainWorkerPrevious"
-	PrepareDatabase         OperationKind = "prepareDatabase"
+	StageArtifact                OperationKind = "stageArtifact"
+	InstallGeneration            OperationKind = "installGeneration"
+	StartCandidate               OperationKind = "startCandidate"
+	VerifyCandidate              OperationKind = "verifyCandidate"
+	SwitchEndpoint               OperationKind = "switchEndpoint"
+	VerifyActive                 OperationKind = "verifyActive"
+	DrainPrevious                OperationKind = "drainPrevious"
+	RetainPrevious               OperationKind = "retainPrevious"
+	PrepareQueue                 OperationKind = "prepareQueue"
+	InstallTaskGeneration        OperationKind = "installTaskGeneration"
+	VerifyTaskGeneration         OperationKind = "verifyTaskGeneration"
+	InstallWorkerGeneration      OperationKind = "installWorkerGeneration"
+	StartWorkerCandidate         OperationKind = "startWorkerCandidate"
+	VerifyWorkerCandidate        OperationKind = "verifyWorkerCandidate"
+	FenceWorkerIntake            OperationKind = "fenceWorkerIntake"
+	DrainWorkerPrevious          OperationKind = "drainWorkerPrevious"
+	ActivateWorkerIntake         OperationKind = "activateWorkerIntake"
+	VerifyWorkerActive           OperationKind = "verifyWorkerActive"
+	InstallScheduleRuntime       OperationKind = "installScheduleRuntime"
+	HandoffSchedule              OperationKind = "handoffSchedule"
+	VerifySchedule               OperationKind = "verifySchedule"
+	RetainWorkerPrevious         OperationKind = "retainWorkerPrevious"
+	PrepareDatabase              OperationKind = "prepareDatabase"
+	PrepareDatabaseCandidate     OperationKind = "prepareDatabaseCandidate"
+	SynchronizeDatabaseCandidate OperationKind = "synchronizeDatabaseCandidate"
+	FenceDatabaseWrites          OperationKind = "fenceDatabaseWrites"
+	SwitchDatabaseAuthority      OperationKind = "switchDatabaseAuthority"
+	VerifyDatabaseActive         OperationKind = "verifyDatabaseActive"
+	RetainDatabasePrevious       OperationKind = "retainDatabasePrevious"
 )
 
 type RecoveryMode string
@@ -249,6 +255,8 @@ type DatabaseTransitionValidation struct {
 	PhysicalReplicationRequired    []string `json:"physicalReplicationRequired"`
 	LogicalReplicationRequired     []string `json:"logicalReplicationRequired"`
 	ForwardCutoverRequirement      string   `json:"forwardCutoverRequirement"`
+	WriteFenceRequirement          string   `json:"writeFenceRequirement"`
+	WriteFenceMaximum              string   `json:"writeFenceMaximum"`
 	RollbackClassificationRequired string   `json:"rollbackClassificationRequired"`
 	UnsupportedCandidateFailure    string   `json:"unsupportedCandidateFailure"`
 }

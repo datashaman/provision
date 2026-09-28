@@ -16,7 +16,7 @@ import (
 const ExecutorPath = "/usr/local/libexec/provision-host-executor"
 
 func AllowedOperations() []string {
-	return []string{"inspect", "stageArtifact", "installGeneration", "startCandidate", "verifyCandidate", "switchEndpoint", "verifyActive", "drainPrevious", "retainPrevious", "prepareQueue", "installTaskGeneration", "verifyTaskGeneration", "installWorkerGeneration", "startWorkerCandidate", "verifyWorkerCandidate", "fenceWorkerIntake", "drainWorkerPrevious", "activateWorkerIntake", "verifyWorkerActive", "installScheduleRuntime", "handoffSchedule", "verifySchedule", "retainWorkerPrevious", "prepareDatabase"}
+	return []string{"inspect", "stageArtifact", "installGeneration", "startCandidate", "verifyCandidate", "switchEndpoint", "verifyActive", "drainPrevious", "retainPrevious", "prepareQueue", "installTaskGeneration", "verifyTaskGeneration", "installWorkerGeneration", "startWorkerCandidate", "verifyWorkerCandidate", "fenceWorkerIntake", "drainWorkerPrevious", "activateWorkerIntake", "verifyWorkerActive", "installScheduleRuntime", "handoffSchedule", "verifySchedule", "retainWorkerPrevious", "prepareDatabase", "prepareDatabaseCandidate", "synchronizeDatabaseCandidate", "fenceDatabaseWrites", "switchDatabaseAuthority", "verifyDatabaseActive", "retainDatabasePrevious"}
 }
 
 var environmentPattern = regexp.MustCompile(`^[a-z][a-z0-9-]{0,19}$`)
@@ -128,13 +128,19 @@ type DatabaseVerificationChecks struct {
 }
 
 type DatabaseOperationObservation struct {
-	Status          string                     `json:"status"`
-	Database        DatabaseGenerationStatus   `json:"database"`
-	Verified        bool                       `json:"verified"`
-	Checks          DatabaseVerificationChecks `json:"checks"`
-	FailureCategory string                     `json:"failureCategory,omitempty"`
-	Reason          string                     `json:"reason,omitempty"`
-	RecoveryAction  string                     `json:"recoveryAction,omitempty"`
+	Status          string                              `json:"status"`
+	Database        DatabaseGenerationStatus            `json:"database"`
+	Verified        bool                                `json:"verified"`
+	Checks          DatabaseVerificationChecks          `json:"checks"`
+	TransitionPhase string                              `json:"transitionPhase,omitempty"`
+	Synchronization string                              `json:"synchronization,omitempty"`
+	WriteFence      string                              `json:"writeFence,omitempty"`
+	Records         []DeterministicDatabaseRecordStatus `json:"records,omitempty"`
+	Previous        *DatabaseGenerationStatus           `json:"previous,omitempty"`
+	RetainedUntil   string                              `json:"retainedUntil,omitempty"`
+	FailureCategory string                              `json:"failureCategory,omitempty"`
+	Reason          string                              `json:"reason,omitempty"`
+	RecoveryAction  string                              `json:"recoveryAction,omitempty"`
 }
 
 type AsyncStatus struct {

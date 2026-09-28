@@ -156,7 +156,7 @@ func runObserveOperation(args []string) error {
 	var observed host.OperationObservation
 	if planned.Kind == planner.PrepareQueue {
 		observed, err = observeQueueOperation(context.Background(), planned, record, paths)
-	} else if planned.Kind == planner.PrepareDatabase {
+	} else if isDatabaseOperationKind(planned.Kind) {
 		observed, err = observeDatabaseOperation(context.Background(), *planID, planned, record, paths)
 	} else if isAsyncWorkloadKind(planned.Kind) {
 		observed, err = observeAsyncWorkloadOperation(context.Background(), *planID, planned, record, paths)
@@ -253,7 +253,7 @@ func executeAuthorized(ctx context.Context, envelope operation.Envelope, record 
 		if _, err := validateQueueSensitiveValues(envelope.SensitiveValues, *envelope.Operation.Input.Async.Queue); err != nil {
 			return operation.Result{}, err
 		}
-	} else if envelope.Operation.Kind == planner.PrepareDatabase {
+	} else if isDatabaseOperationKind(envelope.Operation.Kind) {
 		if err := validateDatabaseOperation(envelope.Operation, record, paths); err != nil {
 			return operation.Result{}, err
 		}
@@ -298,7 +298,7 @@ func executeAuthorized(ctx context.Context, envelope operation.Envelope, record 
 			}
 		} else if envelope.Operation.Kind == planner.PrepareQueue {
 			encoded, actionErr = applyQueueOperation(ctx, envelope.Operation, record, paths, envelope.SensitiveValues)
-		} else if envelope.Operation.Kind == planner.PrepareDatabase {
+		} else if isDatabaseOperationKind(envelope.Operation.Kind) {
 			encoded, actionErr = applyDatabaseOperation(ctx, envelope.Operation, claim, record, paths, envelope.SensitiveValues)
 		} else if isAsyncWorkloadKind(envelope.Operation.Kind) {
 			encoded, actionErr = applyAsyncWorkloadOperation(ctx, envelope.Operation, claim, record, paths)
@@ -361,17 +361,26 @@ func executeAuthorized(ctx context.Context, envelope operation.Envelope, record 
 			if encodeErr != nil {
 				return operation.Result{}, encodeErr
 			}
-		} else if envelope.Operation.Kind == planner.PrepareDatabase {
+		} else if isDatabaseOperationKind(envelope.Operation.Kind) {
 			observed := databaseOperationIdentity(*envelope.Operation.Input.Database)
 			if len(encoded) != 0 {
 				_ = json.Unmarshal(encoded, &observed)
 			}
 			observed.Status = "failed"
-			observed.Verified = false
 			observed.FailureCategory = databaseFailureCategory(actionErr.Error())
-			observed.Reason = actionErr.Error()
 			observed.RecoveryAction = "observe the exact managed Database generation before retrying"
-			observed.Database.Health = "failed"
+			if errors.Is(actionErr, errUncertainRecovery) {
+				observed.Status = "uncertain"
+				if observed.FailureCategory == "" || observed.FailureCategory == "host-operation-failed" {
+					observed.FailureCategory = "ambiguous-data-bearing-state"
+				}
+				if observed.RecoveryAction == "" || observed.RecoveryAction == "observe the exact managed Database generation before retrying" {
+					observed.RecoveryAction = "inspect the exact managed Database generations and resume or explicitly recover the approved operation"
+				}
+			}
+			observed.Verified = false
+			observed.Reason = actionErr.Error()
+			observed.Database.Health = observed.Status
 			observed.Database.Reason = observed.Reason
 			observed.Database.RecoveryAction = observed.RecoveryAction
 			var encodeErr error

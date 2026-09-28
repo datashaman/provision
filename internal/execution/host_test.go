@@ -231,6 +231,46 @@ func TestVerifyActiveResultRequiresDatabaseBindingEvidence(t *testing.T) {
 	}
 }
 
+func TestVerifyDatabaseTransitionResultRequiresStepSpecificEvidence(t *testing.T) {
+	input := databaseOperationInputFixture()
+	planned := planner.Operation{ID: "op-05", Kind: planner.VerifyDatabaseActive, Input: planner.OperationInput{Database: &input}}
+	envelope := operation.Envelope{Authorization: authority.Proof{Claim: authority.Claim{PlanID: "sha256:" + strings.Repeat("c", 64), OperationID: "op-05", AttemptID: "attempt-11111111111111111111111111111111", FencingToken: 5}}, Operation: planned}
+	observed := databaseOperationObservationFixture(input)
+	result := operation.Result{
+		SchemaVersion: operation.ResultSchemaVersion, PlanID: envelope.Authorization.Claim.PlanID,
+		OperationID: "op-05", AttemptID: envelope.Authorization.Claim.AttemptID, FencingToken: 5,
+		Outcome: operation.OutcomeSucceeded, Observation: mustJSON(t, observed),
+	}
+	if err := verifyHostResult(envelope, result); err == nil || !strings.Contains(err.Error(), "active verification") {
+		t.Fatalf("generic Database health was accepted as active transition verification: %v", err)
+	}
+
+	observed.TransitionPhase = "verifyDatabaseActive"
+	observed.Synchronization = "verified-after-authority-switch"
+	observed.Records = []host.DeterministicDatabaseRecordStatus{{ID: input.Binding.DeterministicRecordIDs[0], Namespace: input.Binding.DeterministicRecordNamespace}}
+	result.Observation = mustJSON(t, observed)
+	if err := verifyHostResult(envelope, result); err != nil {
+		t.Fatalf("valid Database active transition evidence rejected: %v", err)
+	}
+
+	retain := planner.Operation{ID: "op-06", Kind: planner.RetainDatabasePrevious, Input: planner.OperationInput{Database: &input}}
+	envelope.Operation = retain
+	envelope.Authorization.Claim.OperationID = "op-06"
+	observed.TransitionPhase = "retainDatabasePrevious"
+	observed.Previous = input.Observed.Active
+	observed.RetainedUntil = "2026-09-28T10:00:00Z"
+	result.OperationID = "op-06"
+	result.Observation = mustJSON(t, observed)
+	if err := verifyHostResult(envelope, result); err != nil {
+		t.Fatalf("valid Database retention transition evidence rejected: %v", err)
+	}
+	observed.Previous = nil
+	result.Observation = mustJSON(t, observed)
+	if err := verifyHostResult(envelope, result); err == nil || !strings.Contains(err.Error(), "previous-generation") {
+		t.Fatalf("Database retention without previous evidence accepted: %v", err)
+	}
+}
+
 func TestVerifyDrainResultBindsBoundPolicyAndExactGenerations(t *testing.T) {
 	reference := planner.GenerationReference{
 		ID: "provision-example-http-v2-bbbbbbbbbbbb", Revision: "provision-example-http-v2",
@@ -299,6 +339,36 @@ func databaseBindingInputFixture() planner.DatabaseBindingInput {
 		EnvironmentVariable: "PROVISION_DATABASE_URL_FILE", ApplicationHealth: "http-candidate", BindingState: "database-bound",
 		DeterministicRecordNamespace: namespace,
 		DeterministicRecordIDs:       []string{namespace + "/record-0001"},
+	}
+}
+
+func databaseOperationInputFixture() planner.DatabaseOperationInput {
+	binding := databaseBindingInputFixture()
+	active := host.DatabaseGenerationStatus{
+		ID: "postgresql-17-6-aaaaaaaaaaaa", LogicalID: binding.LogicalID, DataPath: "/var/lib/provision/environments/lab/services/postgresql/generations/postgresql-17-6-aaaaaaaaaaaa/data",
+		Ready: true, Connectivity: true, Authority: "authoritative", Database: binding.Database,
+	}
+	return planner.DatabaseOperationInput{
+		Component: "data", LogicalID: binding.LogicalID, GenerationID: binding.GenerationID,
+		PostgreSQLVersion: "17.6", ImageManifest: "sha256:" + strings.Repeat("b", 64),
+		ServiceUnit: "provision-lab-postgresql.service", Container: "provision-lab-postgresql", Account: "provision-lab",
+		DataPath: "/var/lib/provision/environments/lab/services/postgresql/generations/postgresql-17-6-b86568d3e0fe/data", QuadletPath: "/etc/containers/systemd/users/999/provision-lab-postgresql.container",
+		DatabaseName: binding.Database, Binding: binding, Observed: host.DatabaseDeploymentStatus{Active: &active},
+	}
+}
+
+func databaseOperationObservationFixture(input planner.DatabaseOperationInput) host.DatabaseOperationObservation {
+	return host.DatabaseOperationObservation{
+		Status: "verified", Verified: true,
+		Checks: host.DatabaseVerificationChecks{
+			ServiceHealth: true, SQLConnectivity: true, DatabaseIdentity: true, GenerationIdentity: true, CredentialBoundary: true,
+		},
+		Database: host.DatabaseGenerationStatus{
+			ID: input.GenerationID, LogicalID: input.LogicalID, PostgreSQLVersion: input.PostgreSQLVersion, ImageManifest: input.ImageManifest,
+			ServiceUnit: input.ServiceUnit, Container: input.Container, Account: input.Account, DataPath: input.DataPath, QuadletPath: input.QuadletPath,
+			Database: input.DatabaseName, Ready: true, Connectivity: true, Health: "healthy",
+			SupportedGuarantees: []string{"durable-local-postgresql"}, OwnedResources: []string{"postgresql-database:" + input.DatabaseName},
+		},
 	}
 }
 

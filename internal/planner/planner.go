@@ -75,29 +75,35 @@ type ApprovalRequirement struct {
 type OperationKind = planmodel.OperationKind
 
 const (
-	StageArtifact           = planmodel.StageArtifact
-	InstallGeneration       = planmodel.InstallGeneration
-	StartCandidate          = planmodel.StartCandidate
-	VerifyCandidate         = planmodel.VerifyCandidate
-	SwitchEndpoint          = planmodel.SwitchEndpoint
-	VerifyActive            = planmodel.VerifyActive
-	DrainPrevious           = planmodel.DrainPrevious
-	RetainPrevious          = planmodel.RetainPrevious
-	PrepareQueue            = planmodel.PrepareQueue
-	InstallTaskGeneration   = planmodel.InstallTaskGeneration
-	VerifyTaskGeneration    = planmodel.VerifyTaskGeneration
-	InstallWorkerGeneration = planmodel.InstallWorkerGeneration
-	StartWorkerCandidate    = planmodel.StartWorkerCandidate
-	VerifyWorkerCandidate   = planmodel.VerifyWorkerCandidate
-	FenceWorkerIntake       = planmodel.FenceWorkerIntake
-	DrainWorkerPrevious     = planmodel.DrainWorkerPrevious
-	ActivateWorkerIntake    = planmodel.ActivateWorkerIntake
-	VerifyWorkerActive      = planmodel.VerifyWorkerActive
-	InstallScheduleRuntime  = planmodel.InstallScheduleRuntime
-	HandoffSchedule         = planmodel.HandoffSchedule
-	VerifySchedule          = planmodel.VerifySchedule
-	RetainWorkerPrevious    = planmodel.RetainWorkerPrevious
-	PrepareDatabase         = planmodel.PrepareDatabase
+	StageArtifact                = planmodel.StageArtifact
+	InstallGeneration            = planmodel.InstallGeneration
+	StartCandidate               = planmodel.StartCandidate
+	VerifyCandidate              = planmodel.VerifyCandidate
+	SwitchEndpoint               = planmodel.SwitchEndpoint
+	VerifyActive                 = planmodel.VerifyActive
+	DrainPrevious                = planmodel.DrainPrevious
+	RetainPrevious               = planmodel.RetainPrevious
+	PrepareQueue                 = planmodel.PrepareQueue
+	InstallTaskGeneration        = planmodel.InstallTaskGeneration
+	VerifyTaskGeneration         = planmodel.VerifyTaskGeneration
+	InstallWorkerGeneration      = planmodel.InstallWorkerGeneration
+	StartWorkerCandidate         = planmodel.StartWorkerCandidate
+	VerifyWorkerCandidate        = planmodel.VerifyWorkerCandidate
+	FenceWorkerIntake            = planmodel.FenceWorkerIntake
+	DrainWorkerPrevious          = planmodel.DrainWorkerPrevious
+	ActivateWorkerIntake         = planmodel.ActivateWorkerIntake
+	VerifyWorkerActive           = planmodel.VerifyWorkerActive
+	InstallScheduleRuntime       = planmodel.InstallScheduleRuntime
+	HandoffSchedule              = planmodel.HandoffSchedule
+	VerifySchedule               = planmodel.VerifySchedule
+	RetainWorkerPrevious         = planmodel.RetainWorkerPrevious
+	PrepareDatabase              = planmodel.PrepareDatabase
+	PrepareDatabaseCandidate     = planmodel.PrepareDatabaseCandidate
+	SynchronizeDatabaseCandidate = planmodel.SynchronizeDatabaseCandidate
+	FenceDatabaseWrites          = planmodel.FenceDatabaseWrites
+	SwitchDatabaseAuthority      = planmodel.SwitchDatabaseAuthority
+	VerifyDatabaseActive         = planmodel.VerifyDatabaseActive
+	RetainDatabasePrevious       = planmodel.RetainDatabasePrevious
 )
 
 type RecoveryMode = planmodel.RecoveryMode
@@ -434,7 +440,6 @@ func databaseBoundHTTPSelection(compiled config.Compiled) (databaseBoundHTTPPlan
 }
 
 func databaseBoundHTTPOperations(compiled config.Compiled, selection databaseBoundHTTPPlanSelection, observation host.BootstrapStatus, observationDigest string, adapterPlan hostdatabase.PlanningOutput) []Operation {
-	databaseOps := databaseOperations(adapterPlan)
 	bindings := []DatabaseBindingInput{}
 	if adapterPlan.Database != nil {
 		binding := adapterPlan.Database.Binding
@@ -446,13 +451,20 @@ func databaseBoundHTTPOperations(compiled config.Compiled, selection databaseBou
 		binding.BindingState = "database-bound"
 		binding.DeterministicRecordNamespace = adapterPlan.Database.LogicalID + "/" + compiled.Revision.Name
 		binding.DeterministicRecordIDs = []string{binding.DeterministicRecordNamespace + "/record-0001"}
+		adapterPlan.Database.Binding = binding
+		if adapterPlan.Candidate != nil {
+			candidateBinding := binding
+			candidateBinding.Port = adapterPlan.Candidate.Port
+			adapterPlan.Candidate.Binding = candidateBinding
+		}
 		bindings = append(bindings, binding)
 	}
+	databaseOps := databaseOperations(adapterPlan)
 	httpSelection := config.HostSelection{
 		Component: selection.HTTPComponent, Implementation: selection.HTTPImplementation, Artifact: selection.HTTPArtifact,
 		TargetName: selection.TargetName, Target: selection.Target,
 	}
-	if exactActiveHTTP(compiled, httpSelection, observation, bindings) {
+	if len(databaseOps) == 0 && exactActiveHTTP(compiled, httpSelection, observation, bindings) {
 		return databaseOps
 	}
 	httpOps := httpOperations(compiled, httpSelection, observation, observationDigest)
@@ -461,7 +473,7 @@ func databaseBoundHTTPOperations(compiled config.Compiled, selection databaseBou
 		httpOps[index] = offsetOperation(httpOps[index], offset)
 		attachDatabaseBindings(&httpOps[index], bindings)
 		if offset > 0 && httpOps[index].Kind == StageArtifact {
-			httpOps[index] = withDependencies(httpOps[index], "op-01")
+			httpOps[index] = withDependencies(httpOps[index], fmt.Sprintf("op-%02d", offset))
 		}
 	}
 	return append(databaseOps, httpOps...)
@@ -558,6 +570,9 @@ func databaseOperations(adapterPlan hostdatabase.PlanningOutput) []Operation {
 	if active := input.Observed.Active; active != nil && active.ID == input.GenerationID && active.Ready && active.Connectivity && active.ImageManifest == input.ImageManifest {
 		return []Operation{}
 	}
+	if input.Observed.Active != nil {
+		return databaseTransitionOperations(adapterPlan)
+	}
 	return []Operation{{
 		ID:        "op-01",
 		Kind:      PrepareDatabase,
@@ -573,6 +588,81 @@ func databaseOperations(adapterPlan hostdatabase.PlanningOutput) []Operation {
 		},
 		Recovery: RetainDatabase,
 	}}
+}
+
+func databaseTransitionOperations(adapterPlan hostdatabase.PlanningOutput) []Operation {
+	input := adapterPlan.Database
+	candidate := adapterPlan.Candidate
+	kinds := []OperationKind{
+		PrepareDatabaseCandidate,
+		SynchronizeDatabaseCandidate,
+		FenceDatabaseWrites,
+		SwitchDatabaseAuthority,
+		VerifyDatabaseActive,
+		RetainDatabasePrevious,
+	}
+	preconditions := [][]TypedCondition{
+		{
+			{Kind: "database-secret-reference", Subject: input.CredentialReference, Expected: "resolved-at-execution"},
+			{Kind: "active-database-generation", Subject: input.Observed.Active.ID, Expected: "verified-compatible"},
+			{Kind: "postgresql-generation", Subject: input.GenerationID, Expected: "absent-or-exact-candidate"},
+		},
+		{
+			{Kind: "candidate-database-generation", Subject: input.GenerationID, Expected: "prepared"},
+			{Kind: "synchronization-method", Subject: input.TransitionMechanism, Expected: "offline-logical-snapshot-with-bounded-write-fence"},
+		},
+		{
+			{Kind: "candidate-database-generation", Subject: input.GenerationID, Expected: "synchronized"},
+			{Kind: "write-fence", Subject: input.LogicalID, Expected: "bounded"},
+		},
+		{
+			{Kind: "write-fence", Subject: input.LogicalID, Expected: "closed-to-active-writes"},
+			{Kind: "forward-cutover", Subject: input.LogicalID, Expected: input.ForwardCutoverGuarantee},
+		},
+		{
+			{Kind: "database-authority", Subject: input.LogicalID, Expected: input.GenerationID},
+			{Kind: "deterministic-records", Subject: input.DatabaseName, Expected: "present"},
+		},
+		{
+			{Kind: "previous-database-generation", Subject: input.Observed.Active.ID, Expected: "exact-identity-retained"},
+			{Kind: "store-rollback-guarantee", Subject: input.LogicalID, Expected: input.StoreRollbackGuarantee},
+		},
+	}
+	expected := [][]TypedCondition{
+		{{Kind: "candidate-database-generation", Subject: input.GenerationID, Expected: "prepared"}},
+		{{Kind: "candidate-database-generation", Subject: input.GenerationID, Expected: "synchronized"}},
+		{{Kind: "write-fence", Subject: input.LogicalID, Expected: "bounded"}},
+		{{Kind: "database-authority", Subject: input.LogicalID, Expected: input.GenerationID}},
+		{{Kind: "postgresql-connectivity", Subject: input.DatabaseName, Expected: "verified-active"}},
+		{{Kind: "previous-database-generation", Subject: input.Observed.Active.ID, Expected: "retained-through-rollback-window"}},
+	}
+	operations := make([]Operation, 0, len(kinds))
+	for index, kind := range kinds {
+		id := fmt.Sprintf("op-%02d", index+1)
+		dependsOn := []string{}
+		if index > 0 {
+			dependsOn = []string{fmt.Sprintf("op-%02d", index)}
+		}
+		operations = append(operations, Operation{
+			ID:                   id,
+			Kind:                 kind,
+			DependsOn:            dependsOn,
+			Input:                OperationInput{Database: databaseInputForTransitionStep(kind, input, candidate)},
+			Preconditions:        preconditions[index],
+			ExpectedObservations: expected[index],
+			Recovery:             RetainDatabase,
+		})
+	}
+	return operations
+}
+
+func databaseInputForTransitionStep(kind OperationKind, stable, candidate *DatabaseOperationInput) *DatabaseOperationInput {
+	switch kind {
+	case PrepareDatabaseCandidate, SynchronizeDatabaseCandidate, FenceDatabaseWrites:
+		return candidate
+	default:
+		return stable
+	}
 }
 
 func buildAsync(compiled config.Compiled, observation host.BootstrapStatus) (Preview, error) {

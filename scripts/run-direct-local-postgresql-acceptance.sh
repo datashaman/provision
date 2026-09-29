@@ -339,6 +339,7 @@ mkdir -p "$local_evidence"
 run_local_checks
 run_fault_mode before
 run_fault_mode after
+run_fault_mode undecidable
 "$root/work/acceptance-host/reset-acceptance-vm.sh" --yes
 cleanup_needed=false
 trap - EXIT

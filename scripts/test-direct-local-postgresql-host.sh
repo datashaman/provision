@@ -6,7 +6,7 @@
 set -euo pipefail
 
 usage() {
-  echo "usage: $0 --provision BINARY --signing-key FILE --secret-file FILE --artifact-bundle FILE --work-dir EMPTY_PATH --provision-version VERSION --confirm-disposable-host HOSTNAME [--fault-mode before|after]" >&2
+  echo "usage: $0 --provision BINARY --signing-key FILE --secret-file FILE --artifact-bundle FILE --work-dir EMPTY_PATH --provision-version VERSION --confirm-disposable-host HOSTNAME [--fault-mode before|after|undecidable]" >&2
   exit 2
 }
 
@@ -37,7 +37,7 @@ done
 [[ -n "$secret_file" && -f "$secret_file" && ! -L "$secret_file" ]] || usage
 [[ -n "$artifact_bundle" && -f "$artifact_bundle" && ! -L "$artifact_bundle" ]] || usage
 [[ -n "$work_dir" && ! -e "$work_dir" && -n "$provision_version" && -n "$confirmed_host" ]] || usage
-[[ "$fault_mode" == before || "$fault_mode" == after ]] || usage
+[[ "$fault_mode" == before || "$fault_mode" == after || "$fault_mode" == undecidable ]] || usage
 [[ "$(uname -s)" == Linux ]] || { echo "direct-local PostgreSQL acceptance requires Linux" >&2; exit 1; }
 [[ "$(id -u)" != 0 ]] || { echo "run as the bootstrapped non-root operator, not root" >&2; exit 1; }
 operator="$(id -un)"
@@ -71,6 +71,9 @@ artifact_bundle="$(cd "$(dirname "$artifact_bundle")" && pwd)/$(basename "$artif
 state="$work_dir/state.db"
 stale_state="$work_dir/stale-state.db"
 secret_reference="secret://lab/postgresql-url"
+initial_generation=postgresql-17-6-b86568d3e0fe
+transition_version=17.7
+transition_generation=postgresql-17-7-030da09481c3
 config_dir="$work_dir/config"
 mkdir -m 0700 "$config_dir"
 
@@ -292,34 +295,68 @@ execute_failure() {
   assert_contains "$output" "$expected"
 }
 
+# switch_marker is the evidence the undecidable fault mode makes the authority-switch evidence unreadable (a directory
+# in its place), so resume cannot tell whether the switch landed.
+switch_marker() {
+  echo "/var/lib/provision/environments/lab/services/postgresql/generations/$transition_generation/transition/authority-switch.json"
+}
+
 execute_with_interruption_and_resume() {
   local name="$1" backend="$2" operation="$3"
-  local kind marker replay_marker result lease_duration resume_delay
+  local kind marker replay_marker result lease_duration resume_delay mode="$fault_mode" undecidable=""
+  if [[ "$fault_mode" == undecidable ]]; then
+    mode=after
+    [[ "$operation" == op-06 ]] && undecidable=1
+  fi
   kind="$(plan_kind "$work_dir/$name/plan.json" "$operation")"
-  marker="$work_dir/$name/$operation-$fault_mode-marker"
+  marker="$work_dir/$name/$operation-$mode-marker"
   lease_duration=5s
   resume_delay=6
-  if [[ "$fault_mode" == after ]]; then
+  if [[ "$mode" == after ]]; then
     lease_duration=30s
     resume_delay=31
   fi
   set +e
-  PATH="$fault_bin:$PATH" PROVISION_FAULT_MODE="$fault_mode" PROVISION_FAULT_MARKER="$marker" \
+  PATH="$fault_bin:$PATH" PROVISION_FAULT_MODE="$mode" PROVISION_FAULT_MARKER="$marker" \
     "$provision" deployment execute \
       --plan "$plan_id" \
       --operation "$operation" \
       --state "$backend" \
       --signing-key "$signing_key" \
       --secret-file "$secret_reference=$secret_file" \
-      --lease-duration "$lease_duration" >"$work_dir/$name/$operation-$fault_mode.txt" 2>&1
+      --lease-duration "$lease_duration" >"$work_dir/$name/$operation-$mode.txt" 2>&1
   result=$?
   set -e
-  [[ $result -ne 0 && -f "$marker" ]] || fail "$operation did not inject $fault_mode interruption"
-  write_status "$name" "$backend" "$operation-$fault_mode"
-  journal_assert_latest "$work_dir/$name/$operation-$fault_mode-status.json" "$operation" intent -
-  journal_assert_paused "$work_dir/$name/$operation-$fault_mode-status.json" "$operation"
+  [[ $result -ne 0 && -f "$marker" ]] || fail "$operation did not inject $mode interruption"
+  write_status "$name" "$backend" "$operation-$mode"
+  journal_assert_latest "$work_dir/$name/$operation-$mode-status.json" "$operation" intent -
+  journal_assert_paused "$work_dir/$name/$operation-$mode-status.json" "$operation"
   sleep "$resume_delay"
-  if [[ "$fault_mode" == after ]]; then
+  if [[ -n "$undecidable" ]]; then
+    local evidence
+    evidence="$(switch_marker)"
+    sudo mv "$evidence" "$evidence.orig"
+    sudo mkdir "$evidence"
+    set +e
+    "$provision" deployment resume \
+      --plan "$plan_id" \
+      --state "$backend" \
+      --signing-key "$signing_key" \
+      --secret-file "$secret_reference=$secret_file" \
+      --lease-duration 2m >"$work_dir/$name/$operation-undecidable.txt" 2>&1
+    result=$?
+    set -e
+    sudo rmdir "$evidence"
+    sudo mv "$evidence.orig" "$evidence"
+    [[ $result -ne 0 ]] || fail "$operation resumed despite an undecidable authority-switch observation"
+    assert_contains "$work_dir/$name/$operation-undecidable.txt" "mutation was not replayed"
+    assert_contains "$work_dir/$name/$operation-undecidable.txt" "outcome recorded as uncertain"
+    write_status "$name" "$backend" "$operation-undecidable"
+    journal_assert_latest "$work_dir/$name/$operation-undecidable-status.json" "$operation" outcome uncertain
+    assert_contains "$work_dir/$name/$operation-undecidable-status.json" "authority-switch evidence cannot be read"
+    assert_contains "$work_dir/$name/$operation-undecidable-status.json" "recoveryAction"
+  fi
+  if [[ "$mode" == after ]]; then
     replay_marker="$work_dir/$name/$operation-unexpected-replay"
     PATH="$fault_bin:$PATH" PROVISION_FAULT_MODE=after PROVISION_FAULT_MARKER="$replay_marker" \
       "$provision" deployment resume \
@@ -376,82 +413,10 @@ assert_transition_result() {
   json_assert "$work_dir/$name/op-06-resumed.json" observation.transitionPhase '"switchDatabaseAuthority"'
   json_assert "$work_dir/$name/op-07-resumed.json" observation.transitionPhase '"verifyDatabaseActive"'
   json_assert "$work_dir/$name/op-08-resumed.json" observation.transitionPhase '"retainDatabasePrevious"'
-  json_assert "$work_dir/$name/op-08-resumed.json" observation.previous.id '"postgresql-17-6-aaaaaaaaaaaa"'
-  assert_postgresql_active "$name-final" postgresql-17-6-b86568d3e0fe
-  json_assert "$work_dir/$name-final-host.json" database.deployment.retained.0.id '"postgresql-17-6-aaaaaaaaaaaa"'
+  json_assert "$work_dir/$name/op-08-resumed.json" observation.previous.id "\"$initial_generation\""
+  assert_postgresql_active "$name-final" "$transition_generation"
+  json_assert "$work_dir/$name-final-host.json" database.deployment.retained.0.id "\"$initial_generation\""
   assert_http_database_record "$name-final"
-}
-
-seed_compatible_active_generation() {
-  local evidence="$work_dir/compatible-active-seed.json"
-  local uid
-  uid="$(id -u provision-lab)"
-  sudo -u provision-lab env HOME=/var/lib/provision/runtime/lab XDG_RUNTIME_DIR="/run/user/$uid" DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/$uid/bus" systemctl --user stop provision-lab-postgresql.service
-  sudo python3 - "$evidence" <<'PY'
-import json
-import shutil
-import subprocess
-from pathlib import Path
-
-service_root = Path("/var/lib/provision/environments/lab/services/postgresql")
-qualified = "postgresql-17-6-b86568d3e0fe"
-previous = "postgresql-17-6-aaaaaaaaaaaa"
-qualified_root = service_root / "generations" / qualified
-previous_root = service_root / "generations" / previous
-record_path = qualified_root / "generation.json"
-if not record_path.exists():
-    raise SystemExit("qualified generation record is absent")
-record = json.loads(record_path.read_text(encoding="utf-8"))
-previous_root.mkdir(parents=True, exist_ok=True)
-old_data = str(previous_root / "data")
-new_data = record["dataPath"]
-quadlet = Path(record["quadletPath"])
-quadlet_text = quadlet.read_text(encoding="utf-8")
-if new_data not in quadlet_text:
-    raise SystemExit("qualified data path is absent from PostgreSQL Quadlet")
-if Path(old_data).exists():
-    shutil.rmtree(old_data)
-subprocess.run(["cp", "-a", new_data, old_data], check=True)
-shutil.rmtree(new_data)
-quadlet.write_text(quadlet_text.replace(new_data, old_data), encoding="utf-8")
-record["generationId"] = previous
-record["dataPath"] = old_data
-record_path.unlink()
-(previous_root / "generation.json").write_text(json.dumps(record, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-(previous_root / "generation.json").chmod(0o444)
-qualified_root.mkdir(parents=True, exist_ok=True)
-summary = {
-    "schemaVersion": "provision.dev/direct-local-postgresql-compatible-active-seed/v1alpha1",
-    "reason": "issue-75 acceptance needs a controlled compatible active generation so the qualified generation can be prepared as a candidate",
-    "previousGeneration": previous,
-    "candidateGeneration": qualified,
-    "stableServiceUnit": record["serviceUnit"],
-    "stableContainer": record["container"],
-    "previousDataPath": old_data,
-}
-Path("/tmp/provision-postgresql-compatible-active-seed.json").write_text(json.dumps(summary, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-PY
-  sudo -u provision-lab env HOME=/var/lib/provision/runtime/lab XDG_RUNTIME_DIR="/run/user/$uid" DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/$uid/bus" systemctl --user daemon-reload
-  sudo -u provision-lab env HOME=/var/lib/provision/runtime/lab XDG_RUNTIME_DIR="/run/user/$uid" DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/$uid/bus" systemctl --user start provision-lab-postgresql.service
-  local active_unit
-  active_unit="$(python3 - <<'PY'
-import json
-from pathlib import Path
-
-path = Path("/var/lib/provision/environments/lab/active-generation.json")
-if path.exists():
-    print(json.loads(path.read_text(encoding="utf-8"))["active"]["systemdUnit"])
-PY
-)"
-  if [[ -n "$active_unit" ]]; then
-    [[ "$active_unit" =~ ^provision-lab-web-[a-f0-9]{12}\.service$ ]] || fail "active HTTP unit has an unsupported name: $active_unit"
-    sudo systemctl stop "$active_unit"
-    sudo rm -f "/etc/systemd/system/$active_unit"
-    sudo systemctl daemon-reload
-  fi
-  sudo rm -f /var/lib/provision/environments/lab/active-generation.json
-  cp /tmp/provision-postgresql-compatible-active-seed.json "$evidence"
-  assert_postgresql_active compatible-seed postgresql-17-6-aaaaaaaaaaaa
 }
 
 create_unsafe_candidate_record() {
@@ -518,7 +483,8 @@ summary = {
         "initial Database generation provisioning",
         "Database-bound HTTP workload binding",
         "unsafe candidate rejection",
-        "forward-only Store Transition",
+        "forward-only Store Transition between distinct qualified PostgreSQL images",
+        "undecidable post-switch observation pause and recovery (--fault-mode undecidable only)",
         "backup outside active generation",
         "isolated restore verification",
         "operation interruption and lost-response recovery",
@@ -535,9 +501,9 @@ summary = {
     "systemdVersion": initial["systemdVersion"],
     "executorDigest": final["executorDigest"],
     "postgresql": {
-        "version": capability["postgresqlVersion"],
-        "imageIndex": capability["postgresqlImageIndex"],
-        "imageManifest": capability["postgresqlImageManifest"],
+        "version": database["deployment"]["active"]["postgresqlVersion"],
+        "imageManifest": database["deployment"]["active"]["imageManifest"],
+        "retainedVersions": [item["postgresqlVersion"] for item in database["deployment"].get("retained", [])],
         "serviceUnit": capability["postgresqlServiceUnit"],
         "container": capability["postgresqlContainer"],
         "topology": {"databaseNodes": 1, "hostFailureTolerance": 0},
@@ -546,12 +512,10 @@ summary = {
     },
     "supportBoundaries": [
         "single Host Target",
-        "same PostgreSQL version transition only",
         "forward-only rollback classification",
         "same-host file backup only",
         "no host-loss recovery claim",
-        "transition starts from an out-of-band seeded compatible active generation (see compatible-active-seed.json); only one PostgreSQL image is qualified, so the CLI cannot provision a distinct previous generation",
-        "ambiguous-state pause is proven by interruption after data-bearing side effects, not by an undecidable observation",
+        "transition runs from CLI-provisioned PostgreSQL 17.6 state to PostgreSQL 17.7; same-major transition only",
     ],
 }
 Path(destination).write_text(json.dumps(summary, indent=2, sort_keys=True) + "\n", encoding="utf-8")
@@ -597,13 +561,10 @@ for operation in op-01 op-02 op-03 op-04 op-05 op-06 op-07 op-08 op-09; do
   execute_success initial "$state" "$operation"
 done
 assert_backup_restore_evidence initial op-02 op-03
-assert_postgresql_active initial-final postgresql-17-6-b86568d3e0fe
+assert_postgresql_active initial-final "$initial_generation"
 assert_http_database_record initial-final
 
-echo "[2/6] controlled compatible-active setup for Store Transition"
-seed_compatible_active_generation
-
-echo "[3/6] unsafe candidate rejection"
+echo "[2/6] unsafe candidate rejection"
 mkdir -m 0700 "$work_dir/unsafe"
 create_unsafe_candidate_record
 set +e
@@ -615,14 +576,27 @@ assert_contains "$work_dir/unsafe/plan.txt" "failed PostgreSQL compatibility gat
 assert_contains "$work_dir/unsafe/plan.txt" '"candidate"'
 remove_unsafe_candidate_record
 
-echo "[4/6] preview transition and stale lineage"
+echo "[3/6] retarget the Database at PostgreSQL $transition_version, preview transition and stale lineage"
+python3 - "$config_dir/environment.yaml" "$transition_version" <<'PY'
+from pathlib import Path
+import sys
+
+path, version = Path(sys.argv[1]), sys.argv[2]
+out = []
+for line in path.read_text(encoding="utf-8").splitlines():
+    out.append(line)
+    if line.strip() == "credential: secret://lab/postgresql-url":
+        out.append(line[: len(line) - len(line.lstrip())] + f'version: "{version}"')
+path.write_text("\n".join(out) + "\n", encoding="utf-8")
+PY
+assert_contains "$config_dir/environment.yaml" "version: \"$transition_version\""
 preview_and_approve transition "$state"
 transition_plan_id="$plan_id"
 preview_and_approve stale "$stale_state"
 stale_plan_id="$plan_id"
 plan_id="$transition_plan_id"
 
-echo "[5/6] Store Transition with $fault_mode interruption recovery"
+echo "[4/6] Store Transition with $fault_mode interruption recovery"
 for operation in op-01 op-02 op-03 op-04 op-05 op-06 op-07 op-08; do
   execute_with_interruption_and_resume transition "$state" "$operation"
 done
@@ -634,7 +608,7 @@ done
 assert_backup_restore_evidence transition op-04-resumed op-05-resumed
 assert_transition_result transition
 
-echo "[6/6] stale executor attempt and evidence redaction"
+echo "[5/6] stale executor attempt and evidence redaction"
 plan_id="$stale_plan_id"
 mkdir -p "$work_dir/stale"
 chmod 0700 "$work_dir/stale"

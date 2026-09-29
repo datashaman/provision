@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"provision/internal/implementation/hostdatabase"
 	"slices"
 	"strconv"
 	"strings"
@@ -193,7 +194,7 @@ func inspectPostgreSQLDeployment(ctx context.Context, capability host.DatabaseCa
 		return host.DatabaseDeploymentStatus{Candidate: generation}, findings
 	}
 	version, err := runAsEnvironment(ctx, bootstrapRecord{Environment: strings.TrimPrefix(record.Account, "provision-"), Account: record.Account}, "podman", "exec", record.Container, "psql", "-U", databaseUserFromRecord(record), "-d", record.Database, "-Atc", "SHOW server_version;")
-	if err != nil || !strings.HasPrefix(strings.TrimSpace(string(version)), qualifiedPostgreSQL) {
+	if err != nil || !strings.HasPrefix(strings.TrimSpace(string(version)), record.PostgreSQLVersion) {
 		generation.Health = "unobservable"
 		generation.Reason = "PostgreSQL connectivity or product version cannot be verified"
 		generation.RecoveryAction = "re-run the packaging proof or inspect the credential and container state"
@@ -367,7 +368,7 @@ func observedPostgreSQLCandidateGeneration(capability host.DatabaseCapabilities,
 
 func candidateDatabaseGenerationStatus(record postgresqlPackagingRecord) *host.DatabaseGenerationStatus {
 	gate := "transition-compatibility-unqualified"
-	if record.PostgreSQLVersion != qualifiedPostgreSQL {
+	if _, ok := hostdatabase.ImageByManifest(record.ImageManifest); !ok {
 		gate = "physical-replication-version"
 	}
 	return &host.DatabaseGenerationStatus{
@@ -412,14 +413,16 @@ func validateDatabaseOperation(planned planner.Operation, record bootstrapRecord
 		expectedService += "-candidate"
 		expectedPort = 25433
 	}
-	expectedData := filepath.Join(paths.environmentHome, "services", "postgresql", "generations", qualifiedPostgreSQLGeneration, "data")
-	if !deploymentIdentifier.MatchString(input.Component) || input.LogicalID != "provision-"+record.Environment+"-"+input.Component || input.GenerationID != qualifiedPostgreSQLGeneration {
+	image, imageQualified := hostdatabase.ImageFor(input.PostgreSQLVersion)
+	imageQualified = imageQualified && input.PostgreSQLVersion != "" && image.Evidence != ""
+	expectedData := filepath.Join(paths.environmentHome, "services", "postgresql", "generations", image.Generation(), "data")
+	if !deploymentIdentifier.MatchString(input.Component) || input.LogicalID != "provision-"+record.Environment+"-"+input.Component || !imageQualified || input.GenerationID != image.Generation() {
 		return errors.New("Database identity does not match the bootstrapped Environment")
 	}
 	if input.Implementation != "postgresql-quadlet" || input.Lifecycle != "managed" || input.Rollout != "required" || input.DataRole != "authoritative" {
 		return errors.New("Database lifecycle does not match the qualified managed PostgreSQL contract")
 	}
-	if input.PostgreSQLVersion != qualifiedPostgreSQL || input.ImageIndex != qualifiedPostgreSQLIndex || input.ImageManifest != qualifiedPostgreSQLManifest || input.ImageReference != qualifiedPostgreSQLReference {
+	if input.ImageIndex != image.Index || input.ImageManifest != image.Manifest || input.ImageReference != image.Reference() {
 		return errors.New("Database implementation does not match the qualified PostgreSQL product identity")
 	}
 	if input.ServiceUnit != expectedService+".service" || input.Container != expectedService || input.Account != record.Account || input.DataPath != expectedData || input.ListenAddress != "127.0.0.1" || input.Port != expectedPort {
@@ -479,8 +482,7 @@ func compatibleDatabaseTransitionActive(active host.DatabaseGenerationStatus, in
 	return active.Ready &&
 		active.Connectivity &&
 		active.LogicalID == input.LogicalID &&
-		active.PostgreSQLVersion == input.PostgreSQLVersion &&
-		active.ImageManifest == input.ImageManifest &&
+		hostdatabase.CompatibleImages(active.ImageManifest, input.ImageManifest) &&
 		active.Database == input.DatabaseName &&
 		active.ID != input.GenerationID
 }
@@ -745,7 +747,20 @@ func observeDatabaseAuthoritySwitchOperation(ctx context.Context, planID string,
 	observed.TransitionPhase = databaseSwitchPhase
 	observed.Synchronization = "authority-switched-after-write-fence"
 	state := "pending"
-	if databaseTransitionMarkerMatches(filepath.Join(filepath.Dir(input.DataPath), "transition", "authority-switch.json"), input, input.Observed.Active, planID, planned.ID, operationDigest, databaseSwitchPhase, "") {
+	markerPath := filepath.Join(filepath.Dir(input.DataPath), "transition", "authority-switch.json")
+	// Evidence that exists but cannot be read is not absence: the switch may have landed, so never replay it.
+	if _, err := os.ReadFile(markerPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+		observed.Status = "unknown"
+		observed.FailureCategory = "observation"
+		observed.Reason = "Database authority-switch evidence cannot be read; the switch may have landed"
+		observed.RecoveryAction = "inspect " + markerPath + " and the active PostgreSQL generation, restore the evidence, then resume the operation"
+		evidence, err := json.Marshal(observed)
+		if err != nil {
+			return host.OperationObservation{}, err
+		}
+		return host.OperationObservation{State: "unknown", Evidence: evidence}, nil
+	}
+	if databaseTransitionMarkerMatches(markerPath, input, input.Observed.Active, planID, planned.ID, operationDigest, databaseSwitchPhase, "") {
 		observed.Status = "verified"
 		observed.Verified = true
 		observed.Reason = ""

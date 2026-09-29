@@ -383,24 +383,23 @@ func databaseOperationFixture(t *testing.T) (planner.Operation, bootstrapRecord,
 	return planned, bootstrapRecord{Environment: "lab", Account: current.Username}, executionPaths{environmentHome: environmentHome}
 }
 
-func TestDatabaseValidationRejectsRegisteredImageWithoutQualificationEvidence(t *testing.T) {
+func TestDatabaseValidationRequiresQualificationEvidenceForSecondImage(t *testing.T) {
 	planned, record, paths := databaseOperationFixture(t)
 	second := hostdatabase.Images[1]
 	input := *planned.Input.Database
 	input.PostgreSQLVersion, input.ImageIndex, input.ImageManifest, input.ImageReference = second.Version, second.Index, second.Manifest, second.Reference()
 	input.GenerationID = second.Generation()
 	input.DataPath = filepath.Join(paths.environmentHome, "services", "postgresql", "generations", second.Generation(), "data")
-	planned.Input.Database = &input
-	if err := validateDatabaseOperation(planned, record, paths); err == nil {
-		t.Fatal("image without qualification evidence was accepted")
-	}
-	original := hostdatabase.Images[1].Evidence
-	hostdatabase.Images[1].Evidence = "sha256:" + strings.Repeat("e", 64)
-	defer func() { hostdatabase.Images[1].Evidence = original }()
 	input.RestoreCandidate.GenerationID = second.Generation() + "-restore-check"
 	input.RestoreCandidate.DataPath = filepath.Join(paths.environmentHome, "services", "postgresql", "restore-candidates", input.RestoreCandidate.GenerationID, "data")
+	planned.Input.Database = &input
 	if err := validateDatabaseOperation(planned, record, paths); err != nil {
 		t.Fatalf("qualified second image rejected: %v", err)
+	}
+	hostdatabase.Images[1].Evidence = ""
+	defer func() { hostdatabase.Images[1] = second }()
+	if err := validateDatabaseOperation(planned, record, paths); err == nil {
+		t.Fatal("image without qualification evidence was accepted")
 	}
 }
 

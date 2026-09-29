@@ -10,7 +10,8 @@ usage: run-postgresql-quadlet-acceptance.sh (--preview|--run) \
   --base-target USER@HOST --instance NAME --snapshot NAME --guest-target USER@HOST \
   --environment NAME --oci-image NAME@sha256:DIGEST --host-proof FILE \
   --approval-record FILE --operator NAME --expected-podman-version VERSION \
-  --confirm-disposable-instance NAME --evidence-dir DIRECTORY
+  --confirm-disposable-instance NAME --evidence-dir DIRECTORY \
+  [--postgres-version VERSION --image-index sha256:DIGEST]
 EOF
   exit 2
 }
@@ -33,6 +34,7 @@ operator=""
 expected_podman_version=""
 confirmed_instance=""
 evidence_dir=""
+image_args=()
 while (($#)); do
   case "$1" in
     --preview|--run) [[ -z "$mode" ]] || usage; mode="$1"; shift ;;
@@ -48,6 +50,7 @@ while (($#)); do
     --expected-podman-version) (($# >= 2)) || usage; expected_podman_version="$2"; shift 2 ;;
     --confirm-disposable-instance) (($# >= 2)) || usage; confirmed_instance="$2"; shift 2 ;;
     --evidence-dir) (($# >= 2)) || usage; evidence_dir="$2"; shift 2 ;;
+    --postgres-version|--image-index) (($# >= 2)) || usage; image_args+=("$1" "$2"); shift 2 ;;
     *) usage ;;
   esac
 done
@@ -190,7 +193,7 @@ ssh "${ssh_options[@]}" "$base_target" incus exec "$instance" -- \
   --environment "$environment" --oci-image "$oci_image" \
   --expected-podman-version "$expected_podman_version" \
   --confirm-disposable-host "$instance" --approval-record "$remote_approval" \
-  --operator "$operator"
+  --operator "$operator" ${image_args[@]+"${image_args[@]}"}
 
 ssh "${ssh_options[@]}" "$base_target" incus restart "$instance" --timeout 60
 wait_for_guest || die "guest SSH did not become ready after the qualification reboot"
@@ -201,7 +204,7 @@ ssh "${ssh_options[@]}" "$base_target" incus exec "$instance" -- \
   --expected-podman-version "$expected_podman_version" \
   --confirm-disposable-host "$instance" \
   --approval-record /var/lib/provision/evidence/issue68/approval-record.json \
-  --operator "$operator"
+  --operator "$operator" ${image_args[@]+"${image_args[@]}"}
 
 scp "${ssh_options[@]}" -q -r \
   "$guest_target:/var/lib/provision/evidence/issue68/." "$evidence_dir/host/"

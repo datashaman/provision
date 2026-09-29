@@ -31,8 +31,8 @@ type Image struct {
 
 var Images = []Image{
 	{Version: PostgreSQLVersion, Index: ImageIndex, Manifest: ImageManifest, Evidence: QualificationDigest},
-	// Pending the #84 disposable-VM packaging proof; set Evidence to its qualification digest.
-	{Version: "17.7", Index: "sha256:2006493727bd5277eece187319af1ef82b4cf82cf4fc1ed00da0775b646ac2a4", Manifest: "sha256:030da09481c3876b71a7e49738a932e1c18c398201a1e4ccfdbff1e5a541215b"},
+	// Evidence is the digest of docs/evidence/2026-09-29-postgresql-17-7-packaging-qualification.json.
+	{Version: "17.7", Index: "sha256:2006493727bd5277eece187319af1ef82b4cf82cf4fc1ed00da0775b646ac2a4", Manifest: "sha256:030da09481c3876b71a7e49738a932e1c18c398201a1e4ccfdbff1e5a541215b", Evidence: "sha256:0b786851c1ab07c183650c91dd3ad8bbbe8c74c11e9ba535d585eb0841718ad0"},
 }
 
 func (i Image) Reference() string { return "docker.io/library/postgres@" + i.Manifest }

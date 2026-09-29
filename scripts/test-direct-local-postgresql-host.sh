@@ -419,6 +419,30 @@ assert_transition_result() {
   assert_http_database_record "$name-final"
 }
 
+# reset_http_workload removes the initial HTTP generation so the transition Plan can
+# redeploy the workload against the new Database; the planner derives the same
+# candidate port for an identical artifact, which the active unit would still hold.
+# It touches no Database state.
+reset_http_workload() {
+  local active_unit
+  active_unit="$(python3 - <<'PY'
+import json
+from pathlib import Path
+
+path = Path("/var/lib/provision/environments/lab/active-generation.json")
+if path.exists():
+    print(json.loads(path.read_text(encoding="utf-8"))["active"]["systemdUnit"])
+PY
+)"
+  if [[ -n "$active_unit" ]]; then
+    [[ "$active_unit" =~ ^provision-lab-web-[a-f0-9]{12}\.service$ ]] || fail "active HTTP unit has an unsupported name: $active_unit"
+    sudo systemctl stop "$active_unit"
+    sudo rm -f "/etc/systemd/system/$active_unit"
+    sudo systemctl daemon-reload
+  fi
+  sudo rm -f /var/lib/provision/environments/lab/active-generation.json
+}
+
 create_unsafe_candidate_record() {
   local uid
   uid="$(id -u provision-lab)"
@@ -565,6 +589,7 @@ assert_postgresql_active initial-final "$initial_generation"
 assert_http_database_record initial-final
 
 echo "[2/6] unsafe candidate rejection"
+reset_http_workload
 mkdir -m 0700 "$work_dir/unsafe"
 create_unsafe_candidate_record
 set +e

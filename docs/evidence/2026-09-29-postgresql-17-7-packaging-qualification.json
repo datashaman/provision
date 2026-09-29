@@ -1,0 +1,43 @@
+{
+  "account": "provision-lab",
+  "container": "provision-lab-postgresql",
+  "credentialBoundary": "encrypted-user-scoped-systemd-credential",
+  "dataPath": "/var/lib/provision/environments/lab/services/postgresql/generations/postgresql-17-7-030da09481c3/data",
+  "environment": "lab",
+  "generation": "postgresql-17-7-030da09481c3",
+  "image": "docker.io/library/postgres@sha256:030da09481c3876b71a7e49738a932e1c18c398201a1e4ccfdbff1e5a541215b",
+  "imageIndex": "sha256:2006493727bd5277eece187319af1ef82b4cf82cf4fc1ed00da0775b646ac2a4",
+  "imageManifest": "sha256:030da09481c3876b71a7e49738a932e1c18c398201a1e4ccfdbff1e5a541215b",
+  "issue": 68,
+  "notQualified": [
+    "production-database-operation",
+    "store-transition",
+    "backup",
+    "restore",
+    "host-loss-recovery",
+    "automatic-store-rollback-after-candidate-writes"
+  ],
+  "operator": "marlinf",
+  "packaging": "digest-pinned-rootless-oci-quadlet",
+  "podmanVersion": "5.7.0+ds2-3build1",
+  "product": {
+    "name": "PostgreSQL",
+    "version": "17.7"
+  },
+  "quadletPath": "/etc/containers/systemd/users/999/provision-lab-postgresql.container",
+  "qualified": [
+    "service-start",
+    "sql-connectivity",
+    "owned-generation-data-path",
+    "non-secret-credential-reference",
+    "durable-restart"
+  ],
+  "result": "passed",
+  "schemaVersion": "provision.dev/postgresql-packaging-qualification/v1alpha1",
+  "serviceUnit": "provision-lab-postgresql.service",
+  "topology": {
+    "databaseNodes": 1,
+    "hostFailureTolerance": 0,
+    "managedGeneration": "one-physical-store-generation"
+  }
+}

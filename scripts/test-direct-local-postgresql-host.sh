@@ -523,6 +523,7 @@ summary = {
     "osVersion": initial["osVersion"],
     "architecture": initial["architecture"],
     "systemdVersion": initial["systemdVersion"],
+    "podmanVersion": capability["podmanVersion"],
     "executorDigest": final["executorDigest"],
     "postgresql": {
         "version": database["deployment"]["active"]["postgresqlVersion"],
@@ -642,6 +643,7 @@ assert_contains "$work_dir/stale/op-01-stale.txt" 'outcome recorded as uncertain
 write_status stale "$stale_state" final
 journal_assert_latest "$work_dir/stale/final-status.json" op-01 outcome uncertain
 assert_secret_absent
+python3 "$script_dir/postgresql-acceptance-accounting.py" "$work_dir" "$work_dir/transition-final-host.json" "$work_dir/transition-final-http-verify.json" >"$work_dir/accounting.json"
 write_summary
 
 echo "direct-local PostgreSQL $fault_mode matrix passed"

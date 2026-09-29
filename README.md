@@ -68,6 +68,7 @@ The product should let a user describe:
 - [Asynchronous Host execution](docs/asynchronous-plan-preview.md)
 - [Direct-local failure matrix](docs/direct-local-failure-matrix.md)
 - [Remote SSH failure matrix](docs/remote-ssh-failure-matrix.md)
+- [Remote SSH PostgreSQL matrix](docs/remote-ssh-postgresql-matrix.md)
 - [Test-backed support matrix](docs/SUPPORT_MATRIX.md)
 - [Decision records](docs/adr/)
 - [Exploratory material](docs/explorations/README.md)

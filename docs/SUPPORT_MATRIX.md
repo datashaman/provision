@@ -66,6 +66,18 @@ Only `17.6` and `17.7` are registered in `hostdatabase.Images`; other patch
 versions, minor-version differences beyond the same major, and image
 manifests remain unqualified.
 
+## Managed PostgreSQL SSH parity
+
+| Acceptance client | Host | Runtime and topology | Result |
+| --- | --- | --- | --- |
+| macOS `arm64` controller (`Darwin 24.6.0`, `OpenSSH_9.9p2`); `scripts/run-remote-ssh-postgresql-acceptance.sh` | Ubuntu Server 26.04 VM, `x86_64`; systemd `259 (259.5-0ubuntu3.4)`; `OpenSSH_10.2p1`; strict host key `SHA256:3jl37pF+Utxxbic8EUHRQ5qshhP6SdxOX6SnXHjg+Qs`, password authentication disabled | Podman `5.7.0+ds2-3build1`; PostgreSQL `17.6` provisioned through the CLI, then forward-only Store Transition to `17.7` at the pinned image manifests; one node, no host-failure tolerance; executor `sha256:085f1824aaab5b1c86eb30fc077d855eb44ed88a0c0d25129092df4278f7bd61` | The SSH matrix under `before`, `after`, and `undecidable` transport loss around every transition operation matched the direct-local matrix on the same clean snapshot: identical logical Database, Store Generation identities, workload records, backup evidence, restore verification, retained generation, owned-resource inventories, and journal shape. The VM was restored clean afterward. See the [parity evidence](evidence/2026-09-29-remote-ssh-postgresql-parity.md) and [workflow](remote-ssh-postgresql-matrix.md). |
+
+This row qualifies only the exact combination above. It excludes RDS, Valkey,
+object stores, multi-node PostgreSQL availability, production disaster
+recovery, external PostgreSQL adoption, automatic cleanup, and untested
+host, runtime, PostgreSQL, or Podman versions. Forward cutover is lossless
+after the bounded write fence; rollback remains classified `forward-only`.
+
 ## Managed PostgreSQL Host transition contract
 
 | Test seam | Qualified input | Operation contract | Result |

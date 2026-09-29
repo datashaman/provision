@@ -1,0 +1,239 @@
+{
+  "comparisons": [
+    {
+      "activeGeneration": "postgresql-17-7-030da09481c3",
+      "checks": {
+        "databaseAccountingMatches": true,
+        "executorDigestMatches": true,
+        "matrixMatches": true,
+        "osMatches": true,
+        "passwordAuthenticationDisabled": true,
+        "podmanMatches": true,
+        "postgresqlMatches": true,
+        "strictHostKeyPinned": true,
+        "systemdMatches": true
+      },
+      "controller": {
+        "architecture": "arm64",
+        "kernel": "Darwin 24.6.0",
+        "sshClient": "OpenSSH_9.9p2, LibreSSL 3.3.6"
+      },
+      "faultMode": "before",
+      "hostTarget": {
+        "architecture": "x86_64",
+        "executorDigest": "sha256:085f1824aaab5b1c86eb30fc077d855eb44ed88a0c0d25129092df4278f7bd61",
+        "os": "ubuntu",
+        "osVersion": "26.04",
+        "podmanVersion": "5.7.0+ds2-3build1",
+        "systemdVersion": "systemd 259 (259.5-0ubuntu3.4)"
+      },
+      "postgresql": {
+        "activeGeneration": "postgresql-17-7-030da09481c3",
+        "container": "provision-lab-postgresql",
+        "imageManifest": "sha256:030da09481c3876b71a7e49738a932e1c18c398201a1e4ccfdbff1e5a541215b",
+        "retainedGenerations": [
+          "postgresql-17-6-b86568d3e0fe"
+        ],
+        "retainedVersions": [
+          "17.6"
+        ],
+        "serviceUnit": "provision-lab-postgresql.service",
+        "topology": {
+          "databaseNodes": 1,
+          "hostFailureTolerance": 0
+        },
+        "version": "17.7"
+      },
+      "provisionBinarySha256": {
+        "directLocal": "sha256:04d34df231477405eb6759f6b613136cc2a55138de0228ca0074c8c1532a00fd",
+        "remote": "sha256:1ffa9b535c9cefdb45f66f4b32b5981183643cbaa1a34f161ab8bc6b6e6f62cc"
+      },
+      "retainedGenerations": [
+        "postgresql-17-6-b86568d3e0fe"
+      ],
+      "ssh": {
+        "hostFingerprint": "SHA256:3jl37pF+Utxxbic8EUHRQ5qshhP6SdxOX6SnXHjg+Qs",
+        "knownHostsEntries": [
+          "provision-acceptance.local ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIBSvmLScuJmegLEk0xqFSrff5sFdEdOGUTGhULmLRG0+",
+          "provision-acceptance.local ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABgQChdjKpvXuUePH+D5Ggn3JkD7mvpgXoXWeFmr5acJOUFphejeRclq0hfHG7wBqXVGt2xaG2V4VSYnk4J1Z9CkdMeDl6z2wksnstW78NNyexRK5ZTdranpvWnGA8IjLSDORloNM6L5XpDbxYuBqpYO6Pcdo8ou7J0IvORuu3oHf98CYqosglZFN46Af4qHh1we0cdzTIykyZmJabR5gftPwaEZqDZIdK4v4MddGKoHSrT1Dr6WYWgpAobPuZuwrnmeWK5MrXB0pqGkv2pcgVnzGxRJ6aHHDtF1RhXiToUx23JoEKjBmSo4btJkmsaWLjzhEL8ogS1zyAY9gB9H4I7eCv+8rIvDpXSLd64ED6/6mz5uh9KBc/Pk72vh7kIq8fzPkSUZryZAwgMr2CR2TypYeCjetgXhDmpYHizQTP8wMvY1/tEx5KHlcIjtDKFbF31C+j6t98DcdPxutSso1Q2JMG4dPzqIG2xxnC/RKQb/Hru1+BTVrvdRUw8wvcp6zM8VE=",
+          "provision-acceptance.local ecdsa-sha2-nistp256 AAAAE2VjZHNhLXNoYTItbmlzdHAyNTYAAAAIbmlzdHAyNTYAAABBBDcP2fKVQIZb/iKe12t0zk4YXMhLtr9eupnyXYQo4IF20e4FTviBnJaxgLGQAaqqM3FLlNDkZea2TRGf+eGbQZ4="
+        ],
+        "passwordAuthentication": false,
+        "sshServerVersion": "OpenSSH_10.2p1 Ubuntu-2ubuntu3.6, OpenSSL 3.5.5 27 Jan 2026",
+        "strictHostKeyChecking": true,
+        "target": "provision-acceptance.local",
+        "targetUser": "marlinf"
+      },
+      "workloadRecords": [
+        {
+          "id": "provision-lab-data/provision-example-database-http-v1/record-0001",
+          "namespace": "provision-lab-data/provision-example-database-http-v1"
+        }
+      ]
+    },
+    {
+      "activeGeneration": "postgresql-17-7-030da09481c3",
+      "checks": {
+        "databaseAccountingMatches": true,
+        "executorDigestMatches": true,
+        "matrixMatches": true,
+        "osMatches": true,
+        "passwordAuthenticationDisabled": true,
+        "podmanMatches": true,
+        "postgresqlMatches": true,
+        "strictHostKeyPinned": true,
+        "systemdMatches": true
+      },
+      "controller": {
+        "architecture": "arm64",
+        "kernel": "Darwin 24.6.0",
+        "sshClient": "OpenSSH_9.9p2, LibreSSL 3.3.6"
+      },
+      "faultMode": "after",
+      "hostTarget": {
+        "architecture": "x86_64",
+        "executorDigest": "sha256:085f1824aaab5b1c86eb30fc077d855eb44ed88a0c0d25129092df4278f7bd61",
+        "os": "ubuntu",
+        "osVersion": "26.04",
+        "podmanVersion": "5.7.0+ds2-3build1",
+        "systemdVersion": "systemd 259 (259.5-0ubuntu3.4)"
+      },
+      "postgresql": {
+        "activeGeneration": "postgresql-17-7-030da09481c3",
+        "container": "provision-lab-postgresql",
+        "imageManifest": "sha256:030da09481c3876b71a7e49738a932e1c18c398201a1e4ccfdbff1e5a541215b",
+        "retainedGenerations": [
+          "postgresql-17-6-b86568d3e0fe"
+        ],
+        "retainedVersions": [
+          "17.6"
+        ],
+        "serviceUnit": "provision-lab-postgresql.service",
+        "topology": {
+          "databaseNodes": 1,
+          "hostFailureTolerance": 0
+        },
+        "version": "17.7"
+      },
+      "provisionBinarySha256": {
+        "directLocal": "sha256:04d34df231477405eb6759f6b613136cc2a55138de0228ca0074c8c1532a00fd",
+        "remote": "sha256:1ffa9b535c9cefdb45f66f4b32b5981183643cbaa1a34f161ab8bc6b6e6f62cc"
+      },
+      "retainedGenerations": [
+        "postgresql-17-6-b86568d3e0fe"
+      ],
+      "ssh": {
+        "hostFingerprint": "SHA256:3jl37pF+Utxxbic8EUHRQ5qshhP6SdxOX6SnXHjg+Qs",
+        "knownHostsEntries": [
+          "provision-acceptance.local ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIBSvmLScuJmegLEk0xqFSrff5sFdEdOGUTGhULmLRG0+",
+          "provision-acceptance.local ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABgQChdjKpvXuUePH+D5Ggn3JkD7mvpgXoXWeFmr5acJOUFphejeRclq0hfHG7wBqXVGt2xaG2V4VSYnk4J1Z9CkdMeDl6z2wksnstW78NNyexRK5ZTdranpvWnGA8IjLSDORloNM6L5XpDbxYuBqpYO6Pcdo8ou7J0IvORuu3oHf98CYqosglZFN46Af4qHh1we0cdzTIykyZmJabR5gftPwaEZqDZIdK4v4MddGKoHSrT1Dr6WYWgpAobPuZuwrnmeWK5MrXB0pqGkv2pcgVnzGxRJ6aHHDtF1RhXiToUx23JoEKjBmSo4btJkmsaWLjzhEL8ogS1zyAY9gB9H4I7eCv+8rIvDpXSLd64ED6/6mz5uh9KBc/Pk72vh7kIq8fzPkSUZryZAwgMr2CR2TypYeCjetgXhDmpYHizQTP8wMvY1/tEx5KHlcIjtDKFbF31C+j6t98DcdPxutSso1Q2JMG4dPzqIG2xxnC/RKQb/Hru1+BTVrvdRUw8wvcp6zM8VE=",
+          "provision-acceptance.local ecdsa-sha2-nistp256 AAAAE2VjZHNhLXNoYTItbmlzdHAyNTYAAAAIbmlzdHAyNTYAAABBBDcP2fKVQIZb/iKe12t0zk4YXMhLtr9eupnyXYQo4IF20e4FTviBnJaxgLGQAaqqM3FLlNDkZea2TRGf+eGbQZ4="
+        ],
+        "passwordAuthentication": false,
+        "sshServerVersion": "OpenSSH_10.2p1 Ubuntu-2ubuntu3.6, OpenSSL 3.5.5 27 Jan 2026",
+        "strictHostKeyChecking": true,
+        "target": "provision-acceptance.local",
+        "targetUser": "marlinf"
+      },
+      "workloadRecords": [
+        {
+          "id": "provision-lab-data/provision-example-database-http-v1/record-0001",
+          "namespace": "provision-lab-data/provision-example-database-http-v1"
+        }
+      ]
+    },
+    {
+      "activeGeneration": "postgresql-17-7-030da09481c3",
+      "checks": {
+        "databaseAccountingMatches": true,
+        "executorDigestMatches": true,
+        "matrixMatches": true,
+        "osMatches": true,
+        "passwordAuthenticationDisabled": true,
+        "podmanMatches": true,
+        "postgresqlMatches": true,
+        "strictHostKeyPinned": true,
+        "systemdMatches": true
+      },
+      "controller": {
+        "architecture": "arm64",
+        "kernel": "Darwin 24.6.0",
+        "sshClient": "OpenSSH_9.9p2, LibreSSL 3.3.6"
+      },
+      "faultMode": "undecidable",
+      "hostTarget": {
+        "architecture": "x86_64",
+        "executorDigest": "sha256:085f1824aaab5b1c86eb30fc077d855eb44ed88a0c0d25129092df4278f7bd61",
+        "os": "ubuntu",
+        "osVersion": "26.04",
+        "podmanVersion": "5.7.0+ds2-3build1",
+        "systemdVersion": "systemd 259 (259.5-0ubuntu3.4)"
+      },
+      "postgresql": {
+        "activeGeneration": "postgresql-17-7-030da09481c3",
+        "container": "provision-lab-postgresql",
+        "imageManifest": "sha256:030da09481c3876b71a7e49738a932e1c18c398201a1e4ccfdbff1e5a541215b",
+        "retainedGenerations": [
+          "postgresql-17-6-b86568d3e0fe"
+        ],
+        "retainedVersions": [
+          "17.6"
+        ],
+        "serviceUnit": "provision-lab-postgresql.service",
+        "topology": {
+          "databaseNodes": 1,
+          "hostFailureTolerance": 0
+        },
+        "version": "17.7"
+      },
+      "provisionBinarySha256": {
+        "directLocal": "sha256:04d34df231477405eb6759f6b613136cc2a55138de0228ca0074c8c1532a00fd",
+        "remote": "sha256:1ffa9b535c9cefdb45f66f4b32b5981183643cbaa1a34f161ab8bc6b6e6f62cc"
+      },
+      "retainedGenerations": [
+        "postgresql-17-6-b86568d3e0fe"
+      ],
+      "ssh": {
+        "hostFingerprint": "SHA256:3jl37pF+Utxxbic8EUHRQ5qshhP6SdxOX6SnXHjg+Qs",
+        "knownHostsEntries": [
+          "provision-acceptance.local ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIBSvmLScuJmegLEk0xqFSrff5sFdEdOGUTGhULmLRG0+",
+          "provision-acceptance.local ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABgQChdjKpvXuUePH+D5Ggn3JkD7mvpgXoXWeFmr5acJOUFphejeRclq0hfHG7wBqXVGt2xaG2V4VSYnk4J1Z9CkdMeDl6z2wksnstW78NNyexRK5ZTdranpvWnGA8IjLSDORloNM6L5XpDbxYuBqpYO6Pcdo8ou7J0IvORuu3oHf98CYqosglZFN46Af4qHh1we0cdzTIykyZmJabR5gftPwaEZqDZIdK4v4MddGKoHSrT1Dr6WYWgpAobPuZuwrnmeWK5MrXB0pqGkv2pcgVnzGxRJ6aHHDtF1RhXiToUx23JoEKjBmSo4btJkmsaWLjzhEL8ogS1zyAY9gB9H4I7eCv+8rIvDpXSLd64ED6/6mz5uh9KBc/Pk72vh7kIq8fzPkSUZryZAwgMr2CR2TypYeCjetgXhDmpYHizQTP8wMvY1/tEx5KHlcIjtDKFbF31C+j6t98DcdPxutSso1Q2JMG4dPzqIG2xxnC/RKQb/Hru1+BTVrvdRUw8wvcp6zM8VE=",
+          "provision-acceptance.local ecdsa-sha2-nistp256 AAAAE2VjZHNhLXNoYTItbmlzdHAyNTYAAAAIbmlzdHAyNTYAAABBBDcP2fKVQIZb/iKe12t0zk4YXMhLtr9eupnyXYQo4IF20e4FTviBnJaxgLGQAaqqM3FLlNDkZea2TRGf+eGbQZ4="
+        ],
+        "passwordAuthentication": false,
+        "sshServerVersion": "OpenSSH_10.2p1 Ubuntu-2ubuntu3.6, OpenSSL 3.5.5 27 Jan 2026",
+        "strictHostKeyChecking": true,
+        "target": "provision-acceptance.local",
+        "targetUser": "marlinf"
+      },
+      "workloadRecords": [
+        {
+          "id": "provision-lab-data/provision-example-database-http-v1/record-0001",
+          "namespace": "provision-lab-data/provision-example-database-http-v1"
+        }
+      ]
+    }
+  ],
+  "directLocalEvidence": "/Users/marlinf/Projects/datashaman/provision/work/issue-76-live/evidence/direct-local",
+  "remoteSshEvidence": "/Users/marlinf/Projects/datashaman/provision/work/issue-76-live/evidence/remote-ssh",
+  "schemaVersion": "provision.dev/remote-ssh-postgresql-parity/v1alpha1",
+  "sourceVersion": "3875e90c0c05675ac0b1194677e6d29377dd12cf-dirty-a05c569f2447a76a72b489333c116bbabe5106eb7c2e1570fdec926a1bd3fdb8",
+  "supportQualification": {
+    "excluded": [
+      "RDS",
+      "Valkey",
+      "object stores",
+      "multi-node PostgreSQL availability",
+      "production disaster recovery",
+      "external PostgreSQL adoption",
+      "automatic cleanup",
+      "untested host, runtime, PostgreSQL, or Podman versions"
+    ],
+    "qualified": [
+      "one Ubuntu 26.04 x86_64 disposable VM with systemd 259 and rootless Podman/Quadlet",
+      "managed single-node PostgreSQL 17.6 provisioned through the CLI, then forward-only Store Transition to PostgreSQL 17.7 at the pinned image manifests",
+      "strict OpenSSH management transport with a pinned host key, equivalent to direct-local behavior",
+      "transport loss before Host dispatch, after Host completion, and with unreadable authority-switch evidence around generation creation, synchronization, write fence, authority switch, backup, restore verification, and retention marking"
+    ]
+  }
+}

@@ -12,7 +12,8 @@ usage() {
 usage: prove-postgresql-quadlet-host.sh (--preview|--prepare|--verify-after-reboot) \
   --environment NAME --oci-image NAME@sha256:DIGEST \
   --expected-podman-version VERSION --confirm-disposable-host HOSTNAME \
-  --approval-record FILE --operator NAME [--evidence-dir DIRECTORY]
+  --approval-record FILE --operator NAME [--evidence-dir DIRECTORY] \
+  [--postgres-version VERSION --image-index sha256:DIGEST]
 EOF
   exit 2
 }
@@ -30,6 +31,8 @@ confirmed_host=""
 approval_record=""
 operator=""
 evidence_dir="/var/lib/provision/evidence/issue68"
+postgres_version="17.6"
+image_index="sha256:00bc86618629af00d2937fdc5a5d63db3ff8450acf52f0636ec813c7f4902929"
 while (($#)); do
   case "$1" in
     --preview|--prepare|--verify-after-reboot) [[ -z "$mode" ]] || usage; mode="$1"; shift ;;
@@ -40,6 +43,8 @@ while (($#)); do
     --approval-record) (($# >= 2)) || usage; approval_record="$2"; shift 2 ;;
     --operator) (($# >= 2)) || usage; operator="$2"; shift 2 ;;
     --evidence-dir) (($# >= 2)) || usage; evidence_dir="$2"; shift 2 ;;
+    --postgres-version) (($# >= 2)) || usage; postgres_version="$2"; shift 2 ;;
+    --image-index) (($# >= 2)) || usage; image_index="$2"; shift 2 ;;
     *) usage ;;
   esac
 done
@@ -55,10 +60,11 @@ done
 [[ "$evidence_dir" == /* && "$evidence_dir" =~ ^/var/lib/provision/evidence/[a-zA-Z0-9._/-]+$ ]] || \
   die "the evidence directory must be below /var/lib/provision/evidence"
 
-postgres_version="17.6"
-image_index="sha256:00bc86618629af00d2937fdc5a5d63db3ff8450acf52f0636ec813c7f4902929"
-image_manifest="sha256:b86568d3e0fe1dfaeff52714f9da36f206a30e4c49131b82bf96982d78627409"
-generation="postgresql-17-6-b86568d3e0fe"
+[[ "$postgres_version" =~ ^[0-9]+\.[0-9]+$ && "$image_index" =~ ^sha256:[0-9a-f]{64}$ ]] || usage
+# The image is digest-pinned, so the platform manifest is the reference digest.
+image_manifest="${oci_image##*@}"
+manifest_hex="${image_manifest#sha256:}"
+generation="postgresql-${postgres_version//./-}-${manifest_hex:0:12}"
 account="provision-$environment"
 container="provision-$environment-postgresql"
 unit="$container.service"

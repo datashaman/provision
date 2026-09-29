@@ -54,18 +54,17 @@ credential proof covers systemd encrypted credential delivery scoped to the
 Environment user unit; it does not assert that the VM's backing media is
 encrypted.
 
-## Managed PostgreSQL second image (pending qualification, issue #84)
+## Managed PostgreSQL second image and CLI-provisioned transition
 
-| Image | Status |
-| --- | --- |
-| PostgreSQL `17.6` image `docker.io/library/postgres@sha256:b86568d3e0fe1dfaeff52714f9da36f206a30e4c49131b82bf96982d78627409` | Qualified above; the default when a Database implementation declares no `version`. |
-| PostgreSQL `17.7` image index `sha256:2006493727bd5277eece187319af1ef82b4cf82cf4fc1ed00da0775b646ac2a4`, amd64 manifest `sha256:030da09481c3876b71a7e49738a932e1c18c398201a1e4ccfdbff1e5a541215b`, generation `postgresql-17-7-030da09481c3` | Registered, **not qualified**: planning and the restricted executor reject it until its disposable-VM packaging proof yields a qualification digest recorded as `Evidence` in `hostdatabase.Images`, and that evidence is added to this file. Selected with `implementations.<name>.version: "17.7"`. |
+| Proof harness and approval | Host | Image | Result |
+| --- | --- | --- | --- |
+| proof harness `scripts/prove-postgresql-quadlet-host.sh`; approval record `sha256:d63b77a7a024bcc3ea8bbd73650a209a68140801c257c8fdd099388525ed1b6d` | Ubuntu Server 26.04 VM, kernel `7.0.0-34-generic`, `x86_64`; systemd `259 (259.5-0ubuntu3.4)`; Podman `5.7.0+ds2-3build1` | PostgreSQL `17.7`; image `docker.io/library/postgres@sha256:030da09481c3876b71a7e49738a932e1c18c398201a1e4ccfdbff1e5a541215b`; image index `sha256:2006493727bd5277eece187319af1ef82b4cf82cf4fc1ed00da0775b646ac2a4`; generation `postgresql-17-7-030da09481c3`; qualification digest `sha256:0b786851c1ab07c183650c91dd3ad8bbbe8c74c11e9ba535d585eb0841718ad0` | Same packaging proof as `17.6` (service, loopback listener, SQL connectivity, owned data path, encrypted credential, restart and durable data across a full Host reboot) passed from the clean snapshot, and the VM restored clean afterward. See the [qualification](evidence/2026-09-29-postgresql-17-7-packaging-qualification.json) and [controller evidence](evidence/2026-09-29-postgresql-17-7-acceptance-controller.json). |
+| `scripts/test-direct-local-postgresql-host.sh` under `--fault-mode before`, `after`, and `undecidable`, via `scripts/run-direct-local-postgresql-acceptance.sh` | Same VM, direct-local | `17.6` provisioned through the CLI, then transitioned to `17.7` by declaring `version: "17.7"`; same-major only | No out-of-band state seeding. Backup, isolated restore, forward-only Store Transition, previous-generation retention, and interruption recovery passed in all three modes. In `undecidable` mode the authority-switch evidence was made unreadable after the switch landed; resume recorded an uncertain outcome with reason and recovery action, did not replay the switch, and completed after the evidence was restored. See the [transition evidence](evidence/2026-09-29-postgresql-second-image-transition.md). |
 
-Once qualified, `scripts/test-direct-local-postgresql-host.sh` provisions `17.6` through the CLI and
-transitions to `17.7` (same-major only); `--fault-mode undecidable` makes the
-authority-switch evidence unreadable after the switch and asserts the operation
-pauses as uncertain without replaying, with reason and recovery evidence. Neither
-has run on a disposable Host yet.
+`17.6` remains the default when a Database implementation declares no `version`.
+Only `17.6` and `17.7` are registered in `hostdatabase.Images`; other patch
+versions, minor-version differences beyond the same major, and image
+manifests remain unqualified.
 
 ## Managed PostgreSQL Host transition contract
 

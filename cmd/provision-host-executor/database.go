@@ -1422,7 +1422,8 @@ func applyDatabaseRestoreVerification(ctx context.Context, planned planner.Opera
 		return nil, err
 	}
 	entrypointPath := filepath.Join(serviceRoot, "credential-entrypoint")
-	if err := installExactFile(input.RestoreCandidate.QuadletPath, []byte(renderDatabaseQuadlet(candidate, entrypointPath, username)), 0644, 0, 0); err != nil {
+	// The restore-verification service is scratch: an earlier Plan may have left one for a different image.
+	if err := replaceManagedFile(input.RestoreCandidate.QuadletPath, []byte(renderDatabaseQuadlet(candidate, entrypointPath, username)), 0644, 0, 0); err != nil {
 		return nil, err
 	}
 	if _, err := runAsEnvironment(ctx, record, "podman", "unshare", "chown", "-R", "999:999", candidate.DataPath); err != nil {

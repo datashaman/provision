@@ -35,7 +35,10 @@ cleanup() {
     if [[ "$status" -ne 0 ]]; then
       preserve_remote_evidence_on_failure
     fi
-    "$root/work/acceptance-host/reset-acceptance-vm.sh" --yes >/dev/null 2>&1 || true
+    # PROVISION_ACCEPTANCE_KEEP_VM=1 leaves a failed VM in place for diagnosis.
+    if [[ "$status" -eq 0 || -z "${PROVISION_ACCEPTANCE_KEEP_VM:-}" ]]; then
+      "$root/work/acceptance-host/reset-acceptance-vm.sh" --yes >/dev/null 2>&1 || true
+    fi
   fi
   exit "$status"
 }
@@ -337,9 +340,9 @@ fi
 mkdir -p "$local_evidence"
 
 run_local_checks
-run_fault_mode before
-run_fault_mode after
-run_fault_mode undecidable
+for mode in ${PROVISION_ACCEPTANCE_MODES:-before after undecidable}; do
+  run_fault_mode "$mode"
+done
 "$root/work/acceptance-host/reset-acceptance-vm.sh" --yes
 cleanup_needed=false
 trap - EXIT

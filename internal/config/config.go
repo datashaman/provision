@@ -146,6 +146,7 @@ type Implementation struct {
 	Target     string                 `yaml:"target" json:"target"`
 	Lifecycle  string                 `yaml:"lifecycle,omitempty" json:"lifecycle,omitempty"`
 	Credential string                 `yaml:"credential,omitempty" json:"credential,omitempty"`
+	Version    string                 `yaml:"version,omitempty" json:"version,omitempty"`
 	Rollout    string                 `yaml:"rollout,omitempty" json:"rollout,omitempty"`
 	Endpoint   Endpoint               `yaml:"endpoint,omitempty" json:"endpoint,omitempty,omitzero"`
 	Worker     WorkerImplementation   `yaml:"worker,omitempty" json:"worker,omitempty,omitzero"`

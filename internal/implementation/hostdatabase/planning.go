@@ -18,6 +18,71 @@ const (
 	ImageReference      = "docker.io/library/postgres@" + ImageManifest
 )
 
+// Image is one digest-pinned PostgreSQL product identity. The first entry is
+// the default a Database implementation gets when it declares no version.
+type Image struct {
+	Version  string
+	Index    string
+	Manifest string
+	// Evidence is the packaging qualification digest. Empty means the image
+	// is registered but not yet qualified, so planning rejects it.
+	Evidence string
+}
+
+var Images = []Image{
+	{Version: PostgreSQLVersion, Index: ImageIndex, Manifest: ImageManifest, Evidence: QualificationDigest},
+	// Pending the #84 disposable-VM packaging proof; set Evidence to its qualification digest.
+	{Version: "17.7", Index: "sha256:2006493727bd5277eece187319af1ef82b4cf82cf4fc1ed00da0775b646ac2a4", Manifest: "sha256:030da09481c3876b71a7e49738a932e1c18c398201a1e4ccfdbff1e5a541215b"},
+}
+
+func (i Image) Reference() string { return "docker.io/library/postgres@" + i.Manifest }
+
+func (i Image) Generation() string {
+	return "postgresql-" + strings.ReplaceAll(i.Version, ".", "-") + "-" + strings.TrimPrefix(i.Manifest, "sha256:")[:12]
+}
+
+// Major is the PostgreSQL major version; logical transitions are qualified within one major.
+func (i Image) Major() string { return strings.SplitN(i.Version, ".", 2)[0] }
+
+// ImageFor resolves a declared version; the empty version selects the default image.
+func ImageFor(version string) (Image, bool) {
+	for _, image := range Images {
+		if version == "" || image.Version == version {
+			return image, true
+		}
+	}
+	return Image{}, false
+}
+
+// ImageByManifest resolves an observed image manifest to a registered image.
+func ImageByManifest(manifest string) (Image, bool) {
+	for _, image := range Images {
+		if image.Manifest == manifest {
+			return image, true
+		}
+	}
+	return Image{}, false
+}
+
+// Target returns the observed capability retargeted at the Database
+// implementation's declared image. An unregistered version keeps the default
+// identity; Evaluate rejects it.
+func Target(compiled config.Compiled, capability host.DatabaseCapabilities) host.DatabaseCapabilities {
+	_, _, implementation := databaseComponent(compiled)
+	image, ok := ImageFor(implementation.Version)
+	if !ok || image.Manifest == capability.PostgreSQLImageManifest {
+		return capability
+	}
+	capability.PostgreSQLGenerationDataPath = strings.Replace(capability.PostgreSQLGenerationDataPath, "/generations/"+capability.PostgreSQLGeneration+"/data", "/generations/"+image.Generation()+"/data", 1)
+	capability.PostgreSQLGeneration = image.Generation()
+	capability.PostgreSQLVersion = image.Version
+	capability.PostgreSQLImageIndex = image.Index
+	capability.PostgreSQLImageManifest = image.Manifest
+	capability.PostgreSQLImageReference = image.Reference()
+	capability.PostgreSQLQualificationDigest = image.Evidence
+	return capability
+}
+
 type Evaluation struct {
 	Contract        string
 	Guarantees      []string
@@ -73,6 +138,12 @@ func Evaluate(compiled config.Compiled, observation host.BootstrapStatus, target
 		reasons = append(reasons, "Database deployment observation is incomplete")
 	}
 	reasons = append(reasons, database.Findings...)
+	if image, ok := ImageFor(implementationVersion(compiled)); !ok {
+		reasons = append(reasons, fmt.Sprintf("PostgreSQL version %s is not a registered image", implementationVersion(compiled)))
+	} else if image.Evidence == "" {
+		reasons = append(reasons, fmt.Sprintf("PostgreSQL %s has no packaging qualification evidence yet", image.Version))
+	}
+	// The observed capability is the executor's default image; it must match this build.
 	capability := database.Capabilities
 	if capability.PostgreSQLQualificationDigest != QualificationDigest {
 		reasons = append(reasons, fmt.Sprintf("PostgreSQL qualification digest %s is not supported", observedOrUnknown(capability.PostgreSQLQualificationDigest)))
@@ -143,7 +214,7 @@ type PlanningOutput struct {
 
 func Plan(compiled config.Compiled, observation host.BootstrapStatus) PlanningOutput {
 	componentName, component, implementation := databaseComponent(compiled)
-	capability := observation.Database.Capabilities
+	capability := Target(compiled, observation.Database.Capabilities)
 	logicalID := "provision-" + compiled.Environment.Name + "-" + componentName
 	input := &planmodel.DatabaseOperationInput{
 		Component: componentName, LogicalID: logicalID, GenerationID: capability.PostgreSQLGeneration,
@@ -277,10 +348,11 @@ func ReplacementReason(compiled config.Compiled, database host.DatabaseStatus) s
 		return reason
 	}
 	active := database.Deployment.Active
-	if active.ID == database.Capabilities.PostgreSQLGeneration && active.Ready && active.Connectivity && active.ImageManifest == database.Capabilities.PostgreSQLImageManifest {
+	capability := Target(compiled, database.Capabilities)
+	if active.ID == capability.PostgreSQLGeneration && active.Ready && active.Connectivity && active.ImageManifest == capability.PostgreSQLImageManifest {
 		return ""
 	}
-	if compatibleActiveGeneration(active, database.Capabilities) && database.Capabilities.SupportedTransitionMechanism == "offline-logical-snapshot-with-bounded-write-fence" {
+	if compatibleActiveGeneration(active, capability) && capability.SupportedTransitionMechanism == "offline-logical-snapshot-with-bounded-write-fence" {
 		return ""
 	}
 	return "required Database Store Transition is not qualified for isolated candidate generation, synchronization, verification, cutover, and retention"
@@ -290,8 +362,7 @@ func compatibleActiveGeneration(active *host.DatabaseGenerationStatus, capabilit
 	return active != nil &&
 		active.Ready &&
 		active.Connectivity &&
-		active.PostgreSQLVersion == capability.PostgreSQLVersion &&
-		active.ImageManifest == capability.PostgreSQLImageManifest &&
+		CompatibleImages(active.ImageManifest, capability.PostgreSQLImageManifest) &&
 		active.Database != "" &&
 		active.LogicalID != ""
 }
@@ -363,4 +434,17 @@ func unique(values []string) []string {
 		}
 	}
 	return result
+}
+
+// CompatibleImages reports whether a Store Transition may run between two
+// registered images of the same PostgreSQL major version.
+func CompatibleImages(activeManifest, targetManifest string) bool {
+	active, ok := ImageByManifest(activeManifest)
+	target, tok := ImageByManifest(targetManifest)
+	return ok && tok && active.Major() == target.Major()
+}
+
+func implementationVersion(compiled config.Compiled) string {
+	_, _, implementation := databaseComponent(compiled)
+	return implementation.Version
 }

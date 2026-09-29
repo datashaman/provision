@@ -54,6 +54,19 @@ credential proof covers systemd encrypted credential delivery scoped to the
 Environment user unit; it does not assert that the VM's backing media is
 encrypted.
 
+## Managed PostgreSQL second image (pending qualification, issue #84)
+
+| Image | Status |
+| --- | --- |
+| PostgreSQL `17.6` image `docker.io/library/postgres@sha256:b86568d3e0fe1dfaeff52714f9da36f206a30e4c49131b82bf96982d78627409` | Qualified above; the default when a Database implementation declares no `version`. |
+| PostgreSQL `17.7` image index `sha256:2006493727bd5277eece187319af1ef82b4cf82cf4fc1ed00da0775b646ac2a4`, amd64 manifest `sha256:030da09481c3876b71a7e49738a932e1c18c398201a1e4ccfdbff1e5a541215b`, generation `postgresql-17-7-030da09481c3` | Registered, **not qualified**: planning and the restricted executor reject it until its disposable-VM packaging proof yields a qualification digest recorded as `Evidence` in `hostdatabase.Images`, and that evidence is added to this file. Selected with `implementations.<name>.version: "17.7"`. |
+
+Once qualified, `scripts/test-direct-local-postgresql-host.sh` provisions `17.6` through the CLI and
+transitions to `17.7` (same-major only); `--fault-mode undecidable` makes the
+authority-switch evidence unreadable after the switch and asserts the operation
+pauses as uncertain without replaying, with reason and recovery evidence. Neither
+has run on a disposable Host yet.
+
 ## Managed PostgreSQL Host transition contract
 
 | Test seam | Qualified input | Operation contract | Result |

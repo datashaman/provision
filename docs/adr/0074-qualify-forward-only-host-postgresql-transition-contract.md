@@ -51,3 +51,11 @@ recovery, RDS, or production durability.
 - Later live acceptance should add fault-injection evidence for interruption,
   stale fencing, deterministic-record preservation, and ambiguous data-bearing
   recovery before expanding the production support claim.
+
+## Amendment (issue #84)
+
+Active and candidate generations may now be different registered images of the
+same PostgreSQL major version (`hostdatabase.Images`, selected with the
+Database implementation's `version`, default `17.6`). An image without recorded
+packaging qualification evidence is rejected by planning and the executor, so
+`17.7` stays unusable until its disposable-VM proof is recorded.

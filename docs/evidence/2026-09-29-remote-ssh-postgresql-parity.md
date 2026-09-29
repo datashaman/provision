@@ -27,7 +27,14 @@ For all three modes the direct-local and remote runs have identical: logical Dat
 | SSH identity | strict host-key checking, password authentication disabled, pinned ED25519 fingerprint `SHA256:3jl37pF+Utxxbic8EUHRQ5qshhP6SdxOX6SnXHjg+Qs` |
 | Executor | `sha256:085f1824aaab5b1c86eb30fc077d855eb44ed88a0c0d25129092df4278f7bd61` (identical in both transports) |
 | PostgreSQL | `17.6` then `17.7`; single node, host failure tolerance 0 |
-| Source | commit `3875e90` plus the changes committed with this evidence |
+| Source | The run recorded `sourceVersion` `3875e90…-dirty-a05c569f…`: parent commit `3875e90` plus the uncommitted scripts later committed as `a1eb3b9`. Only documentation changed after the run. The two Provision binaries differ by design (controller `darwin/arm64` for the remote run, `linux/amd64` for the direct-local run on the Host). |
+
+## Limits of this evidence
+
+- The topology (`databaseNodes: 1`, `hostFailureTolerance: 0`) is the declared single-node topology, not something the Host reports.
+- "Recovery observes the Host before acting" is shown by the journal shape (interrupted intent, resume provenance, no replay marker in `after`), not by an independent ordering assertion.
+- The compared per-run accounting, check logs, and raw transcripts live in the gitignored `work/issue-76-live/evidence`; the committed JSON records the comparison results and identities, not the raw accounting.
+- The clean-snapshot restore is performed by the wrapper's final `reset-acceptance-vm.sh` call, which the wrapper must complete for exit status 0; it is not a separate recorded field.
 
 ## Defects and flakes found
 

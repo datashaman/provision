@@ -22,7 +22,7 @@ The harness runs the transition under three transport-loss modes selected with `
 | `after` | The Host completed the operation and the controller is killed before it reads the response | The journal keeps the intent. Resume observes the remote Host, proves completion from Host evidence, and records the outcome without dispatching the mutation again (no replay marker appears). |
 | `undecidable` | As `after`, and the authority-switch evidence on the Host is then made unreadable | Resume cannot tell whether the switch landed, does not replay it, and records the outcome `uncertain` with a reason and recovery action. Once the evidence is readable again, resume completes. |
 
-Every mode covers Database generation creation, synchronization, the write fence, the authority switch, backup, restore verification, and retention marking. Recovery always observes the remote Host before acting, and a stale-lineage executor request is rejected by the Host's fence.
+`before` and `after` interrupt each of the eight transition operations: Database generation creation, synchronization, the write fence, backup, restore verification, the authority switch, post-switch verification, and retention marking. `undecidable` runs as `after` and additionally makes the authority-switch evidence unreadable for that operation only. Recovery always observes the remote Host before acting, and a stale-lineage executor request is rejected by the Host's fence.
 
 ## Forward cutover and rollback
 

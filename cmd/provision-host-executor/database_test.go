@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	"provision/internal/authority"
 	"provision/internal/config"
 	"provision/internal/host"
 	"provision/internal/planner"
@@ -89,6 +90,63 @@ func TestCandidateGenerationInspectionReportsCompatibilityGate(t *testing.T) {
 	}
 }
 
+func TestPostgreSQLDataMountMustMatchGenerationDataPath(t *testing.T) {
+	expected := "/var/lib/provision/environments/lab/services/postgresql/generations/postgresql-17-6-b86568d3e0fe/data"
+	if !postgresqlDataMountMatches(expected+"\n", expected) {
+		t.Fatal("matching PostgreSQL generation data mount was rejected")
+	}
+	previous := "/var/lib/provision/environments/lab/services/postgresql/generations/postgresql-17-6-aaaaaaaaaaaa/data"
+	if postgresqlDataMountMatches(previous, expected) {
+		t.Fatal("previous PostgreSQL generation data mount was accepted as the active generation")
+	}
+	if postgresqlDataMountMatches("", expected) || postgresqlDataMountMatches(expected, "") {
+		t.Fatal("empty PostgreSQL generation data mount was accepted")
+	}
+}
+
+func TestRetainedPostgreSQLGenerationIsNotReportedAsCandidate(t *testing.T) {
+	root := t.TempDir()
+	generationsRoot := filepath.Join(root, "services", "postgresql", "generations")
+	retainedRoot := filepath.Join(generationsRoot, "retained")
+	previousID := "postgresql-17-6-aaaaaaaaaaaa"
+	previousRoot := filepath.Join(generationsRoot, previousID)
+	if err := os.MkdirAll(previousRoot, 0755); err != nil {
+		t.Fatal(err)
+	}
+	record := postgresqlPackagingRecord{
+		SchemaVersion: postgresqlGenerationSchema, LogicalID: "provision-lab-data", GenerationID: previousID,
+		PostgreSQLVersion: qualifiedPostgreSQL, ImageManifest: qualifiedPostgreSQLManifest,
+		ServiceUnit: "provision-lab-postgresql.service", Container: "provision-lab-postgresql",
+		Account: "provision-lab", DataPath: filepath.Join(previousRoot, "data"), QuadletPath: "/etc/containers/systemd/users/999/provision-lab-postgresql.container",
+		Database: "app", CredentialReference: "secret://lab/postgresql-url", Connectivity: true,
+	}
+	data, err := json.Marshal(record)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(previousRoot, "generation.json"), data, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(retainedRoot, 0755); err != nil {
+		t.Fatal(err)
+	}
+	retention, err := json.Marshal(struct {
+		Previous host.DatabaseGenerationStatus `json:"previous"`
+	}{Previous: databaseGenerationStatusFromRecord(record)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(retainedRoot, previousID+".json"), retention, 0600); err != nil {
+		t.Fatal(err)
+	}
+	candidate := observedPostgreSQLCandidateGeneration(host.DatabaseCapabilities{
+		PostgreSQLGenerationDataPath: filepath.Join(generationsRoot, qualifiedPostgreSQLGeneration, "data"),
+	}, qualifiedPostgreSQLGeneration)
+	if candidate != nil {
+		t.Fatalf("retained previous generation was reported as candidate: %+v", candidate)
+	}
+}
+
 func TestPrepareDatabaseValidationRescansHostForLateCandidate(t *testing.T) {
 	planned, record, paths := databaseOperationFixture(t)
 	candidateRoot := filepath.Join(paths.environmentHome, "services", "postgresql", "generations", "postgresql-18-0-bbbbbbbbbbbb")
@@ -150,6 +208,55 @@ func TestDatabaseTransitionValidationAllowsCandidateIdentityOnlyBeforeAuthority(
 	}
 }
 
+func TestDatabaseAuthoritySwitchEvidenceMarkerBindsApprovedTransition(t *testing.T) {
+	planned, record, _ := databaseOperationFixture(t)
+	input := *planned.Input.Database
+	active := host.DatabaseGenerationStatus{
+		ID: "postgresql-17-6-aaaaaaaaaaaa", LogicalID: input.LogicalID, Role: "active", Authority: "authoritative",
+		Ready: true, PostgreSQLVersion: input.PostgreSQLVersion, ImageManifest: input.ImageManifest,
+		ServiceUnit: "provision-lab-postgresql-old.service", Container: "provision-lab-postgresql-old", Account: record.Account,
+		DataPath:    filepath.Join(filepath.Dir(filepath.Dir(input.DataPath)), "postgresql-17-6-aaaaaaaaaaaa", "data"),
+		QuadletPath: input.QuadletPath, Database: input.DatabaseName, Connectivity: true,
+	}
+	input.Observed.Active = &active
+	if err := os.MkdirAll(filepath.Dir(input.DataPath), 0755); err != nil {
+		t.Fatal(err)
+	}
+	claim := authority.Claim{PlanID: "sha256:" + strings.Repeat("c", 64), OperationID: "op-06", OperationDigest: "sha256:" + strings.Repeat("6", 64)}
+	if err := recordDatabaseAuthoritySwitchEvidence(input, claim, record); err != nil {
+		t.Fatalf("authority-switch marker was not recorded: %v", err)
+	}
+	markerPath := filepath.Join(filepath.Dir(input.DataPath), "transition", "authority-switch.json")
+	if !databaseTransitionMarkerMatches(markerPath, input, input.Observed.Active, claim.PlanID, claim.OperationID, claim.OperationDigest, databaseSwitchPhase, "") {
+		t.Fatal("authority-switch marker did not bind exact approved transition identity")
+	}
+	if databaseTransitionMarkerMatches(markerPath, input, input.Observed.Active, claim.PlanID, "other-op", claim.OperationDigest, databaseSwitchPhase, "") {
+		t.Fatal("authority-switch marker matched a different operation")
+	}
+}
+
+func TestDatabaseActiveVerificationEvidenceMarkerBindsRecords(t *testing.T) {
+	planned, record, _ := databaseOperationFixture(t)
+	input := *planned.Input.Database
+	input.Binding.DeterministicRecordNamespace = "provision-lab-data/provision-example-database-http-v1"
+	input.Binding.DeterministicRecordIDs = []string{"provision-lab-data/provision-example-database-http-v1/record-0001"}
+	if err := os.MkdirAll(filepath.Dir(input.DataPath), 0755); err != nil {
+		t.Fatal(err)
+	}
+	claim := authority.Claim{PlanID: "sha256:" + strings.Repeat("c", 64), OperationID: "op-07", OperationDigest: "sha256:" + strings.Repeat("7", 64)}
+	records := []host.DeterministicDatabaseRecordStatus{{ID: input.Binding.DeterministicRecordIDs[0], Namespace: input.Binding.DeterministicRecordNamespace}}
+	if err := recordDatabaseActiveVerificationEvidence(input, claim, record, records); err != nil {
+		t.Fatalf("active-verification marker was not recorded: %v", err)
+	}
+	observed, ok := readDatabaseActiveVerificationEvidence(input, claim.PlanID, claim.OperationID, claim.OperationDigest)
+	if !ok || !slices.Equal(observed, records) {
+		t.Fatalf("active-verification marker did not bind exact approved records: ok=%v records=%+v", ok, observed)
+	}
+	if _, ok := readDatabaseActiveVerificationEvidence(input, claim.PlanID, "other-op", claim.OperationDigest); ok {
+		t.Fatal("active-verification marker matched a different operation")
+	}
+}
+
 func TestDatabaseSecretBoundaryAndQuadletDoNotExposeResolvedValue(t *testing.T) {
 	planned, _, _ := databaseOperationFixture(t)
 	input := *planned.Input.Database
@@ -179,6 +286,18 @@ func TestDatabaseSecretBoundaryAndQuadletDoNotExposeResolvedValue(t *testing.T) 
 	if strings.Contains(quadlet, password) || !strings.Contains(quadlet, input.ImageReference) || !strings.Contains(quadlet, "LoadCredentialEncrypted=postgresql-url") || !strings.Contains(quadlet, "PublishPort=127.0.0.1:25432:5432") {
 		t.Fatalf("Quadlet omitted pinned identity or exposed a secret:\n%s", quadlet)
 	}
+	psqlTarget, err := databasePSQLTargetArgs(input, "", username)
+	if err != nil || !slices.Equal(psqlTarget, []string{"-U", username, "-d", input.DatabaseName}) {
+		t.Fatalf("secretless Database observation cannot use local psql identity: %#v %v", psqlTarget, err)
+	}
+	psqlTarget, err = databasePSQLTargetArgs(input, secret, username)
+	if err != nil || len(psqlTarget) != 1 || !strings.HasPrefix(psqlTarget[0], "postgresql://") {
+		t.Fatalf("Database execution did not use translated credential URL: %#v %v", psqlTarget, err)
+	}
+	diagnostic := safeDatabaseCommandOutput([]byte("ERROR: connection failed for postgresql://app:LongRandomPassword_1234@127.0.0.1:25432/app\nDETAIL: password LongRandomPassword_1234 rejected"), secret)
+	if strings.Contains(diagnostic, secret) || strings.Contains(diagnostic, password) || !strings.Contains(diagnostic, "[REDACTED_DATABASE_URL]") {
+		t.Fatalf("Database command diagnostic disclosed a secret: %s", diagnostic)
+	}
 }
 
 func TestDatabaseStatusIdentifiesOwnedResourcesByKind(t *testing.T) {
@@ -193,6 +312,7 @@ func TestDatabaseStatusIdentifiesOwnedResourcesByKind(t *testing.T) {
 		"generation-record:" + filepath.Join(filepath.Dir(input.DataPath), "generation.json"),
 		"credential-entrypoint:" + filepath.Join(filepath.Dir(filepath.Dir(filepath.Dir(input.DataPath))), "credential-entrypoint"),
 		"encrypted-credential:/var/lib/provision/runtime/lab/.config/credstore.encrypted/postgresql-url",
+		"encrypted-credential:/var/lib/provision/environments/lab/credentials/postgresql-url",
 		"postgresql-database:" + input.DatabaseName,
 	}
 	if !slices.Equal(status.OwnedResources, want) {

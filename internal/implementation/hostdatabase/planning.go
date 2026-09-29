@@ -86,10 +86,11 @@ func Evaluate(compiled config.Compiled, observation host.BootstrapStatus, target
 	if !capability.Quadlet || !capability.RootlessEnvironmentAccount || !capability.SystemdCredentials || !capability.SubordinateIDs || !capability.LingeringUserManager {
 		reasons = append(reasons, "rootless PostgreSQL account, Quadlet, systemd credential, subordinate ID, or lingering evidence is incomplete")
 	}
-	if !capability.EncryptedCredentialObserved {
+	if database.Deployment.Active != nil && !capability.EncryptedCredentialObserved {
 		reasons = append(reasons, "PostgreSQL encrypted credential delivery is not observed")
 	}
-	if !capability.QuadletDefinitionRootOwned || !capability.GenerationDataPathOwned {
+	activeIsTargetGeneration := database.Deployment.Active != nil && database.Deployment.Active.ID == capability.PostgreSQLGeneration
+	if activeIsTargetGeneration && (!capability.QuadletDefinitionRootOwned || !capability.GenerationDataPathOwned) {
 		reasons = append(reasons, "PostgreSQL Quadlet definition and generation data path ownership are not qualified")
 	}
 	if capability.PostgreSQLServiceUnit == "" || capability.PostgreSQLContainer == "" || capability.PostgreSQLAccount == "" || capability.PostgreSQLGeneration == "" || capability.PostgreSQLGenerationDataPath == "" || capability.PostgreSQLQuadletPath == "" || capability.PostgreSQLListenAddress == "" || capability.PostgreSQLPort == 0 {
@@ -111,11 +112,24 @@ func Evaluate(compiled config.Compiled, observation host.BootstrapStatus, target
 			"ubuntu-26.04-x86_64",
 			"rootless-podman-quadlet",
 			"systemd-credentials",
-			"encrypted-credential-observed",
 			"postgresql-17.6-image-index-and-manifest-pinned",
-			"generation-data-path-owned",
 			"durable-reboot-packaging-proof",
 			"restricted-executor-identity-matched",
+		}
+		if activeIsTargetGeneration {
+			evaluation.SupportEvidence = append(evaluation.SupportEvidence,
+				"encrypted-credential-observed",
+				"generation-data-path-owned",
+			)
+		} else if database.Deployment.Active != nil {
+			evaluation.SupportEvidence = append(evaluation.SupportEvidence,
+				"encrypted-credential-observed",
+				"candidate-generation-data-path-ready-for-creation",
+			)
+		} else {
+			evaluation.SupportEvidence = append(evaluation.SupportEvidence,
+				"generation-data-path-ready-for-creation",
+			)
 		}
 	}
 	return evaluation

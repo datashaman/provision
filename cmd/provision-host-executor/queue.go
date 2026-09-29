@@ -338,19 +338,19 @@ func ensureDirectory(path string, mode os.FileMode, uid, gid int) error {
 	info, err := os.Lstat(path)
 	if errors.Is(err, os.ErrNotExist) {
 		if err := os.Mkdir(path, mode); err != nil {
-			return errors.New("create Queue-owned directory")
+			return fmt.Errorf("create managed directory %s: %w", path, err)
 		}
 		if err := os.Chown(path, uid, gid); err != nil {
-			return errors.New("own Queue-owned directory")
+			return fmt.Errorf("own managed directory %s: %w", path, err)
 		}
 		return os.Chmod(path, mode)
 	}
 	if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 || info.Mode().Perm() != mode {
-		return errors.New("Queue-owned directory is unsafe")
+		return fmt.Errorf("managed directory %s is unsafe", path)
 	}
 	stat, ok := info.Sys().(*syscall.Stat_t)
 	if !ok || int(stat.Uid) != uid || int(stat.Gid) != gid {
-		return errors.New("Queue-owned directory ownership differs")
+		return fmt.Errorf("managed directory %s ownership differs", path)
 	}
 	return nil
 }
@@ -360,7 +360,7 @@ func ensureEnvironmentDataDirectory(path, account string, uid, gid int) error {
 		return ensureDirectory(path, 0700, uid, gid)
 	}
 	if !environmentDataOwned(path, account, uid, gid) {
-		return errors.New("Queue data directory is not owned by the Environment account or its subordinate IDs")
+		return fmt.Errorf("managed data directory %s is not owned by the Environment account or its subordinate IDs", path)
 	}
 	return nil
 }
@@ -427,6 +427,30 @@ func installExactFile(path string, data []byte, mode os.FileMode, uid, gid int) 
 	if err := os.Rename(temporary, path); err != nil {
 		_ = os.Remove(temporary)
 		return errors.New("commit Queue-owned file")
+	}
+	return nil
+}
+
+func replaceManagedFile(path string, data []byte, mode os.FileMode, uid, gid int) error {
+	if info, err := os.Lstat(path); err == nil {
+		if !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 {
+			return errors.New("existing managed file is unsafe")
+		}
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return errors.New("inspect managed file")
+	}
+	temporary := path + ".tmp"
+	_ = os.Remove(temporary)
+	if err := os.WriteFile(temporary, data, mode); err != nil {
+		return errors.New("write managed file")
+	}
+	if err := os.Chown(temporary, uid, gid); err != nil {
+		_ = os.Remove(temporary)
+		return errors.New("own managed file")
+	}
+	if err := os.Rename(temporary, path); err != nil {
+		_ = os.Remove(temporary)
+		return errors.New("commit managed file")
 	}
 	return nil
 }

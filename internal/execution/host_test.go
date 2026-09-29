@@ -253,10 +253,29 @@ func TestVerifyDatabaseTransitionResultRequiresStepSpecificEvidence(t *testing.T
 		t.Fatalf("valid Database active transition evidence rejected: %v", err)
 	}
 
+	switchAuthority := planner.Operation{ID: "op-03", Kind: planner.SwitchDatabaseAuthority, Input: planner.OperationInput{Database: &input}}
+	envelope.Operation = switchAuthority
+	envelope.Authorization.Claim.OperationID = "op-03"
+	observed = databaseOperationObservationFixture(input)
+	result.OperationID = "op-03"
+	result.Observation = mustJSON(t, observed)
+	if err := verifyHostResult(envelope, result); err == nil || !strings.Contains(err.Error(), "authority-switch") {
+		t.Fatalf("generic Database health was accepted as authority-switch transition proof: %v", err)
+	}
+	observed.TransitionPhase = "switchDatabaseAuthority"
+	observed.Synchronization = "authority-switched-after-write-fence"
+	result.Observation = mustJSON(t, observed)
+	if err := verifyHostResult(envelope, result); err != nil {
+		t.Fatalf("valid Database authority-switch transition evidence rejected: %v", err)
+	}
+
 	backup := planner.Operation{ID: "op-04", Kind: planner.BackupDatabase, Input: planner.OperationInput{Database: &input}}
 	envelope.Operation = backup
 	envelope.Authorization.Claim.OperationID = "op-04"
 	observed = databaseOperationObservationFixture(input)
+	observed.Database = *input.Observed.Active
+	observed.Database.Role = "candidate"
+	observed.Database.Authority = "pending"
 	observed.TransitionPhase = "backupDatabase"
 	observed.Backup = &host.DatabaseBackupObservation{
 		SchemaVersion:         "provision.dev/database-backup/v1alpha1",
@@ -292,6 +311,16 @@ func TestVerifyDatabaseTransitionResultRequiresStepSpecificEvidence(t *testing.T
 	result.Observation = mustJSON(t, observed)
 	if err := verifyHostResult(envelope, result); err == nil || !strings.Contains(err.Error(), "deterministic workload record") {
 		t.Fatalf("Database restore verification without restored records accepted: %v", err)
+	}
+	initialInput := input
+	initialInput.Observed.Active = nil
+	restore.Input.Database = &initialInput
+	envelope.Operation = restore
+	observed = databaseRestoreOperationObservationFixture(initialInput)
+	observed.Records = nil
+	result.Observation = mustJSON(t, observed)
+	if err := verifyHostResult(envelope, result); err != nil {
+		t.Fatalf("initial Database restore verification required workload records that cannot exist yet: %v", err)
 	}
 
 	retain := planner.Operation{ID: "op-06", Kind: planner.RetainDatabasePrevious, Input: planner.OperationInput{Database: &input}}
@@ -387,8 +416,12 @@ func databaseBindingInputFixture() planner.DatabaseBindingInput {
 func databaseOperationInputFixture() planner.DatabaseOperationInput {
 	binding := databaseBindingInputFixture()
 	active := host.DatabaseGenerationStatus{
-		ID: "postgresql-17-6-aaaaaaaaaaaa", LogicalID: binding.LogicalID, DataPath: "/var/lib/provision/environments/lab/services/postgresql/generations/postgresql-17-6-aaaaaaaaaaaa/data",
-		Ready: true, Connectivity: true, Authority: "authoritative", Database: binding.Database,
+		ID: "postgresql-17-6-aaaaaaaaaaaa", LogicalID: binding.LogicalID, Role: "active", Authority: "authoritative",
+		Ready: true, PostgreSQLVersion: "17.6", ImageManifest: "sha256:" + strings.Repeat("b", 64),
+		ServiceUnit: "provision-lab-postgresql.service", Container: "provision-lab-postgresql", Account: "provision-lab",
+		DataPath: "/var/lib/provision/environments/lab/services/postgresql/generations/postgresql-17-6-aaaaaaaaaaaa/data", QuadletPath: "/etc/containers/systemd/users/999/provision-lab-postgresql.container",
+		Database: binding.Database, Connectivity: true, Health: "healthy",
+		SupportedGuarantees: []string{"durable-local-postgresql"}, OwnedResources: []string{"postgresql-database:" + binding.Database},
 	}
 	return planner.DatabaseOperationInput{
 		Component: "data", LogicalID: binding.LogicalID, GenerationID: binding.GenerationID,

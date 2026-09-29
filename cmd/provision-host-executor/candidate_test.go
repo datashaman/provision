@@ -182,7 +182,7 @@ func TestDatabaseBoundCandidateUnitUsesCredentialFileWithoutSecretValue(t *testi
 	systemd.DatabaseBindings = []planner.DatabaseBindingInput{binding}
 	unit := systemdCandidateUnit(systemd, "provision-example-http")
 	for _, want := range []string{
-		"LoadCredentialEncrypted=postgresql-url:/var/lib/provision/runtime/lab/.config/credstore.encrypted/postgresql-url",
+		"LoadCredentialEncrypted=postgresql-url:/var/lib/provision/environments/lab/credentials/postgresql-url",
 		"Environment=PROVISION_DATABASE_COMPONENT=data",
 		"Environment=PROVISION_DATABASE_LOGICAL_ID=provision-lab-data",
 		"Environment=PROVISION_DATABASE_GENERATION=postgresql-17-6-b86568d3e0fe",

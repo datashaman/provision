@@ -479,7 +479,7 @@ func observedHTTPDatabaseBinding(environment string, unitEnvironment, unitCreden
 		return status
 	}
 	credentialName := strings.TrimPrefix(values["PROVISION_DATABASE_URL_FILE"], "%d/")
-	credentialPath := filepath.Join("/var/lib/provision/runtime", environment, ".config", "credstore.encrypted", credentialName)
+	credentialPath := postgresqlURLCredentialPath(environment)
 	if deploymentIdentifier.MatchString(credentialName) && contains(unitCredentials, credentialName+":"+credentialPath) && commandSucceeded("test", "-s", credentialPath) {
 		status.BindingState = "database-bound"
 	}

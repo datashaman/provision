@@ -185,9 +185,10 @@ func inspectPostgreSQLDeployment(ctx context.Context, capability host.DatabaseCa
 	manifest, manifestErr := runAsEnvironment(ctx, bootstrapRecord{Environment: strings.TrimPrefix(record.Account, "provision-"), Account: record.Account}, "podman", "inspect", "--format", "{{.ImageDigest}}", record.Container)
 	binding, bindingErr := runAsEnvironment(ctx, bootstrapRecord{Environment: strings.TrimPrefix(record.Account, "provision-"), Account: record.Account}, "podman", "port", record.Container, "5432/tcp")
 	credentialMount, credentialErr := runAsEnvironment(ctx, bootstrapRecord{Environment: strings.TrimPrefix(record.Account, "provision-"), Account: record.Account}, "podman", "inspect", "--format", "{{range .}}{{range .Mounts}}{{if eq .Destination \"/run/provision-credential/postgresql-url\"}}{{.RW}}{{end}}{{end}}{{end}}", record.Container)
-	if manifestErr != nil || strings.TrimSpace(string(manifest)) != record.ImageManifest || bindingErr != nil || strings.TrimSpace(string(binding)) != "127.0.0.1:25432" || credentialErr != nil || strings.TrimSpace(string(credentialMount)) != "false" {
+	dataMount, dataMountErr := runAsEnvironment(ctx, bootstrapRecord{Environment: strings.TrimPrefix(record.Account, "provision-"), Account: record.Account}, "podman", "inspect", "--format", postgresqlDataMountSourceTemplate(), record.Container)
+	if manifestErr != nil || strings.TrimSpace(string(manifest)) != record.ImageManifest || bindingErr != nil || strings.TrimSpace(string(binding)) != "127.0.0.1:25432" || credentialErr != nil || strings.TrimSpace(string(credentialMount)) != "false" || dataMountErr != nil || !postgresqlDataMountMatches(string(dataMount), record.DataPath) {
 		generation.Health = "drifted"
-		generation.Reason = "PostgreSQL runtime image, loopback binding, or credential boundary differs from the verified generation"
+		generation.Reason = "PostgreSQL runtime image, data mount, loopback binding, or credential boundary differs from the verified generation"
 		generation.RecoveryAction = "run the signed Database preparation operation or inspect the PostgreSQL Quadlet and container"
 		return host.DatabaseDeploymentStatus{Candidate: generation}, findings
 	}
@@ -261,14 +262,29 @@ func activePostgreSQLRecord(ctx context.Context, record postgresqlPackagingRecor
 	manifest, manifestErr := runAsEnvironment(checkCtx, bootstrap, "podman", "inspect", "--format", "{{.ImageDigest}}", record.Container)
 	binding, bindingErr := runAsEnvironment(checkCtx, bootstrap, "podman", "port", record.Container, "5432/tcp")
 	credentialMount, credentialErr := runAsEnvironment(checkCtx, bootstrap, "podman", "inspect", "--format", "{{range .}}{{range .Mounts}}{{if eq .Destination \"/run/provision-credential/postgresql-url\"}}{{.RW}}{{end}}{{end}}{{end}}", record.Container)
+	dataMount, dataMountErr := runAsEnvironment(checkCtx, bootstrap, "podman", "inspect", "--format", postgresqlDataMountSourceTemplate(), record.Container)
 	version, versionErr := runAsEnvironment(checkCtx, bootstrap, "podman", "exec", record.Container, "psql", "-U", databaseUserFromRecord(record), "-d", record.Database, "-Atc", "SHOW server_version;")
 	identity, identityErr := runAsEnvironment(checkCtx, bootstrap, "podman", "exec", record.Container, "psql", "-U", databaseUserFromRecord(record), "-d", record.Database, "-Atc", "SELECT current_database() || ':' || current_user;")
 	return statusErr == nil && strings.TrimSpace(string(status)) == "active" &&
 		manifestErr == nil && strings.TrimSpace(string(manifest)) == record.ImageManifest &&
 		bindingErr == nil && strings.TrimSpace(string(binding)) == "127.0.0.1:25432" &&
 		credentialErr == nil && strings.TrimSpace(string(credentialMount)) == "false" &&
+		dataMountErr == nil && postgresqlDataMountMatches(string(dataMount), record.DataPath) &&
 		versionErr == nil && strings.HasPrefix(strings.TrimSpace(string(version)), record.PostgreSQLVersion) &&
 		identityErr == nil && strings.TrimSpace(string(identity)) == record.Database+":"+databaseUserFromRecord(record)
+}
+
+func postgresqlDataMountSourceTemplate() string {
+	return "{{range .}}{{range .Mounts}}{{if eq .Destination \"/var/lib/postgresql/data\"}}{{.Source}}{{end}}{{end}}{{end}}"
+}
+
+func postgresqlDataMountMatches(observed, expected string) bool {
+	observed = strings.TrimSpace(observed)
+	expected = strings.TrimSpace(expected)
+	if observed == "" || expected == "" {
+		return false
+	}
+	return filepath.Clean(observed) == filepath.Clean(expected)
 }
 
 func readPostgreSQLGenerationRecord(path string) (postgresqlPackagingRecord, bool) {
@@ -322,8 +338,12 @@ func observedPostgreSQLCandidateGeneration(capability host.DatabaseCapabilities,
 	if err != nil {
 		return nil
 	}
+	retained := map[string]bool{}
+	for _, generation := range observedPostgreSQLRetainedGenerations(capability) {
+		retained[generation.ID] = true
+	}
 	for _, entry := range entries {
-		if !entry.IsDir() || entry.Name() == activeID {
+		if !entry.IsDir() || entry.Name() == activeID || retained[entry.Name()] {
 			continue
 		}
 		recordPath := filepath.Join(generationsRoot, entry.Name(), "generation.json")
@@ -574,11 +594,14 @@ func observeDatabaseOperation(ctx context.Context, planID string, planned planne
 	if planned.Kind == planner.VerifyDatabaseRestore {
 		return observeDatabaseRestoreOperation(ctx, planID, planned, record, paths)
 	}
-	if planned.Kind == planner.RetainDatabasePrevious {
-		return observeDatabaseRetentionOperation(ctx, planID, planned, record, paths)
+	if planned.Kind == planner.SwitchDatabaseAuthority {
+		return observeDatabaseAuthoritySwitchOperation(ctx, planID, planned, record, paths)
 	}
 	if planned.Kind == planner.VerifyDatabaseActive {
-		operationDigest = ""
+		return observeDatabaseActiveVerificationOperation(ctx, planID, planned, record, paths)
+	}
+	if planned.Kind == planner.RetainDatabasePrevious {
+		return observeDatabaseRetentionOperation(ctx, planID, planned, record, paths)
 	}
 	observed, state := observeManagedDatabase(ctx, *planned.Input.Database, record, paths, planID, operationDigest, "")
 	evidence, err := json.Marshal(observed)
@@ -625,12 +648,8 @@ func observeDatabaseRestoreOperation(ctx context.Context, planID string, planned
 	}
 	observed, state := observeManagedDatabase(ctx, input, record, paths, planID, "", "")
 	observed.TransitionPhase = databaseRestorePhase
-	if restore, ok := readDatabaseRestoreEvidence(input, planID, planned.ID, operationDigest); ok {
-		observed.Status = "verified"
-		observed.Verified = true
-		observed.Restore = &restore
-		observed.Reason = ""
-		observed.RecoveryAction = ""
+	if restore, records, ok := readDatabaseRestoreEvidenceWithRecords(input, planID, planned.ID, operationDigest); ok {
+		observed = databaseRestoreVerifiedObservationFromEvidence(restore, records)
 		state = "satisfied"
 	} else {
 		observed.Status = "pending"
@@ -686,16 +705,109 @@ func observeDatabaseSynchronizationOperation(ctx context.Context, planID string,
 	return host.OperationObservation{State: state, Evidence: evidence}, nil
 }
 
+func observeDatabaseActiveVerificationOperation(ctx context.Context, planID string, planned planner.Operation, record bootstrapRecord, paths executionPaths) (host.OperationObservation, error) {
+	input := *planned.Input.Database
+	operationDigest, err := planner.OperationDigest(planned)
+	if err != nil {
+		return host.OperationObservation{}, err
+	}
+	observed, state := observeManagedDatabase(ctx, input, record, paths, planID, "", "")
+	observed.TransitionPhase = databaseVerifyActivePhase
+	observed.Synchronization = "verified-after-authority-switch"
+	if records, ok := readDatabaseActiveVerificationEvidence(input, planID, planned.ID, operationDigest); ok && state == "satisfied" {
+		observed.Status = "verified"
+		observed.Verified = true
+		observed.Records = records
+		observed.Reason = ""
+		observed.RecoveryAction = ""
+		state = "satisfied"
+	} else {
+		observed.Status = "pending"
+		observed.Verified = false
+		observed.Reason = "active Database verification evidence is absent"
+		observed.RecoveryAction = "resume the approved active Database verification operation to record exact post-switch workload evidence"
+		state = "pending"
+	}
+	evidence, err := json.Marshal(observed)
+	if err != nil {
+		return host.OperationObservation{}, err
+	}
+	return host.OperationObservation{State: state, Evidence: evidence}, nil
+}
+
+func observeDatabaseAuthoritySwitchOperation(ctx context.Context, planID string, planned planner.Operation, record bootstrapRecord, paths executionPaths) (host.OperationObservation, error) {
+	input := *planned.Input.Database
+	operationDigest, err := planner.OperationDigest(planned)
+	if err != nil {
+		return host.OperationObservation{}, err
+	}
+	observed, _ := observeManagedDatabase(ctx, input, record, paths, planID, operationDigest, "")
+	observed.TransitionPhase = databaseSwitchPhase
+	observed.Synchronization = "authority-switched-after-write-fence"
+	state := "pending"
+	if databaseTransitionMarkerMatches(filepath.Join(filepath.Dir(input.DataPath), "transition", "authority-switch.json"), input, input.Observed.Active, planID, planned.ID, operationDigest, databaseSwitchPhase, "") {
+		observed.Status = "verified"
+		observed.Verified = true
+		observed.Reason = ""
+		observed.RecoveryAction = ""
+		state = "satisfied"
+	} else {
+		observed.Status = "pending"
+		observed.Verified = false
+		observed.Reason = "Database authority-switch evidence is absent"
+		observed.RecoveryAction = "resume the approved Database authority-switch operation to record exact previous-to-active transition evidence"
+	}
+	evidence, err := json.Marshal(observed)
+	if err != nil {
+		return host.OperationObservation{}, err
+	}
+	return host.OperationObservation{State: state, Evidence: evidence}, nil
+}
+
+func readDatabaseActiveVerificationEvidence(input planner.DatabaseOperationInput, planID, operationID, operationDigest string) ([]host.DeterministicDatabaseRecordStatus, bool) {
+	var record struct {
+		SchemaVersion    string                                   `json:"schemaVersion"`
+		PlanID           string                                   `json:"planId"`
+		OperationID      string                                   `json:"operationId"`
+		OperationDigest  string                                   `json:"operationDigest"`
+		LogicalID        string                                   `json:"logicalId"`
+		ActiveGeneration string                                   `json:"activeGeneration"`
+		Phase            string                                   `json:"phase"`
+		Synchronization  string                                   `json:"synchronization"`
+		Records          []host.DeterministicDatabaseRecordStatus `json:"records,omitempty"`
+	}
+	data, err := os.ReadFile(filepath.Join(filepath.Dir(input.DataPath), "transition", "active-verification.json"))
+	if err != nil || json.Unmarshal(data, &record) != nil {
+		return nil, false
+	}
+	if record.SchemaVersion != "provision.dev/database-active-verification/v1alpha1" || record.PlanID != planID || record.OperationID != operationID || record.OperationDigest != operationDigest || record.LogicalID != input.LogicalID || record.ActiveGeneration != input.GenerationID || record.Phase != databaseVerifyActivePhase || record.Synchronization != "verified-after-authority-switch" {
+		return nil, false
+	}
+	if len(input.Binding.DeterministicRecordIDs) > 0 && !databaseBindingRecordsMatch(input.Binding, record.Records) {
+		return nil, false
+	}
+	return record.Records, true
+}
+
 func observeDatabaseRetentionOperation(ctx context.Context, planID string, planned planner.Operation, record bootstrapRecord, paths executionPaths) (host.OperationObservation, error) {
 	input := *planned.Input.Database
+	operationDigest, err := planner.OperationDigest(planned)
+	if err != nil {
+		return host.OperationObservation{}, err
+	}
 	observed, state := observeManagedDatabase(ctx, input, record, paths, planID, "", "")
 	observed.TransitionPhase = databaseRetainPreviousPhase
-	if input.Observed.Active != nil && databaseRetentionRecordMatches(filepath.Join(filepath.Dir(filepath.Dir(input.DataPath)), "retained", input.Observed.Active.ID+".json"), planID, planned.ID, input) {
+	var retention databaseRetentionEvidence
+	retentionMatched := false
+	if input.Observed.Active != nil {
+		retention, retentionMatched = readDatabaseRetentionEvidence(filepath.Join(filepath.Dir(filepath.Dir(input.DataPath)), "retained", input.Observed.Active.ID+".json"), planID, planned.ID, operationDigest, input)
+	}
+	if retentionMatched {
 		state = "satisfied"
 		observed.Status = "verified"
 		observed.Verified = true
-		previous := *input.Observed.Active
-		observed.Previous = &previous
+		observed.Previous = &retention.Previous
+		observed.RetainedUntil = retention.RetainedUntil
 		observed.Reason = ""
 		observed.RecoveryAction = ""
 	} else {
@@ -710,6 +822,11 @@ func observeDatabaseRetentionOperation(ctx context.Context, planID string, plann
 		return host.OperationObservation{}, err
 	}
 	return host.OperationObservation{State: state, Evidence: evidence}, nil
+}
+
+type databaseRetentionEvidence struct {
+	Previous      host.DatabaseGenerationStatus
+	RetainedUntil string
 }
 
 func databaseTransitionMarkerMatches(path string, input planner.DatabaseOperationInput, active *host.DatabaseGenerationStatus, planID, operationID, operationDigest, phase, writeFence string) bool {
@@ -734,31 +851,43 @@ func databaseTransitionMarkerMatches(path string, input planner.DatabaseOperatio
 }
 
 func databaseRetentionRecordMatches(path, planID, operationID string, input planner.DatabaseOperationInput) bool {
+	_, ok := readDatabaseRetentionEvidence(path, planID, operationID, "", input)
+	return ok
+}
+
+func readDatabaseRetentionEvidence(path, planID, operationID, operationDigest string, input planner.DatabaseOperationInput) (databaseRetentionEvidence, bool) {
 	var record struct {
 		SchemaVersion           string                        `json:"schemaVersion"`
 		PlanID                  string                        `json:"planId"`
 		OperationID             string                        `json:"operationId"`
+		OperationDigest         string                        `json:"operationDigest,omitempty"`
 		ActiveGeneration        string                        `json:"activeGeneration"`
 		PreviousGeneration      string                        `json:"previousGeneration"`
 		StoreRollbackGuarantee  string                        `json:"storeRollbackGuarantee"`
 		RollbackWindow          rollbackwindow.Window         `json:"rollbackWindow"`
 		TransitionCleanupPolicy string                        `json:"transitionCleanupPolicy"`
+		RetainedUntil           string                        `json:"retainedUntil"`
 		Previous                host.DatabaseGenerationStatus `json:"previous"`
 	}
 	data, err := os.ReadFile(path)
 	if err != nil || json.Unmarshal(data, &record) != nil || input.Observed.Active == nil {
-		return false
+		return databaseRetentionEvidence{}, false
 	}
-	return record.SchemaVersion == "provision.dev/database-retention/v1alpha1" &&
-		record.PlanID == planID &&
-		record.OperationID == operationID &&
-		record.ActiveGeneration == input.GenerationID &&
-		record.PreviousGeneration == input.Observed.Active.ID &&
-		record.StoreRollbackGuarantee == input.StoreRollbackGuarantee &&
-		record.RollbackWindow == input.RollbackWindow &&
-		record.TransitionCleanupPolicy == input.TransitionCleanupPolicy &&
-		record.Previous.ID == input.Observed.Active.ID &&
-		record.Previous.DataPath == input.Observed.Active.DataPath
+	if record.SchemaVersion != "provision.dev/database-retention/v1alpha1" ||
+		record.PlanID != planID ||
+		record.OperationID != operationID ||
+		(operationDigest != "" && record.OperationDigest != operationDigest) ||
+		record.ActiveGeneration != input.GenerationID ||
+		record.PreviousGeneration != input.Observed.Active.ID ||
+		record.StoreRollbackGuarantee != input.StoreRollbackGuarantee ||
+		record.RollbackWindow != input.RollbackWindow ||
+		record.TransitionCleanupPolicy != input.TransitionCleanupPolicy ||
+		record.RetainedUntil == "" ||
+		record.Previous.ID != input.Observed.Active.ID ||
+		record.Previous.DataPath != input.Observed.Active.DataPath {
+		return databaseRetentionEvidence{}, false
+	}
+	return databaseRetentionEvidence{Previous: record.Previous, RetainedUntil: record.RetainedUntil}, true
 }
 
 func databaseBackupDestinationClass(destination string) string {
@@ -876,22 +1005,43 @@ func databaseRestoreEvidencePath(input planner.DatabaseOperationInput, planID, o
 }
 
 func readDatabaseRestoreEvidence(input planner.DatabaseOperationInput, planID, operationID, operationDigest string) (host.DatabaseRestoreObservation, bool) {
+	restore, _, ok := readDatabaseRestoreEvidenceWithRecords(input, planID, operationID, operationDigest)
+	return restore, ok
+}
+
+func readDatabaseRestoreEvidenceWithRecords(input planner.DatabaseOperationInput, planID, operationID, operationDigest string) (host.DatabaseRestoreObservation, []host.DeterministicDatabaseRecordStatus, bool) {
 	var record struct {
-		SchemaVersion   string                          `json:"schemaVersion"`
-		PlanID          string                          `json:"planId"`
-		OperationID     string                          `json:"operationId"`
-		OperationDigest string                          `json:"operationDigest"`
-		LogicalID       string                          `json:"logicalId"`
-		Restore         host.DatabaseRestoreObservation `json:"restore"`
+		SchemaVersion   string                                   `json:"schemaVersion"`
+		PlanID          string                                   `json:"planId"`
+		OperationID     string                                   `json:"operationId"`
+		OperationDigest string                                   `json:"operationDigest"`
+		LogicalID       string                                   `json:"logicalId"`
+		Restore         host.DatabaseRestoreObservation          `json:"restore"`
+		Records         []host.DeterministicDatabaseRecordStatus `json:"records,omitempty"`
 	}
 	data, err := os.ReadFile(databaseRestoreEvidencePath(input, planID, operationID))
 	if err != nil || json.Unmarshal(data, &record) != nil {
-		return host.DatabaseRestoreObservation{}, false
+		return host.DatabaseRestoreObservation{}, nil, false
 	}
 	if record.SchemaVersion != databaseRestoreSchema || record.PlanID != planID || record.OperationID != operationID || record.OperationDigest != operationDigest || record.LogicalID != input.LogicalID || record.Restore.CandidateGeneration.ID != input.RestoreCandidate.GenerationID || !record.Restore.Isolated || !record.Restore.Verified {
-		return host.DatabaseRestoreObservation{}, false
+		return host.DatabaseRestoreObservation{}, nil, false
 	}
-	return record.Restore, true
+	if len(input.Binding.DeterministicRecordIDs) > 0 && !databaseBindingRecordsMatch(input.Binding, record.Records) {
+		return host.DatabaseRestoreObservation{}, nil, false
+	}
+	return record.Restore, record.Records, true
+}
+
+func databaseRestoreVerifiedObservationFromEvidence(restore host.DatabaseRestoreObservation, records []host.DeterministicDatabaseRecordStatus) host.DatabaseOperationObservation {
+	return host.DatabaseOperationObservation{
+		Status:          "verified",
+		Database:        restore.CandidateGeneration,
+		Verified:        true,
+		Checks:          host.DatabaseVerificationChecks{ServiceHealth: true, SQLConnectivity: true, DatabaseIdentity: true, GenerationIdentity: true, CredentialBoundary: true},
+		Restore:         &restore,
+		TransitionPhase: databaseRestorePhase,
+		Records:         records,
+	}
 }
 
 func applyDatabaseOperation(ctx context.Context, planned planner.Operation, claim authority.Claim, record bootstrapRecord, paths executionPaths, sensitiveValues map[string]string) (json.RawMessage, error) {
@@ -954,12 +1104,20 @@ func applyDatabaseOperation(ctx context.Context, planned planner.Operation, clai
 	generationRoot := filepath.Dir(input.DataPath)
 	runtimeHome := "/var/lib/provision/runtime/" + record.Environment
 	credentialDir := filepath.Join(runtimeHome, ".config", "credstore.encrypted")
+	systemCredentialDir := filepath.Dir(postgresqlURLCredentialPath(record.Environment))
 	for _, directory := range []struct {
 		path string
 		mode os.FileMode
 		uid  int
 		gid  int
-	}{{serviceRoot, 0755, 0, 0}, {generationRoot, 0755, 0, 0}, {credentialDir, 0700, uid, gid}, {filepath.Dir(input.QuadletPath), 0755, 0, 0}} {
+	}{
+		{serviceRoot, 0755, 0, 0},
+		{filepath.Dir(generationRoot), 0755, 0, 0},
+		{generationRoot, 0755, 0, 0},
+		{credentialDir, 0700, uid, gid},
+		{systemCredentialDir, 0700, 0, 0},
+		{filepath.Dir(input.QuadletPath), 0755, 0, 0},
+	} {
 		if err := ensureDirectory(directory.path, directory.mode, directory.uid, directory.gid); err != nil {
 			return nil, err
 		}
@@ -970,6 +1128,9 @@ func applyDatabaseOperation(ctx context.Context, planned planner.Operation, clai
 	credentialPath := filepath.Join(credentialDir, postgresqlCredentialName)
 	if err := installUserEncryptedCredential(ctx, credentialPath, postgresqlCredentialName, uid, gid, secret+"\n"); err != nil {
 		return nil, errors.New("encrypt Database credential")
+	}
+	if err := installSystemEncryptedCredential(ctx, postgresqlURLCredentialPath(record.Environment), postgresqlCredentialName, secret+"\n"); err != nil {
+		return nil, errors.New("encrypt Database URL credential for application bindings")
 	}
 	entrypointPath := filepath.Join(serviceRoot, "credential-entrypoint")
 	if err := installExactFile(entrypointPath, []byte(databaseCredentialEntrypoint()), 0755, 0, 0); err != nil {
@@ -1076,18 +1237,31 @@ func applyDatabaseBackup(ctx context.Context, input planner.DatabaseOperationInp
 	if _, _, err := validateDatabaseSensitiveValues(map[string]string{input.CredentialReference: secret}, input); err != nil {
 		return nil, err
 	}
-	observed, state := observeManagedDatabase(ctx, input, record, paths, claim.PlanID, "", secret)
-	observed.TransitionPhase = databaseBackupPhase
 	source, sourceOK := databaseBackupSource(input)
-	if input.Observed.Active == nil || input.Observed.Active.ID == input.GenerationID {
-		sourceOK = sourceOK && state == "satisfied"
-	}
+	sourceInput := databaseOperationInputForObservedStatus(input, source)
+	observed := databaseOperationIdentity(sourceInput)
+	observed.TransitionPhase = databaseBackupPhase
 	if !sourceOK {
 		encoded, _ := json.Marshal(observed)
 		return encoded, errors.New("Database backup requires an exact active managed generation")
 	}
 	if backup, ok := readDatabaseBackupEvidence(input, claim.PlanID, claim.OperationID, claim.OperationDigest); ok {
 		observed.Backup = &backup
+		observed.Status = "verified"
+		observed.Verified = true
+		source.Ready = true
+		source.Connectivity = true
+		source.Health = "healthy"
+		if len(source.SupportedGuarantees) == 0 {
+			source.SupportedGuarantees = databaseSupportedGuarantees()
+		}
+		if len(source.OwnedResources) == 0 {
+			source.OwnedResources = databaseOwnedResources(postgresqlPackagingRecord{
+				LogicalID: source.LogicalID, GenerationID: source.ID, ServiceUnit: source.ServiceUnit, Container: source.Container, Account: source.Account,
+				DataPath: source.DataPath, QuadletPath: source.QuadletPath, Database: source.Database, CredentialReference: input.CredentialReference,
+			})
+		}
+		observed.Database = source
 		encoded, err := json.Marshal(observed)
 		return encoded, err
 	}
@@ -1098,6 +1272,12 @@ func applyDatabaseBackup(ctx context.Context, input planner.DatabaseOperationInp
 	uid, gid := accountUID(record.Account), accountGID(record.Account)
 	if uid <= 0 || gid <= 0 {
 		return nil, errors.New("Environment account identity is unavailable")
+	}
+	if err := os.MkdirAll(root, 0755); err != nil {
+		return nil, errors.New("create PostgreSQL backup destination")
+	}
+	if !rootOwned(root, 0755) {
+		return nil, errors.New("PostgreSQL backup destination is unsafe")
 	}
 	backupDir := filepath.Join(root, input.LogicalID)
 	if err := ensureDirectory(backupDir, 0750, uid, gid); err != nil {
@@ -1141,11 +1321,43 @@ func applyDatabaseBackup(ctx context.Context, input planner.DatabaseOperationInp
 		return nil, errors.New("record PostgreSQL backup evidence")
 	}
 	observed.Backup = &backup
+	observed.Status = "verified"
+	observed.Verified = true
+	source.Ready = true
+	source.Connectivity = true
+	source.Health = "healthy"
+	if len(source.SupportedGuarantees) == 0 {
+		source.SupportedGuarantees = databaseSupportedGuarantees()
+	}
+	if len(source.OwnedResources) == 0 {
+		source.OwnedResources = databaseOwnedResources(postgresqlPackagingRecord{
+			LogicalID: source.LogicalID, GenerationID: source.ID, ServiceUnit: source.ServiceUnit, Container: source.Container, Account: source.Account,
+			DataPath: source.DataPath, QuadletPath: source.QuadletPath, Database: source.Database, CredentialReference: input.CredentialReference,
+		})
+	}
+	observed.Database = source
 	encoded, encodeErr := json.Marshal(observed)
 	if encodeErr != nil {
 		return nil, encodeErr
 	}
 	return encoded, nil
+}
+
+func databaseOperationInputForObservedStatus(input planner.DatabaseOperationInput, status host.DatabaseGenerationStatus) planner.DatabaseOperationInput {
+	observed := input
+	if status.ID == "" {
+		return observed
+	}
+	observed.GenerationID = status.ID
+	observed.PostgreSQLVersion = status.PostgreSQLVersion
+	observed.ImageManifest = status.ImageManifest
+	observed.ServiceUnit = status.ServiceUnit
+	observed.Container = status.Container
+	observed.Account = status.Account
+	observed.DataPath = status.DataPath
+	observed.QuadletPath = status.QuadletPath
+	observed.DatabaseName = status.Database
+	return observed
 }
 
 func applyDatabaseRestoreVerification(ctx context.Context, planned planner.Operation, input planner.DatabaseOperationInput, claim authority.Claim, record bootstrapRecord, paths executionPaths, sensitiveValues map[string]string) (json.RawMessage, error) {
@@ -1160,8 +1372,8 @@ func applyDatabaseRestoreVerification(ctx context.Context, planned planner.Opera
 		encoded, _ := json.Marshal(observed)
 		return encoded, errors.New("Database restore verification requires an exact active managed generation")
 	}
-	if restore, ok := readDatabaseRestoreEvidence(input, claim.PlanID, claim.OperationID, claim.OperationDigest); ok {
-		observed.Restore = &restore
+	if restore, records, ok := readDatabaseRestoreEvidenceWithRecords(input, claim.PlanID, claim.OperationID, claim.OperationDigest); ok {
+		observed = databaseRestoreVerifiedObservationFromEvidence(restore, records)
 		encoded, err := json.Marshal(observed)
 		return encoded, err
 	}
@@ -1186,8 +1398,10 @@ func applyDatabaseRestoreVerification(ctx context.Context, planned planner.Opera
 		return nil, errors.New("Environment account identity is unavailable")
 	}
 	serviceRoot := filepath.Dir(filepath.Dir(filepath.Dir(input.DataPath)))
-	if err := ensureDirectory(filepath.Dir(candidate.DataPath), 0755, 0, 0); err != nil {
-		return nil, err
+	for _, directory := range []string{filepath.Dir(filepath.Dir(candidate.DataPath)), filepath.Dir(candidate.DataPath)} {
+		if err := ensureDirectory(directory, 0755, 0, 0); err != nil {
+			return nil, err
+		}
 	}
 	if err := ensureEnvironmentDataDirectory(candidate.DataPath, record.Account, uid, gid); err != nil {
 		return nil, err
@@ -1224,7 +1438,7 @@ func applyDatabaseRestoreVerification(ctx context.Context, planned planner.Opera
 		encoded, _ := json.Marshal(verified)
 		return encoded, verifyErr
 	}
-	if len(candidate.Binding.DeterministicRecordIDs) > 0 {
+	if input.Observed.Active != nil && len(candidate.Binding.DeterministicRecordIDs) > 0 {
 		records, err := observeDatabaseDeterministicRecords(ctx, candidate, record, secret)
 		verified.Records = records
 		if err != nil || !databaseBindingRecordsMatch(candidate.Binding, records) {
@@ -1253,7 +1467,7 @@ func applyDatabaseRestoreVerification(ctx context.Context, planned planner.Opera
 	recordData := map[string]any{
 		"schemaVersion": databaseRestoreSchema,
 		"planId":        claim.PlanID, "operationId": claim.OperationID, "operationDigest": claim.OperationDigest,
-		"logicalId": input.LogicalID, "restore": restore,
+		"logicalId": input.LogicalID, "restore": restore, "records": verified.Records,
 	}
 	if err := ensureDirectory(filepath.Dir(databaseRestoreEvidencePath(input, claim.PlanID, claim.OperationID)), 0755, 0, 0); err != nil {
 		return nil, err
@@ -1308,10 +1522,10 @@ func fenceActiveDatabaseWrites(ctx context.Context, active host.DatabaseGenerati
 	if err != nil {
 		return databaseWriteFenceProof{}, err
 	}
-	statement := "SET statement_timeout = '30s'; ALTER SYSTEM SET default_transaction_read_only = on; SELECT pg_reload_conf(); WITH terminated AS (SELECT pg_terminate_backend(pid) AS killed FROM pg_stat_activity WHERE datname = current_database() AND pid <> pg_backend_pid()) SELECT count(*) FILTER (WHERE killed) FROM terminated;"
-	output, err := runAsEnvironment(ctx, record, "podman", "exec", active.Container, "psql", containerURL, "-v", "ON_ERROR_STOP=1", "-Atc", statement)
+	statement := "WITH terminated AS (SELECT pg_terminate_backend(pid) AS killed FROM pg_stat_activity WHERE datname = current_database() AND pid <> pg_backend_pid()) SELECT count(*) FILTER (WHERE killed) FROM terminated;"
+	output, err := runAsEnvironment(ctx, record, "podman", "exec", active.Container, "psql", containerURL, "-v", "ON_ERROR_STOP=1", "-At", "-c", "SET statement_timeout = '30s';", "-c", "ALTER SYSTEM SET default_transaction_read_only = on;", "-c", "SELECT pg_reload_conf();", "-c", statement)
 	if err != nil {
-		return databaseWriteFenceProof{}, errors.New("apply bounded PostgreSQL write fence")
+		return databaseWriteFenceProof{}, fmt.Errorf("apply bounded PostgreSQL write fence: %s", safeDatabaseCommandOutput(output, credentialURL))
 	}
 	lines := strings.Split(strings.TrimSpace(string(output)), "\n")
 	terminatedText := ""
@@ -1324,9 +1538,28 @@ func fenceActiveDatabaseWrites(ctx context.Context, active host.DatabaseGenerati
 	}
 	readOnly, err := runAsEnvironment(ctx, record, "podman", "exec", active.Container, "psql", containerURL, "-v", "ON_ERROR_STOP=1", "-Atc", "SHOW default_transaction_read_only;")
 	if err != nil || strings.TrimSpace(string(readOnly)) != "on" {
-		return databaseWriteFenceProof{}, errors.New("verify PostgreSQL write fence read-only setting")
+		return databaseWriteFenceProof{}, fmt.Errorf("verify PostgreSQL write fence read-only setting: %s", safeDatabaseCommandOutput(readOnly, credentialURL))
 	}
 	return databaseWriteFenceProof{DefaultReadOnly: true, TerminatedSessions: terminated}, nil
+}
+
+func safeDatabaseCommandOutput(output []byte, secret string) string {
+	message := strings.TrimSpace(string(output))
+	if message == "" {
+		return "command produced no diagnostic output"
+	}
+	if secret != "" {
+		message = strings.ReplaceAll(message, secret, "[REDACTED_DATABASE_URL]")
+	}
+	_, password, _, _, err := parseDatabaseSecret(secret)
+	if err == nil && password != "" {
+		message = strings.ReplaceAll(message, password, "[REDACTED_DATABASE_PASSWORD]")
+	}
+	message = strings.Join(strings.Fields(message), " ")
+	if len(message) > 400 {
+		message = message[:400] + "…"
+	}
+	return message
 }
 
 func copyActiveDatabaseSnapshot(ctx context.Context, input planner.DatabaseOperationInput, active host.DatabaseGenerationStatus, claim authority.Claim, record bootstrapRecord, username, credentialURL string, final bool, fenceProof databaseWriteFenceProof) error {
@@ -1400,7 +1633,7 @@ func applyDatabaseAuthoritySwitch(ctx context.Context, input planner.DatabaseOpe
 		_, _ = runAsEnvironment(ctx, record, "systemctl", "--user", "stop", input.Observed.Active.ServiceUnit)
 	}
 	_, _ = runAsEnvironment(ctx, record, "systemctl", "--user", "stop", candidate.ServiceUnit)
-	if err := installExactFile(input.QuadletPath, []byte(renderDatabaseQuadlet(input, entrypointPath, username)), 0644, 0, 0); err != nil {
+	if err := replaceManagedFile(input.QuadletPath, []byte(renderDatabaseQuadlet(input, entrypointPath, username)), 0644, 0, 0); err != nil {
 		return uncertainDatabaseAuthoritySwitchObservation(ctx, input, claim, record, paths, secret, "write authoritative PostgreSQL Quadlet after stopping transition services: "+err.Error())
 	}
 	if _, err := runAsEnvironment(ctx, record, "systemctl", "--user", "daemon-reload"); err != nil {
@@ -1433,7 +1666,40 @@ func applyDatabaseAuthoritySwitch(ctx context.Context, input planner.DatabaseOpe
 	if state != "satisfied" {
 		return uncertainDatabaseAuthoritySwitchObservation(ctx, input, claim, record, paths, secret, "Database authority switch failed exact verification")
 	}
+	if err := recordDatabaseAuthoritySwitchEvidence(input, claim, record); err != nil {
+		return uncertainDatabaseAuthoritySwitchObservation(ctx, input, claim, record, paths, secret, "record Database authority-switch evidence: "+err.Error())
+	}
 	return encoded, nil
+}
+
+func recordDatabaseAuthoritySwitchEvidence(input planner.DatabaseOperationInput, claim authority.Claim, record bootstrapRecord) error {
+	if input.Observed.Active == nil {
+		return errors.New("approved Plan does not include previous active Database generation")
+	}
+	transitionDir := filepath.Join(filepath.Dir(input.DataPath), "transition")
+	uid, gid := accountUID(record.Account), accountGID(record.Account)
+	if uid <= 0 || gid <= 0 {
+		return errors.New("Environment account identity is unavailable")
+	}
+	if err := ensureDirectory(transitionDir, 0750, uid, gid); err != nil {
+		return err
+	}
+	marker := map[string]string{
+		"schemaVersion":       "provision.dev/database-transition-snapshot/v1alpha1",
+		"planId":              claim.PlanID,
+		"operationId":         claim.OperationID,
+		"operationDigest":     claim.OperationDigest,
+		"logicalId":           input.LogicalID,
+		"activeGeneration":    input.Observed.Active.ID,
+		"candidateGeneration": input.GenerationID,
+		"phase":               databaseSwitchPhase,
+		"synchronization":     "authority-switched-after-write-fence",
+	}
+	markerData, err := json.MarshalIndent(marker, "", "  ")
+	if err != nil {
+		return err
+	}
+	return installExactFile(filepath.Join(transitionDir, "authority-switch.json"), append(markerData, '\n'), 0440, uid, gid)
 }
 
 func uncertainDatabaseAuthoritySwitchObservation(ctx context.Context, input planner.DatabaseOperationInput, claim authority.Claim, record bootstrapRecord, paths executionPaths, credentialURL, reason string) (json.RawMessage, error) {
@@ -1485,7 +1751,59 @@ func applyDatabaseActiveVerification(ctx context.Context, input planner.Database
 	if state != "satisfied" {
 		return encoded, errors.New("active Database authority cannot be verified after switch")
 	}
+	if err := recordDatabaseActiveVerificationEvidence(input, claim, record, observed.Records); err != nil {
+		observed.Status = "uncertain"
+		observed.Verified = false
+		observed.Database.Health = "uncertain"
+		observed.FailureCategory = "ambiguous-data-bearing-state"
+		observed.Reason = "record active Database verification evidence after switch: " + err.Error()
+		observed.RecoveryAction = "inspect the active PostgreSQL generation and deterministic workload table before resuming or explicitly recovering the Database transition"
+		observed.Database.Reason = observed.Reason
+		observed.Database.RecoveryAction = observed.RecoveryAction
+		encoded, encodeErr = json.Marshal(observed)
+		if encodeErr != nil {
+			return nil, encodeErr
+		}
+		return encoded, fmt.Errorf("%w: %s", errUncertainRecovery, observed.Reason)
+	}
 	return encoded, nil
+}
+
+func recordDatabaseActiveVerificationEvidence(input planner.DatabaseOperationInput, claim authority.Claim, record bootstrapRecord, records []host.DeterministicDatabaseRecordStatus) error {
+	transitionDir := filepath.Join(filepath.Dir(input.DataPath), "transition")
+	uid, gid := accountUID(record.Account), accountGID(record.Account)
+	if uid <= 0 || gid <= 0 {
+		return errors.New("Environment account identity is unavailable")
+	}
+	if err := ensureDirectory(transitionDir, 0750, uid, gid); err != nil {
+		return err
+	}
+	marker := struct {
+		SchemaVersion    string                                   `json:"schemaVersion"`
+		PlanID           string                                   `json:"planId"`
+		OperationID      string                                   `json:"operationId"`
+		OperationDigest  string                                   `json:"operationDigest"`
+		LogicalID        string                                   `json:"logicalId"`
+		ActiveGeneration string                                   `json:"activeGeneration"`
+		Phase            string                                   `json:"phase"`
+		Synchronization  string                                   `json:"synchronization"`
+		Records          []host.DeterministicDatabaseRecordStatus `json:"records,omitempty"`
+	}{
+		SchemaVersion:    "provision.dev/database-active-verification/v1alpha1",
+		PlanID:           claim.PlanID,
+		OperationID:      claim.OperationID,
+		OperationDigest:  claim.OperationDigest,
+		LogicalID:        input.LogicalID,
+		ActiveGeneration: input.GenerationID,
+		Phase:            databaseVerifyActivePhase,
+		Synchronization:  "verified-after-authority-switch",
+		Records:          records,
+	}
+	markerData, err := json.MarshalIndent(marker, "", "  ")
+	if err != nil {
+		return err
+	}
+	return installExactFile(filepath.Join(transitionDir, "active-verification.json"), append(markerData, '\n'), 0440, uid, gid)
 }
 
 func observeDatabaseDeterministicRecords(ctx context.Context, input planner.DatabaseOperationInput, record bootstrapRecord, credentialURL string) ([]host.DeterministicDatabaseRecordStatus, error) {
@@ -1550,6 +1868,7 @@ func applyDatabasePreviousRetention(ctx context.Context, input planner.DatabaseO
 			"schemaVersion":           "provision.dev/database-retention/v1alpha1",
 			"planId":                  claim.PlanID,
 			"operationId":             claim.OperationID,
+			"operationDigest":         claim.OperationDigest,
 			"activeGeneration":        input.GenerationID,
 			"previousGeneration":      previous.ID,
 			"previous":                previous,
@@ -1616,13 +1935,18 @@ func verifyDatabaseGeneration(ctx context.Context, input planner.DatabaseOperati
 	manifest, manifestErr := runAsEnvironment(ctx, record, "podman", "inspect", "--format", "{{.ImageDigest}}", input.Container)
 	binding, bindingErr := runAsEnvironment(ctx, record, "podman", "port", input.Container, "5432/tcp")
 	credentialMount, credentialErr := runAsEnvironment(ctx, record, "podman", "inspect", "--format", "{{range .}}{{range .Mounts}}{{if eq .Destination \"/run/provision-credential/postgresql-url\"}}{{.RW}}{{end}}{{end}}{{end}}", input.Container)
-	containerURL, urlErr := containerPostgreSQLURL(credentialURL)
-	version, versionErr := runAsEnvironment(ctx, record, "podman", "exec", input.Container, "psql", containerURL, "-Atc", "SHOW server_version;")
-	identity, identityErr := runAsEnvironment(ctx, record, "podman", "exec", input.Container, "psql", containerURL, "-Atc", "SELECT current_database() || ':' || current_user;")
+	dataMount, dataMountErr := runAsEnvironment(ctx, record, "podman", "inspect", "--format", postgresqlDataMountSourceTemplate(), input.Container)
+	psqlTarget, urlErr := databasePSQLTargetArgs(input, credentialURL, username)
+	versionArgs := append([]string{"exec", input.Container, "psql"}, psqlTarget...)
+	versionArgs = append(versionArgs, "-Atc", "SHOW server_version;")
+	identityArgs := append([]string{"exec", input.Container, "psql"}, psqlTarget...)
+	identityArgs = append(identityArgs, "-Atc", "SELECT current_database() || ':' || current_user;")
+	version, versionErr := runAsEnvironment(ctx, record, "podman", versionArgs...)
+	identity, identityErr := runAsEnvironment(ctx, record, "podman", identityArgs...)
 	observed.Checks.ServiceHealth = statusErr == nil && healthErr == nil && strings.TrimSpace(string(status)) == "active" && strings.TrimSpace(string(health)) == "healthy"
 	observed.Checks.SQLConnectivity = urlErr == nil && versionErr == nil && strings.HasPrefix(strings.TrimSpace(string(version)), input.PostgreSQLVersion)
 	observed.Checks.DatabaseIdentity = urlErr == nil && identityErr == nil && strings.TrimSpace(string(identity)) == input.DatabaseName+":"+username
-	observed.Checks.GenerationIdentity = manifestErr == nil && strings.TrimSpace(string(manifest)) == input.ImageManifest && bindingErr == nil && strings.TrimSpace(string(binding)) == fmt.Sprintf("127.0.0.1:%d", input.Port)
+	observed.Checks.GenerationIdentity = manifestErr == nil && strings.TrimSpace(string(manifest)) == input.ImageManifest && bindingErr == nil && strings.TrimSpace(string(binding)) == fmt.Sprintf("127.0.0.1:%d", input.Port) && dataMountErr == nil && postgresqlDataMountMatches(string(dataMount), input.DataPath)
 	observed.Checks.CredentialBoundary = credentialErr == nil && strings.TrimSpace(string(credentialMount)) == "false"
 	observed.Verified = observed.Checks.ServiceHealth && observed.Checks.SQLConnectivity && observed.Checks.DatabaseIdentity && observed.Checks.GenerationIdentity && observed.Checks.CredentialBoundary
 	if observed.Verified {
@@ -1639,6 +1963,20 @@ func verifyDatabaseGeneration(ctx context.Context, input planner.DatabaseOperati
 	observed.RecoveryAction = "inspect the Environment user journal, PostgreSQL container health, credential boundary, and SQL identity before retrying"
 	observed.Database.RecoveryAction = observed.RecoveryAction
 	return observed, errors.New(observed.Reason)
+}
+
+func databasePSQLTargetArgs(input planner.DatabaseOperationInput, credentialURL, username string) ([]string, error) {
+	if credentialURL != "" {
+		containerURL, err := containerPostgreSQLURL(credentialURL)
+		if err != nil {
+			return nil, err
+		}
+		return []string{containerURL}, nil
+	}
+	if username == "" || input.DatabaseName == "" {
+		return nil, errors.New("Database SQL observation requires either a credential URL or database identity")
+	}
+	return []string{"-U", username, "-d", input.DatabaseName}, nil
 }
 
 func databaseVerificationFailure(checks host.DatabaseVerificationChecks) (string, string) {
@@ -1696,7 +2034,7 @@ func observeManagedDatabase(ctx context.Context, input planner.DatabaseOperation
 	quadlet, quadletErr := os.ReadFile(input.QuadletPath)
 	uid := accountUID(record.Account)
 	credentialPath := filepath.Join("/var/lib/provision/runtime", record.Environment, ".config", "credstore.encrypted", postgresqlCredentialName)
-	if !rootOwned(recordPath, 0444) || entrypointErr != nil || string(entrypoint) != databaseCredentialEntrypoint() || quadletErr != nil || string(quadlet) != renderDatabaseQuadlet(input, entrypointPath, databaseUserFromRecord(generation)) || uid <= 0 || !ownedBy(credentialPath, uid, 0600) || !environmentDataOwned(input.DataPath, record.Account, uid, accountGID(record.Account)) {
+	if !rootOwned(recordPath, 0444) || entrypointErr != nil || string(entrypoint) != databaseCredentialEntrypoint() || quadletErr != nil || string(quadlet) != renderDatabaseQuadlet(input, entrypointPath, databaseUserFromRecord(generation)) || uid <= 0 || !ownedBy(credentialPath, uid, 0600) || !rootOwned(postgresqlURLCredentialPath(record.Environment), 0600) || !environmentDataOwned(input.DataPath, record.Account, uid, accountGID(record.Account)) {
 		observed.Status = "drifted"
 		observed.FailureCategory = "observation"
 		observed.Reason = "Database runtime files, credentials, or data ownership differ from the approved generation"
@@ -1776,8 +2114,13 @@ func databaseOwnedResources(record postgresqlPackagingRecord) []string {
 		"generation-record:" + filepath.Join(filepath.Dir(record.DataPath), "generation.json"),
 		"credential-entrypoint:" + filepath.Join(serviceRoot, "credential-entrypoint"),
 		"encrypted-credential:" + filepath.Join("/var/lib/provision/runtime", environment, ".config", "credstore.encrypted", postgresqlCredentialName),
+		"encrypted-credential:" + postgresqlURLCredentialPath(environment),
 		"postgresql-database:" + record.Database,
 	}
+}
+
+func postgresqlURLCredentialPath(environment string) string {
+	return filepath.Join("/var/lib/provision/environments", environment, "credentials", postgresqlCredentialName)
 }
 
 func databaseCredentialEntrypoint() string {

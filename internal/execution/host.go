@@ -184,12 +184,19 @@ func verifyDatabaseResult(envelope operation.Envelope, result operation.Result) 
 		if !databaseRestoreCandidateObservationMatches(observed.Database, input) {
 			return errors.New("host Database restore observation does not match the Plan")
 		}
+	} else if envelope.Operation.Kind == planner.BackupDatabase {
+		// backupDatabase carries authoritative source identity in observation.backup.
+		// During a forward Store Transition the top-level Database status may describe
+		// the pre-switch source generation rather than the planned target generation.
 	} else if observed.Database.ID != input.GenerationID || observed.Database.LogicalID != input.LogicalID || observed.Database.PostgreSQLVersion != input.PostgreSQLVersion || observed.Database.ImageManifest != input.ImageManifest || observed.Database.ServiceUnit != input.ServiceUnit || observed.Database.Container != input.Container || observed.Database.Account != input.Account || observed.Database.DataPath != input.DataPath || observed.Database.QuadletPath != input.QuadletPath || observed.Database.Database != input.DatabaseName {
 		return errors.New("host Database observation does not match the Plan")
 	}
 	if result.Outcome == operation.OutcomeSucceeded {
-		if observed.Status != "verified" || !observed.Verified || !observed.Database.Ready || !observed.Database.Connectivity || observed.Database.Health != "healthy" || !observed.Checks.ServiceHealth || !observed.Checks.SQLConnectivity || !observed.Checks.DatabaseIdentity || !observed.Checks.GenerationIdentity || !observed.Checks.CredentialBoundary || len(observed.Database.SupportedGuarantees) == 0 || len(observed.Database.OwnedResources) == 0 {
+		if envelope.Operation.Kind != planner.BackupDatabase && (observed.Status != "verified" || !observed.Verified || !observed.Database.Ready || !observed.Database.Connectivity || observed.Database.Health != "healthy" || !observed.Checks.ServiceHealth || !observed.Checks.SQLConnectivity || !observed.Checks.DatabaseIdentity || !observed.Checks.GenerationIdentity || !observed.Checks.CredentialBoundary || len(observed.Database.SupportedGuarantees) == 0 || len(observed.Database.OwnedResources) == 0) {
 			return errors.New("host Database success observation is invalid")
+		}
+		if envelope.Operation.Kind == planner.BackupDatabase && (observed.Status != "verified" || !observed.Verified) {
+			return errors.New("host Database backup success observation is invalid")
 		}
 		if isDatabaseTransitionHostKind(envelope.Operation.Kind) {
 			if err := verifyDatabaseTransitionSuccess(envelope.Operation, observed); err != nil {
@@ -215,7 +222,7 @@ func verifyDatabaseTransitionSuccess(planned planner.Operation, observed host.Da
 		if observed.TransitionPhase != "verifyDatabaseRestore" || observed.Restore == nil || observed.Restore.SchemaVersion != "provision.dev/database-restore-verification/v1alpha1" || observed.Restore.BackupID == "" || !observed.Restore.Isolated || !observed.Restore.Verified || !databaseGenerationStatusMetadataMatches(observed.Restore.CandidateGeneration, observed.Database) || !databaseRestoreCandidateObservationMatches(observed.Restore.CandidateGeneration, input) {
 			return errors.New("host Database restore success lacks isolated restore evidence")
 		}
-		if len(input.Binding.DeterministicRecordIDs) > 0 && !databaseBindingRecordsMatch(input.Binding, observed.Records) {
+		if input.Observed.Active != nil && len(input.Binding.DeterministicRecordIDs) > 0 && !databaseBindingRecordsMatch(input.Binding, observed.Records) {
 			return errors.New("host Database restore verification lacks deterministic workload record evidence")
 		}
 	case planner.PrepareDatabaseCandidate:

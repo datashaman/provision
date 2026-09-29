@@ -527,8 +527,23 @@ func observeSystemdCandidate(ctx context.Context, paths executionPaths, input pl
 	output, err := paths.systemd.Run(ctx, "is-active", input.Unit)
 	if err == nil && strings.TrimSpace(string(output)) == "active" {
 		result.Status = host.CandidateActive
+	} else {
+		result.Reason = summarizeHTTPCandidateUnitFailure(input.Unit, inspectSystemdUnit(ctx, paths.systemd, input.Unit))
 	}
 	return result
+}
+
+func summarizeHTTPCandidateUnitFailure(unit string, diagnostic host.SystemdUnitDiagnostic) string {
+	if diagnostic.ExecMainStatus == 243 {
+		return fmt.Sprintf("HTTP candidate unit %s failed during systemd credential setup (active=%s/%s, result=%s, exit status 243/CREDENTIALS, restarts=%d)", unit, diagnostic.ActiveState, diagnostic.SubState, diagnostic.Result, diagnostic.RestartCount)
+	}
+	if diagnostic.FailureStage != "" {
+		return fmt.Sprintf("HTTP candidate unit %s failed during systemd %s setup (active=%s/%s, result=%s, exit code=%d, exit status=%d, restarts=%d)", unit, diagnostic.FailureStage, diagnostic.ActiveState, diagnostic.SubState, diagnostic.Result, diagnostic.ExecMainCode, diagnostic.ExecMainStatus, diagnostic.RestartCount)
+	}
+	if diagnostic.ActiveState != "" || diagnostic.Result != "" {
+		return fmt.Sprintf("HTTP candidate unit %s is not active (active=%s/%s, result=%s, exit code=%d, exit status=%d, restarts=%d)", unit, diagnostic.ActiveState, diagnostic.SubState, diagnostic.Result, diagnostic.ExecMainCode, diagnostic.ExecMainStatus, diagnostic.RestartCount)
+	}
+	return fmt.Sprintf("HTTP candidate unit %s is not active; systemd returned no unit diagnostic", unit)
 }
 
 func startCandidate(ctx context.Context, paths executionPaths, input planner.SystemdInput) (host.SystemdObservation, error) {
@@ -600,7 +615,7 @@ Environment=PROVISION_DATABASE_LOGICAL_ID=%s
 Environment=PROVISION_DATABASE_GENERATION=%s
 Environment=PROVISION_DATABASE_NAME=%s
 Environment=PROVISION_DATABASE_URL_FILE=%%d/%s
-`, credentialName, filepath.Join("/var/lib/provision/runtime", environment, ".config", "credstore.encrypted", credentialName), binding.Component, binding.LogicalID, binding.GenerationID, binding.Database, credentialName)
+`, credentialName, postgresqlURLCredentialPath(environment), binding.Component, binding.LogicalID, binding.GenerationID, binding.Database, credentialName)
 	}
 	return fmt.Sprintf(`[Unit]
 Description=Provision candidate %s
@@ -765,7 +780,7 @@ func checkHTTPHealth(ctx context.Context, input planner.HealthInput, unavailable
 		_ = response.Body.Close()
 		observed.StatusCode = response.StatusCode
 		if readErr != nil || len(data) > 64<<10 || response.StatusCode < 200 || response.StatusCode >= 300 {
-			observed.Reason = "health response is not successful and bounded"
+			observed.Reason = "health response is not successful and bounded" + healthFailureDetail(data)
 			result = append(result, observed)
 			return result, check.name + " check failed"
 		}
@@ -806,6 +821,23 @@ func checkHTTPHealth(ctx context.Context, input planner.HealthInput, unavailable
 		result = append(result, observed)
 	}
 	return result, ""
+}
+
+func healthFailureDetail(data []byte) string {
+	var body struct {
+		Reason          string                           `json:"reason"`
+		DatabaseBinding *host.DatabaseBindingObservation `json:"databaseBinding"`
+	}
+	if json.Unmarshal(data, &body) != nil {
+		return ""
+	}
+	if body.DatabaseBinding != nil && body.DatabaseBinding.Reason != "" {
+		return ": " + body.DatabaseBinding.Reason
+	}
+	if body.Reason != "" {
+		return ": " + body.Reason
+	}
+	return ""
 }
 
 func databaseBindingRecordsMatch(binding planner.DatabaseBindingInput, observed []host.DeterministicDatabaseRecordStatus) bool {

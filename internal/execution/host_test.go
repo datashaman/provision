@@ -746,3 +746,52 @@ func mustJSON(t *testing.T, value any) json.RawMessage {
 	}
 	return encoded
 }
+
+func TestVerifyDatabaseRestoreFailureDoesNotRequireCandidateIdentity(t *testing.T) {
+	input := databaseOperationInputFixture()
+	planned := planner.Operation{ID: "op-05", Kind: planner.VerifyDatabaseRestore, Input: planner.OperationInput{Database: &input}}
+	envelope := operation.Envelope{Authorization: authority.Proof{Claim: authority.Claim{PlanID: "sha256:" + strings.Repeat("c", 64), OperationID: planned.ID, AttemptID: "attempt-11111111111111111111111111111111", FencingToken: 5}}, Operation: planned}
+	for _, outcome := range []operation.Outcome{operation.OutcomeFailed, operation.OutcomeUncertain} {
+		for name, database := range map[string]host.DatabaseGenerationStatus{
+			"empty": {}, "source": *input.Observed.Active,
+			"candidate": databaseRestoreOperationObservationFixture(input).Database,
+		} {
+			t.Run(string(outcome)+"/"+name, func(t *testing.T) {
+				observed := host.DatabaseOperationObservation{
+					Status: string(outcome), Database: database, FailureCategory: "host-operation-failed",
+					Reason: "start restore verification PostgreSQL service", RecoveryAction: "inspect the isolated restore candidate",
+				}
+				result := matchingResult(envelope, outcome, string(mustJSON(t, observed)))
+				if err := verifyHostResult(envelope, result); err != nil {
+					t.Fatalf("restore failure diagnostics rejected: %v", err)
+				}
+				for _, field := range []string{"status", "failureCategory", "reason", "recoveryAction"} {
+					var invalid map[string]any
+					if err := json.Unmarshal(result.Observation, &invalid); err != nil {
+						t.Fatal(err)
+					}
+					delete(invalid, field)
+					bad := result
+					bad.Observation = mustJSON(t, invalid)
+					if err := verifyHostResult(envelope, bad); err == nil {
+						t.Fatalf("restore failure without %s accepted", field)
+					}
+				}
+				result.FencingToken++
+				if err := verifyHostResult(envelope, result); err == nil {
+					t.Fatal("restore failure with a mismatched authorization accepted")
+				}
+			})
+		}
+	}
+	for name, database := range map[string]host.DatabaseGenerationStatus{"empty": {}, "source": *input.Observed.Active} {
+		t.Run("succeeded/"+name, func(t *testing.T) {
+			observed := databaseRestoreOperationObservationFixture(input)
+			observed.Database = database
+			result := matchingResult(envelope, operation.OutcomeSucceeded, string(mustJSON(t, observed)))
+			if err := verifyHostResult(envelope, result); err == nil || !strings.Contains(err.Error(), "restore observation does not match the Plan") {
+				t.Fatalf("successful restore with wrong candidate identity accepted: %v", err)
+			}
+		})
+	}
+}

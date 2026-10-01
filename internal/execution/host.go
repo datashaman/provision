@@ -181,7 +181,10 @@ func verifyDatabaseResult(envelope operation.Envelope, result operation.Result) 
 		return errors.New("host Database observation is invalid")
 	}
 	if envelope.Operation.Kind == planner.VerifyDatabaseRestore {
-		if !databaseRestoreCandidateObservationMatches(observed.Database, input) {
+		// A restore may fail before the isolated candidate can be observed, leaving
+		// an empty Database or source-generation observation. Only success claims
+		// require candidate identity; failures still require diagnostics below.
+		if result.Outcome == operation.OutcomeSucceeded && !databaseRestoreCandidateObservationMatches(observed.Database, input) {
 			return errors.New("host Database restore observation does not match the Plan")
 		}
 	} else if envelope.Operation.Kind == planner.BackupDatabase {

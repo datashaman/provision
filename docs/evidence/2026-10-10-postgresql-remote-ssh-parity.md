@@ -53,3 +53,24 @@ rollback.
 RDS, Valkey, object stores, multi-node PostgreSQL availability, production disaster
 recovery, external PostgreSQL adoption, automatic cleanup, other controllers, hosts,
 SSH, Podman, systemd, or PostgreSQL versions.
+
+## Provenance and limits of this evidence
+
+- The definitive runs used the working tree on top of `3875e90` (recorded as
+  `3875e90…-dirty-e3b5cce4…`); that tree was then committed as `1727507`. Only the
+  parity-comparison step (Podman version read from host inspection) and docs changed after the
+  runs, and the parity record was recomputed from the saved run evidence. The executor digest
+  `sha256:50b71f…` is of that build.
+- Controller and Host binaries differ by design (darwin `arm64` vs linux `amd64`); the
+  executor digest and host platform are what is compared.
+- Transport loss is injected by the `scripts/remote-ssh-fault-bin/ssh` wrapper (kill before
+  dispatch, or discard the response after remote completion), around each Store Transition
+  operation: candidate creation (`op-01`), synchronization, write fence, authority switch,
+  backup, restore verification, and retention marking. Initial provisioning runs
+  uninterrupted. The wrapper is test-only, not a Provision capability.
+- Host keys other than the pinned ED25519 key were also present in `known_hosts`.
+
+## Decision input for parent #67
+
+Within the stated scope, the direct-local and strict-SSH matrices are equivalent in all three
+fault modes, and the exclusions above remain explicit. This issue does not modify or close #67.

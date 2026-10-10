@@ -1,0 +1,23 @@
+{
+  "schemaVersion": "provision.dev/valkey-packaging-approval/v1alpha1",
+  "issue": 95,
+  "decision": "digest-pinned-rootless-oci-quadlet",
+  "environment": "lab",
+  "operator": "marlinf",
+  "product": {
+    "name": "Valkey",
+    "version": "9.1.1"
+  },
+  "image": "docker.io/valkey/valkey@sha256:cc03bc07761acc552c960bfbcc66196dcf02e949dadb92d941d970ed6c782fea",
+  "imageIndex": "sha256:64e361b630ecf18dff7ca4df6a88e6eafc193687eb48cff2c7e0a293ab67d29a",
+  "imageManifest": "sha256:cc03bc07761acc552c960bfbcc66196dcf02e949dadb92d941d970ed6c782fea",
+  "topology": {
+    "keyValueNodes": 1,
+    "hostFailureTolerance": 0,
+    "managedGeneration": "one-physical-store-generation"
+  },
+  "source": {
+    "kind": "github-issue",
+    "context": "https://github.com/datashaman/provision/issues/95"
+  }
+}

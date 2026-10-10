@@ -1,0 +1,44 @@
+{
+  "account": "provision-lab",
+  "container": "provision-lab-valkey",
+  "credentialBoundary": "encrypted-user-scoped-systemd-credential",
+  "dataPath": "/var/lib/provision/environments/lab/services/valkey/generations/valkey-9-1-2-ac9c858b86dc/data",
+  "environment": "lab",
+  "generation": "valkey-9-1-2-ac9c858b86dc",
+  "image": "docker.io/valkey/valkey@sha256:ac9c858b86dc81f3482d53a9d854547379a5f41e012500f839ab257c399063e0",
+  "imageIndex": "sha256:418652cfb58ef879d4978c33553735d7147016032d5aefaa14c828e611eb9dfd",
+  "imageManifest": "sha256:ac9c858b86dc81f3482d53a9d854547379a5f41e012500f839ab257c399063e0",
+  "issue": 95,
+  "notQualified": [
+    "production-key-value-store-operation",
+    "store-transition",
+    "backup",
+    "restore",
+    "host-loss-recovery",
+    "automatic-store-rollback-after-candidate-writes"
+  ],
+  "operator": "marlinf",
+  "packaging": "digest-pinned-rootless-oci-quadlet",
+  "podmanVersion": "5.7.0+ds2-3build1",
+  "product": {
+    "name": "Valkey",
+    "version": "9.1.2"
+  },
+  "quadletPath": "/etc/containers/systemd/users/999/provision-lab-valkey.container",
+  "qualified": [
+    "service-start",
+    "client-connectivity",
+    "aof-everysec-persistence",
+    "owned-generation-data-path",
+    "non-secret-credential-reference",
+    "durable-restart"
+  ],
+  "result": "passed",
+  "schemaVersion": "provision.dev/valkey-packaging-qualification/v1alpha1",
+  "serviceUnit": "provision-lab-valkey.service",
+  "topology": {
+    "hostFailureTolerance": 0,
+    "keyValueNodes": 1,
+    "managedGeneration": "one-physical-store-generation"
+  }
+}

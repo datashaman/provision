@@ -1,0 +1,787 @@
+{
+  "comparisons": [
+    {
+      "accounting": {
+        "authoritySwitch": {
+          "synchronization": "authority-switched-after-write-fence",
+          "transitionPhase": "switchDatabaseAuthority"
+        },
+        "backupEvidence": {
+          "initial": {
+            "backupId": "PLAN-op-02",
+            "destinationClass": "host-filesystem",
+            "destinationReference": "file:///var/lib/provision/backups/lab/postgresql",
+            "format": "pg_dump-custom",
+            "outsideGeneration": true,
+            "path": "/var/lib/provision/backups/lab/postgresql/provision-lab-data/PLAN-op-02.dump",
+            "schemaVersion": "provision.dev/database-backup/v1alpha1",
+            "sourceGeneration": "postgresql-17-6-b86568d3e0fe"
+          },
+          "transition": {
+            "backupId": "PLAN-op-04",
+            "destinationClass": "host-filesystem",
+            "destinationReference": "file:///var/lib/provision/backups/lab/postgresql",
+            "format": "pg_dump-custom",
+            "outsideGeneration": true,
+            "path": "/var/lib/provision/backups/lab/postgresql/provision-lab-data/PLAN-op-04.dump",
+            "schemaVersion": "provision.dev/database-backup/v1alpha1",
+            "sourceGeneration": "postgresql-17-6-b86568d3e0fe"
+          }
+        },
+        "logicalDatabase": "provision-lab-data",
+        "operationOutcomes": {
+          "initial": {
+            "op-01.json": "succeeded",
+            "op-02.json": "succeeded",
+            "op-03.json": "succeeded",
+            "op-04.json": "succeeded",
+            "op-05.json": "succeeded",
+            "op-06.json": "succeeded",
+            "op-07.json": "succeeded",
+            "op-08.json": "succeeded",
+            "op-09.json": "succeeded"
+          },
+          "transition": {
+            "op-01-resumed.json": "succeeded",
+            "op-02-resumed.json": "succeeded",
+            "op-03-resumed.json": "succeeded",
+            "op-04-resumed.json": "succeeded",
+            "op-05-resumed.json": "succeeded",
+            "op-06-resumed.json": "succeeded",
+            "op-07-resumed.json": "succeeded",
+            "op-08-resumed.json": "succeeded"
+          }
+        },
+        "ownedResourceInventory": [
+          "d 700 166534:166534 /var/lib/provision/environments/lab/services/postgresql/generations/postgresql-17-6-b86568d3e0fe/data",
+          "d 700 166534:166534 /var/lib/provision/environments/lab/services/postgresql/generations/postgresql-17-7-030da09481c3/data",
+          "d 700 166534:166534 /var/lib/provision/environments/lab/services/postgresql/restore-candidates/postgresql-17-6-b86568d3e0fe-restore-check/data",
+          "d 700 166534:166534 /var/lib/provision/environments/lab/services/postgresql/restore-candidates/postgresql-17-7-030da09481c3-restore-check/data",
+          "d 750 provision-lab:provision-lab /var/lib/provision/backups/lab/postgresql/provision-lab-data",
+          "d 750 provision-lab:provision-lab /var/lib/provision/environments/lab/services/postgresql/generations/postgresql-17-7-030da09481c3/transition",
+          "d 755 root:root /etc/containers/systemd/users",
+          "d 755 root:root /etc/containers/systemd/users/102",
+          "d 755 root:root /var/lib/provision/backups",
+          "d 755 root:root /var/lib/provision/backups/lab",
+          "d 755 root:root /var/lib/provision/backups/lab/postgresql",
+          "d 755 root:root /var/lib/provision/environments/lab/services",
+          "d 755 root:root /var/lib/provision/environments/lab/services/postgresql",
+          "d 755 root:root /var/lib/provision/environments/lab/services/postgresql/generations",
+          "d 755 root:root /var/lib/provision/environments/lab/services/postgresql/generations/postgresql-17-6-b86568d3e0fe",
+          "d 755 root:root /var/lib/provision/environments/lab/services/postgresql/generations/postgresql-17-7-030da09481c3",
+          "d 755 root:root /var/lib/provision/environments/lab/services/postgresql/generations/retained",
+          "d 755 root:root /var/lib/provision/environments/lab/services/postgresql/restore-candidates",
+          "d 755 root:root /var/lib/provision/environments/lab/services/postgresql/restore-candidates/postgresql-17-6-b86568d3e0fe-restore-check",
+          "d 755 root:root /var/lib/provision/environments/lab/services/postgresql/restore-candidates/postgresql-17-7-030da09481c3-restore-check",
+          "f 440 provision-lab:provision-lab /var/lib/provision/backups/lab/postgresql/provision-lab-data/PLAN-op-02.dump",
+          "f 440 provision-lab:provision-lab /var/lib/provision/backups/lab/postgresql/provision-lab-data/PLAN-op-04.dump",
+          "f 440 root:root /var/lib/provision/backups/lab/postgresql/provision-lab-data/PLAN-op-02.json",
+          "f 440 root:root /var/lib/provision/backups/lab/postgresql/provision-lab-data/PLAN-op-04.json",
+          "f 444 root:root /var/lib/provision/environments/lab/services/postgresql/generations/postgresql-17-6-b86568d3e0fe/generation.json",
+          "f 444 root:root /var/lib/provision/environments/lab/services/postgresql/generations/postgresql-17-7-030da09481c3/generation.json",
+          "f 444 root:root /var/lib/provision/environments/lab/services/postgresql/generations/retained/postgresql-17-6-b86568d3e0fe.json",
+          "f 444 root:root /var/lib/provision/environments/lab/services/postgresql/restore-candidates/PLAN-op-03.json",
+          "f 444 root:root /var/lib/provision/environments/lab/services/postgresql/restore-candidates/PLAN-op-05.json",
+          "f 644 root:root /etc/containers/systemd/users/102/provision-lab-postgresql-candidate.container",
+          "f 644 root:root /etc/containers/systemd/users/102/provision-lab-postgresql-restore.container",
+          "f 644 root:root /etc/containers/systemd/users/102/provision-lab-postgresql.container",
+          "f 755 root:root /var/lib/provision/environments/lab/services/postgresql/credential-entrypoint"
+        ],
+        "restoreVerification": {
+          "initial": {
+            "backupId": "PLAN-op-02",
+            "candidateGeneration": "postgresql-17-6-b86568d3e0fe-restore-check",
+            "candidateOwnedResources": [
+              "systemd-unit:provision-lab-postgresql-restore.service",
+              "container:provision-lab-postgresql-restore",
+              "data-path:/var/lib/provision/environments/lab/services/postgresql/restore-candidates/postgresql-17-6-b86568d3e0fe-restore-check/data",
+              "quadlet:/etc/containers/systemd/users/102/provision-lab-postgresql-restore.container",
+              "generation-record:/var/lib/provision/environments/lab/services/postgresql/restore-candidates/postgresql-17-6-b86568d3e0fe-restore-check/generation.json",
+              "credential-entrypoint:/var/lib/provision/environments/lab/services/postgresql/credential-entrypoint",
+              "encrypted-credential:/var/lib/provision/runtime/lab/.config/credstore.encrypted/postgresql-url",
+              "encrypted-credential:/var/lib/provision/environments/lab/credentials/postgresql-url",
+              "postgresql-database:app"
+            ],
+            "isolated": true,
+            "schemaVersion": "provision.dev/database-restore-verification/v1alpha1",
+            "verified": true
+          },
+          "transition": {
+            "backupId": "PLAN-op-04",
+            "candidateGeneration": "postgresql-17-7-030da09481c3-restore-check",
+            "candidateOwnedResources": [
+              "systemd-unit:provision-lab-postgresql-restore.service",
+              "container:provision-lab-postgresql-restore",
+              "data-path:/var/lib/provision/environments/lab/services/postgresql/restore-candidates/postgresql-17-7-030da09481c3-restore-check/data",
+              "quadlet:/etc/containers/systemd/users/102/provision-lab-postgresql-restore.container",
+              "generation-record:/var/lib/provision/environments/lab/services/postgresql/restore-candidates/postgresql-17-7-030da09481c3-restore-check/generation.json",
+              "credential-entrypoint:/var/lib/provision/environments/lab/services/postgresql/credential-entrypoint",
+              "encrypted-credential:/var/lib/provision/runtime/lab/.config/credstore.encrypted/postgresql-url",
+              "encrypted-credential:/var/lib/provision/environments/lab/credentials/postgresql-url",
+              "postgresql-database:app"
+            ],
+            "isolated": true,
+            "schemaVersion": "provision.dev/database-restore-verification/v1alpha1",
+            "verified": true
+          }
+        },
+        "retention": "postgresql-17-6-b86568d3e0fe",
+        "storeGenerations": {
+          "active": {
+            "authority": "authoritative",
+            "id": "postgresql-17-7-030da09481c3",
+            "imageManifest": "sha256:030da09481c3876b71a7e49738a932e1c18c398201a1e4ccfdbff1e5a541215b",
+            "logicalId": "provision-lab-data",
+            "ownedResources": [
+              "systemd-unit:provision-lab-postgresql.service",
+              "container:provision-lab-postgresql",
+              "data-path:/var/lib/provision/environments/lab/services/postgresql/generations/postgresql-17-7-030da09481c3/data",
+              "quadlet:/etc/containers/systemd/users/102/provision-lab-postgresql.container",
+              "generation-record:/var/lib/provision/environments/lab/services/postgresql/generations/postgresql-17-7-030da09481c3/generation.json",
+              "credential-entrypoint:/var/lib/provision/environments/lab/services/postgresql/credential-entrypoint",
+              "encrypted-credential:/var/lib/provision/runtime/lab/.config/credstore.encrypted/postgresql-url",
+              "encrypted-credential:/var/lib/provision/environments/lab/credentials/postgresql-url",
+              "postgresql-database:app"
+            ],
+            "postgresqlVersion": "17.7",
+            "role": "active"
+          },
+          "initial": {
+            "authority": "authoritative",
+            "id": "postgresql-17-6-b86568d3e0fe",
+            "imageManifest": "sha256:b86568d3e0fe1dfaeff52714f9da36f206a30e4c49131b82bf96982d78627409",
+            "logicalId": "provision-lab-data",
+            "ownedResources": [
+              "systemd-unit:provision-lab-postgresql.service",
+              "container:provision-lab-postgresql",
+              "data-path:/var/lib/provision/environments/lab/services/postgresql/generations/postgresql-17-6-b86568d3e0fe/data",
+              "quadlet:/etc/containers/systemd/users/102/provision-lab-postgresql.container",
+              "generation-record:/var/lib/provision/environments/lab/services/postgresql/generations/postgresql-17-6-b86568d3e0fe/generation.json",
+              "credential-entrypoint:/var/lib/provision/environments/lab/services/postgresql/credential-entrypoint",
+              "encrypted-credential:/var/lib/provision/runtime/lab/.config/credstore.encrypted/postgresql-url",
+              "encrypted-credential:/var/lib/provision/environments/lab/credentials/postgresql-url",
+              "postgresql-database:app"
+            ],
+            "postgresqlVersion": "17.6",
+            "role": "active"
+          },
+          "retained": [
+            {
+              "authority": "authoritative",
+              "id": "postgresql-17-6-b86568d3e0fe",
+              "imageManifest": "sha256:b86568d3e0fe1dfaeff52714f9da36f206a30e4c49131b82bf96982d78627409",
+              "logicalId": "provision-lab-data",
+              "ownedResources": [
+                "systemd-unit:provision-lab-postgresql.service",
+                "container:provision-lab-postgresql",
+                "data-path:/var/lib/provision/environments/lab/services/postgresql/generations/postgresql-17-6-b86568d3e0fe/data",
+                "quadlet:/etc/containers/systemd/users/102/provision-lab-postgresql.container",
+                "generation-record:/var/lib/provision/environments/lab/services/postgresql/generations/postgresql-17-6-b86568d3e0fe/generation.json",
+                "credential-entrypoint:/var/lib/provision/environments/lab/services/postgresql/credential-entrypoint",
+                "encrypted-credential:/var/lib/provision/runtime/lab/.config/credstore.encrypted/postgresql-url",
+                "encrypted-credential:/var/lib/provision/environments/lab/credentials/postgresql-url",
+                "postgresql-database:app"
+              ],
+              "postgresqlVersion": "17.6",
+              "role": "active"
+            }
+          ]
+        },
+        "workloadRecords": {
+          "initial": {
+            "generationId": "postgresql-17-6-b86568d3e0fe",
+            "logicalId": "provision-lab-data",
+            "records": [
+              {
+                "id": "provision-lab-data/provision-example-database-http-v1/record-0001",
+                "namespace": "provision-lab-data/provision-example-database-http-v1"
+              }
+            ],
+            "status": "verified"
+          },
+          "transition": {
+            "generationId": "postgresql-17-7-030da09481c3",
+            "logicalId": "provision-lab-data",
+            "records": [
+              {
+                "id": "provision-lab-data/provision-example-database-http-v1/record-0001",
+                "namespace": "provision-lab-data/provision-example-database-http-v1"
+              }
+            ],
+            "status": "verified"
+          }
+        },
+        "writeFence": "active-database-read-only"
+      },
+      "checks": {
+        "accountingMatches": true,
+        "executorDigestMatches": true,
+        "hostPlatformMatches": true,
+        "podmanMatches": true,
+        "postgresqlMatches": true,
+        "remoteIdentityPinned": true
+      },
+      "controller": {
+        "architecture": "arm64",
+        "os": "Darwin",
+        "osVersion": "24.6.0"
+      },
+      "faultMode": "before",
+      "ssh": {
+        "hostFingerprint": "SHA256:3jl37pF+Utxxbic8EUHRQ5qshhP6SdxOX6SnXHjg+Qs",
+        "knownHostsEntries": [
+          "provision-acceptance.local ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIBSvmLScuJmegLEk0xqFSrff5sFdEdOGUTGhULmLRG0+",
+          "provision-acceptance.local ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABgQChdjKpvXuUePH+D5Ggn3JkD7mvpgXoXWeFmr5acJOUFphejeRclq0hfHG7wBqXVGt2xaG2V4VSYnk4J1Z9CkdMeDl6z2wksnstW78NNyexRK5ZTdranpvWnGA8IjLSDORloNM6L5XpDbxYuBqpYO6Pcdo8ou7J0IvORuu3oHf98CYqosglZFN46Af4qHh1we0cdzTIykyZmJabR5gftPwaEZqDZIdK4v4MddGKoHSrT1Dr6WYWgpAobPuZuwrnmeWK5MrXB0pqGkv2pcgVnzGxRJ6aHHDtF1RhXiToUx23JoEKjBmSo4btJkmsaWLjzhEL8ogS1zyAY9gB9H4I7eCv+8rIvDpXSLd64ED6/6mz5uh9KBc/Pk72vh7kIq8fzPkSUZryZAwgMr2CR2TypYeCjetgXhDmpYHizQTP8wMvY1/tEx5KHlcIjtDKFbF31C+j6t98DcdPxutSso1Q2JMG4dPzqIG2xxnC/RKQb/Hru1+BTVrvdRUw8wvcp6zM8VE=",
+          "provision-acceptance.local ecdsa-sha2-nistp256 AAAAE2VjZHNhLXNoYTItbmlzdHAyNTYAAAAIbmlzdHAyNTYAAABBBDcP2fKVQIZb/iKe12t0zk4YXMhLtr9eupnyXYQo4IF20e4FTviBnJaxgLGQAaqqM3FLlNDkZea2TRGf+eGbQZ4="
+        ],
+        "passwordAuthentication": false,
+        "serverVersion": "OpenSSH_10.2p1 Ubuntu-2ubuntu3.6, OpenSSL 3.5.5 27 Jan 2026",
+        "strictHostKeyChecking": true,
+        "target": "provision-acceptance.local",
+        "targetUser": "marlinf"
+      },
+      "versions": {
+        "directLocalProvisionBinary": "sha256:04d34df231477405eb6759f6b613136cc2a55138de0228ca0074c8c1532a00fd",
+        "executor": "sha256:50b71f5495b66b73b83eaf500b589732cd22e77a48f1d354d097c3e49fbfb2fe",
+        "podman": "5.7.0+ds2-3build1",
+        "postgresql": "17.7",
+        "postgresqlImageManifest": "sha256:030da09481c3876b71a7e49738a932e1c18c398201a1e4ccfdbff1e5a541215b",
+        "provisionControllerBinary": "sha256:1ffa9b535c9cefdb45f66f4b32b5981183643cbaa1a34f161ab8bc6b6e6f62cc",
+        "provisionSource": "3875e90c0c05675ac0b1194677e6d29377dd12cf-dirty-e3b5cce4c0a6351fa4b8796ee742ea544255168a8a788b93328da2c466ae5334",
+        "systemd": "systemd 259 (259.5-0ubuntu3.4)",
+        "topology": {
+          "databaseNodes": 1,
+          "hostFailureTolerance": 0
+        }
+      }
+    },
+    {
+      "accounting": {
+        "authoritySwitch": {
+          "synchronization": "authority-switched-after-write-fence",
+          "transitionPhase": "switchDatabaseAuthority"
+        },
+        "backupEvidence": {
+          "initial": {
+            "backupId": "PLAN-op-02",
+            "destinationClass": "host-filesystem",
+            "destinationReference": "file:///var/lib/provision/backups/lab/postgresql",
+            "format": "pg_dump-custom",
+            "outsideGeneration": true,
+            "path": "/var/lib/provision/backups/lab/postgresql/provision-lab-data/PLAN-op-02.dump",
+            "schemaVersion": "provision.dev/database-backup/v1alpha1",
+            "sourceGeneration": "postgresql-17-6-b86568d3e0fe"
+          },
+          "transition": {
+            "backupId": "PLAN-op-04",
+            "destinationClass": "host-filesystem",
+            "destinationReference": "file:///var/lib/provision/backups/lab/postgresql",
+            "format": "pg_dump-custom",
+            "outsideGeneration": true,
+            "path": "/var/lib/provision/backups/lab/postgresql/provision-lab-data/PLAN-op-04.dump",
+            "schemaVersion": "provision.dev/database-backup/v1alpha1",
+            "sourceGeneration": "postgresql-17-6-b86568d3e0fe"
+          }
+        },
+        "logicalDatabase": "provision-lab-data",
+        "operationOutcomes": {
+          "initial": {
+            "op-01.json": "succeeded",
+            "op-02.json": "succeeded",
+            "op-03.json": "succeeded",
+            "op-04.json": "succeeded",
+            "op-05.json": "succeeded",
+            "op-06.json": "succeeded",
+            "op-07.json": "succeeded",
+            "op-08.json": "succeeded",
+            "op-09.json": "succeeded"
+          },
+          "transition": {
+            "op-01-resumed.json": "succeeded",
+            "op-02-resumed.json": "succeeded",
+            "op-03-resumed.json": "succeeded",
+            "op-04-resumed.json": "succeeded",
+            "op-05-resumed.json": "succeeded",
+            "op-06-resumed.json": "succeeded",
+            "op-07-resumed.json": "succeeded",
+            "op-08-resumed.json": "succeeded"
+          }
+        },
+        "ownedResourceInventory": [
+          "d 700 166534:166534 /var/lib/provision/environments/lab/services/postgresql/generations/postgresql-17-6-b86568d3e0fe/data",
+          "d 700 166534:166534 /var/lib/provision/environments/lab/services/postgresql/generations/postgresql-17-7-030da09481c3/data",
+          "d 700 166534:166534 /var/lib/provision/environments/lab/services/postgresql/restore-candidates/postgresql-17-6-b86568d3e0fe-restore-check/data",
+          "d 700 166534:166534 /var/lib/provision/environments/lab/services/postgresql/restore-candidates/postgresql-17-7-030da09481c3-restore-check/data",
+          "d 750 provision-lab:provision-lab /var/lib/provision/backups/lab/postgresql/provision-lab-data",
+          "d 750 provision-lab:provision-lab /var/lib/provision/environments/lab/services/postgresql/generations/postgresql-17-7-030da09481c3/transition",
+          "d 755 root:root /etc/containers/systemd/users",
+          "d 755 root:root /etc/containers/systemd/users/102",
+          "d 755 root:root /var/lib/provision/backups",
+          "d 755 root:root /var/lib/provision/backups/lab",
+          "d 755 root:root /var/lib/provision/backups/lab/postgresql",
+          "d 755 root:root /var/lib/provision/environments/lab/services",
+          "d 755 root:root /var/lib/provision/environments/lab/services/postgresql",
+          "d 755 root:root /var/lib/provision/environments/lab/services/postgresql/generations",
+          "d 755 root:root /var/lib/provision/environments/lab/services/postgresql/generations/postgresql-17-6-b86568d3e0fe",
+          "d 755 root:root /var/lib/provision/environments/lab/services/postgresql/generations/postgresql-17-7-030da09481c3",
+          "d 755 root:root /var/lib/provision/environments/lab/services/postgresql/generations/retained",
+          "d 755 root:root /var/lib/provision/environments/lab/services/postgresql/restore-candidates",
+          "d 755 root:root /var/lib/provision/environments/lab/services/postgresql/restore-candidates/postgresql-17-6-b86568d3e0fe-restore-check",
+          "d 755 root:root /var/lib/provision/environments/lab/services/postgresql/restore-candidates/postgresql-17-7-030da09481c3-restore-check",
+          "f 440 provision-lab:provision-lab /var/lib/provision/backups/lab/postgresql/provision-lab-data/PLAN-op-02.dump",
+          "f 440 provision-lab:provision-lab /var/lib/provision/backups/lab/postgresql/provision-lab-data/PLAN-op-04.dump",
+          "f 440 root:root /var/lib/provision/backups/lab/postgresql/provision-lab-data/PLAN-op-02.json",
+          "f 440 root:root /var/lib/provision/backups/lab/postgresql/provision-lab-data/PLAN-op-04.json",
+          "f 444 root:root /var/lib/provision/environments/lab/services/postgresql/generations/postgresql-17-6-b86568d3e0fe/generation.json",
+          "f 444 root:root /var/lib/provision/environments/lab/services/postgresql/generations/postgresql-17-7-030da09481c3/generation.json",
+          "f 444 root:root /var/lib/provision/environments/lab/services/postgresql/generations/retained/postgresql-17-6-b86568d3e0fe.json",
+          "f 444 root:root /var/lib/provision/environments/lab/services/postgresql/restore-candidates/PLAN-op-03.json",
+          "f 444 root:root /var/lib/provision/environments/lab/services/postgresql/restore-candidates/PLAN-op-05.json",
+          "f 644 root:root /etc/containers/systemd/users/102/provision-lab-postgresql-candidate.container",
+          "f 644 root:root /etc/containers/systemd/users/102/provision-lab-postgresql-restore.container",
+          "f 644 root:root /etc/containers/systemd/users/102/provision-lab-postgresql.container",
+          "f 755 root:root /var/lib/provision/environments/lab/services/postgresql/credential-entrypoint"
+        ],
+        "restoreVerification": {
+          "initial": {
+            "backupId": "PLAN-op-02",
+            "candidateGeneration": "postgresql-17-6-b86568d3e0fe-restore-check",
+            "candidateOwnedResources": [
+              "systemd-unit:provision-lab-postgresql-restore.service",
+              "container:provision-lab-postgresql-restore",
+              "data-path:/var/lib/provision/environments/lab/services/postgresql/restore-candidates/postgresql-17-6-b86568d3e0fe-restore-check/data",
+              "quadlet:/etc/containers/systemd/users/102/provision-lab-postgresql-restore.container",
+              "generation-record:/var/lib/provision/environments/lab/services/postgresql/restore-candidates/postgresql-17-6-b86568d3e0fe-restore-check/generation.json",
+              "credential-entrypoint:/var/lib/provision/environments/lab/services/postgresql/credential-entrypoint",
+              "encrypted-credential:/var/lib/provision/runtime/lab/.config/credstore.encrypted/postgresql-url",
+              "encrypted-credential:/var/lib/provision/environments/lab/credentials/postgresql-url",
+              "postgresql-database:app"
+            ],
+            "isolated": true,
+            "schemaVersion": "provision.dev/database-restore-verification/v1alpha1",
+            "verified": true
+          },
+          "transition": {
+            "backupId": "PLAN-op-04",
+            "candidateGeneration": "postgresql-17-7-030da09481c3-restore-check",
+            "candidateOwnedResources": [
+              "systemd-unit:provision-lab-postgresql-restore.service",
+              "container:provision-lab-postgresql-restore",
+              "data-path:/var/lib/provision/environments/lab/services/postgresql/restore-candidates/postgresql-17-7-030da09481c3-restore-check/data",
+              "quadlet:/etc/containers/systemd/users/102/provision-lab-postgresql-restore.container",
+              "generation-record:/var/lib/provision/environments/lab/services/postgresql/restore-candidates/postgresql-17-7-030da09481c3-restore-check/generation.json",
+              "credential-entrypoint:/var/lib/provision/environments/lab/services/postgresql/credential-entrypoint",
+              "encrypted-credential:/var/lib/provision/runtime/lab/.config/credstore.encrypted/postgresql-url",
+              "encrypted-credential:/var/lib/provision/environments/lab/credentials/postgresql-url",
+              "postgresql-database:app"
+            ],
+            "isolated": true,
+            "schemaVersion": "provision.dev/database-restore-verification/v1alpha1",
+            "verified": true
+          }
+        },
+        "retention": "postgresql-17-6-b86568d3e0fe",
+        "storeGenerations": {
+          "active": {
+            "authority": "authoritative",
+            "id": "postgresql-17-7-030da09481c3",
+            "imageManifest": "sha256:030da09481c3876b71a7e49738a932e1c18c398201a1e4ccfdbff1e5a541215b",
+            "logicalId": "provision-lab-data",
+            "ownedResources": [
+              "systemd-unit:provision-lab-postgresql.service",
+              "container:provision-lab-postgresql",
+              "data-path:/var/lib/provision/environments/lab/services/postgresql/generations/postgresql-17-7-030da09481c3/data",
+              "quadlet:/etc/containers/systemd/users/102/provision-lab-postgresql.container",
+              "generation-record:/var/lib/provision/environments/lab/services/postgresql/generations/postgresql-17-7-030da09481c3/generation.json",
+              "credential-entrypoint:/var/lib/provision/environments/lab/services/postgresql/credential-entrypoint",
+              "encrypted-credential:/var/lib/provision/runtime/lab/.config/credstore.encrypted/postgresql-url",
+              "encrypted-credential:/var/lib/provision/environments/lab/credentials/postgresql-url",
+              "postgresql-database:app"
+            ],
+            "postgresqlVersion": "17.7",
+            "role": "active"
+          },
+          "initial": {
+            "authority": "authoritative",
+            "id": "postgresql-17-6-b86568d3e0fe",
+            "imageManifest": "sha256:b86568d3e0fe1dfaeff52714f9da36f206a30e4c49131b82bf96982d78627409",
+            "logicalId": "provision-lab-data",
+            "ownedResources": [
+              "systemd-unit:provision-lab-postgresql.service",
+              "container:provision-lab-postgresql",
+              "data-path:/var/lib/provision/environments/lab/services/postgresql/generations/postgresql-17-6-b86568d3e0fe/data",
+              "quadlet:/etc/containers/systemd/users/102/provision-lab-postgresql.container",
+              "generation-record:/var/lib/provision/environments/lab/services/postgresql/generations/postgresql-17-6-b86568d3e0fe/generation.json",
+              "credential-entrypoint:/var/lib/provision/environments/lab/services/postgresql/credential-entrypoint",
+              "encrypted-credential:/var/lib/provision/runtime/lab/.config/credstore.encrypted/postgresql-url",
+              "encrypted-credential:/var/lib/provision/environments/lab/credentials/postgresql-url",
+              "postgresql-database:app"
+            ],
+            "postgresqlVersion": "17.6",
+            "role": "active"
+          },
+          "retained": [
+            {
+              "authority": "authoritative",
+              "id": "postgresql-17-6-b86568d3e0fe",
+              "imageManifest": "sha256:b86568d3e0fe1dfaeff52714f9da36f206a30e4c49131b82bf96982d78627409",
+              "logicalId": "provision-lab-data",
+              "ownedResources": [
+                "systemd-unit:provision-lab-postgresql.service",
+                "container:provision-lab-postgresql",
+                "data-path:/var/lib/provision/environments/lab/services/postgresql/generations/postgresql-17-6-b86568d3e0fe/data",
+                "quadlet:/etc/containers/systemd/users/102/provision-lab-postgresql.container",
+                "generation-record:/var/lib/provision/environments/lab/services/postgresql/generations/postgresql-17-6-b86568d3e0fe/generation.json",
+                "credential-entrypoint:/var/lib/provision/environments/lab/services/postgresql/credential-entrypoint",
+                "encrypted-credential:/var/lib/provision/runtime/lab/.config/credstore.encrypted/postgresql-url",
+                "encrypted-credential:/var/lib/provision/environments/lab/credentials/postgresql-url",
+                "postgresql-database:app"
+              ],
+              "postgresqlVersion": "17.6",
+              "role": "active"
+            }
+          ]
+        },
+        "workloadRecords": {
+          "initial": {
+            "generationId": "postgresql-17-6-b86568d3e0fe",
+            "logicalId": "provision-lab-data",
+            "records": [
+              {
+                "id": "provision-lab-data/provision-example-database-http-v1/record-0001",
+                "namespace": "provision-lab-data/provision-example-database-http-v1"
+              }
+            ],
+            "status": "verified"
+          },
+          "transition": {
+            "generationId": "postgresql-17-7-030da09481c3",
+            "logicalId": "provision-lab-data",
+            "records": [
+              {
+                "id": "provision-lab-data/provision-example-database-http-v1/record-0001",
+                "namespace": "provision-lab-data/provision-example-database-http-v1"
+              }
+            ],
+            "status": "verified"
+          }
+        },
+        "writeFence": "active-database-read-only"
+      },
+      "checks": {
+        "accountingMatches": true,
+        "executorDigestMatches": true,
+        "hostPlatformMatches": true,
+        "podmanMatches": true,
+        "postgresqlMatches": true,
+        "remoteIdentityPinned": true
+      },
+      "controller": {
+        "architecture": "arm64",
+        "os": "Darwin",
+        "osVersion": "24.6.0"
+      },
+      "faultMode": "after",
+      "ssh": {
+        "hostFingerprint": "SHA256:3jl37pF+Utxxbic8EUHRQ5qshhP6SdxOX6SnXHjg+Qs",
+        "knownHostsEntries": [
+          "provision-acceptance.local ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIBSvmLScuJmegLEk0xqFSrff5sFdEdOGUTGhULmLRG0+",
+          "provision-acceptance.local ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABgQChdjKpvXuUePH+D5Ggn3JkD7mvpgXoXWeFmr5acJOUFphejeRclq0hfHG7wBqXVGt2xaG2V4VSYnk4J1Z9CkdMeDl6z2wksnstW78NNyexRK5ZTdranpvWnGA8IjLSDORloNM6L5XpDbxYuBqpYO6Pcdo8ou7J0IvORuu3oHf98CYqosglZFN46Af4qHh1we0cdzTIykyZmJabR5gftPwaEZqDZIdK4v4MddGKoHSrT1Dr6WYWgpAobPuZuwrnmeWK5MrXB0pqGkv2pcgVnzGxRJ6aHHDtF1RhXiToUx23JoEKjBmSo4btJkmsaWLjzhEL8ogS1zyAY9gB9H4I7eCv+8rIvDpXSLd64ED6/6mz5uh9KBc/Pk72vh7kIq8fzPkSUZryZAwgMr2CR2TypYeCjetgXhDmpYHizQTP8wMvY1/tEx5KHlcIjtDKFbF31C+j6t98DcdPxutSso1Q2JMG4dPzqIG2xxnC/RKQb/Hru1+BTVrvdRUw8wvcp6zM8VE=",
+          "provision-acceptance.local ecdsa-sha2-nistp256 AAAAE2VjZHNhLXNoYTItbmlzdHAyNTYAAAAIbmlzdHAyNTYAAABBBDcP2fKVQIZb/iKe12t0zk4YXMhLtr9eupnyXYQo4IF20e4FTviBnJaxgLGQAaqqM3FLlNDkZea2TRGf+eGbQZ4="
+        ],
+        "passwordAuthentication": false,
+        "serverVersion": "OpenSSH_10.2p1 Ubuntu-2ubuntu3.6, OpenSSL 3.5.5 27 Jan 2026",
+        "strictHostKeyChecking": true,
+        "target": "provision-acceptance.local",
+        "targetUser": "marlinf"
+      },
+      "versions": {
+        "directLocalProvisionBinary": "sha256:04d34df231477405eb6759f6b613136cc2a55138de0228ca0074c8c1532a00fd",
+        "executor": "sha256:50b71f5495b66b73b83eaf500b589732cd22e77a48f1d354d097c3e49fbfb2fe",
+        "podman": "5.7.0+ds2-3build1",
+        "postgresql": "17.7",
+        "postgresqlImageManifest": "sha256:030da09481c3876b71a7e49738a932e1c18c398201a1e4ccfdbff1e5a541215b",
+        "provisionControllerBinary": "sha256:1ffa9b535c9cefdb45f66f4b32b5981183643cbaa1a34f161ab8bc6b6e6f62cc",
+        "provisionSource": "3875e90c0c05675ac0b1194677e6d29377dd12cf-dirty-e3b5cce4c0a6351fa4b8796ee742ea544255168a8a788b93328da2c466ae5334",
+        "systemd": "systemd 259 (259.5-0ubuntu3.4)",
+        "topology": {
+          "databaseNodes": 1,
+          "hostFailureTolerance": 0
+        }
+      }
+    },
+    {
+      "accounting": {
+        "authoritySwitch": {
+          "synchronization": "authority-switched-after-write-fence",
+          "transitionPhase": "switchDatabaseAuthority"
+        },
+        "backupEvidence": {
+          "initial": {
+            "backupId": "PLAN-op-02",
+            "destinationClass": "host-filesystem",
+            "destinationReference": "file:///var/lib/provision/backups/lab/postgresql",
+            "format": "pg_dump-custom",
+            "outsideGeneration": true,
+            "path": "/var/lib/provision/backups/lab/postgresql/provision-lab-data/PLAN-op-02.dump",
+            "schemaVersion": "provision.dev/database-backup/v1alpha1",
+            "sourceGeneration": "postgresql-17-6-b86568d3e0fe"
+          },
+          "transition": {
+            "backupId": "PLAN-op-04",
+            "destinationClass": "host-filesystem",
+            "destinationReference": "file:///var/lib/provision/backups/lab/postgresql",
+            "format": "pg_dump-custom",
+            "outsideGeneration": true,
+            "path": "/var/lib/provision/backups/lab/postgresql/provision-lab-data/PLAN-op-04.dump",
+            "schemaVersion": "provision.dev/database-backup/v1alpha1",
+            "sourceGeneration": "postgresql-17-6-b86568d3e0fe"
+          }
+        },
+        "logicalDatabase": "provision-lab-data",
+        "operationOutcomes": {
+          "initial": {
+            "op-01.json": "succeeded",
+            "op-02.json": "succeeded",
+            "op-03.json": "succeeded",
+            "op-04.json": "succeeded",
+            "op-05.json": "succeeded",
+            "op-06.json": "succeeded",
+            "op-07.json": "succeeded",
+            "op-08.json": "succeeded",
+            "op-09.json": "succeeded"
+          },
+          "transition": {
+            "op-01-resumed.json": "succeeded",
+            "op-02-resumed.json": "succeeded",
+            "op-03-resumed.json": "succeeded",
+            "op-04-resumed.json": "succeeded",
+            "op-05-resumed.json": "succeeded",
+            "op-06-resumed.json": "succeeded",
+            "op-07-resumed.json": "succeeded",
+            "op-08-resumed.json": "succeeded"
+          }
+        },
+        "ownedResourceInventory": [
+          "d 700 166534:166534 /var/lib/provision/environments/lab/services/postgresql/generations/postgresql-17-6-b86568d3e0fe/data",
+          "d 700 166534:166534 /var/lib/provision/environments/lab/services/postgresql/generations/postgresql-17-7-030da09481c3/data",
+          "d 700 166534:166534 /var/lib/provision/environments/lab/services/postgresql/restore-candidates/postgresql-17-6-b86568d3e0fe-restore-check/data",
+          "d 700 166534:166534 /var/lib/provision/environments/lab/services/postgresql/restore-candidates/postgresql-17-7-030da09481c3-restore-check/data",
+          "d 750 provision-lab:provision-lab /var/lib/provision/backups/lab/postgresql/provision-lab-data",
+          "d 750 provision-lab:provision-lab /var/lib/provision/environments/lab/services/postgresql/generations/postgresql-17-7-030da09481c3/transition",
+          "d 755 root:root /etc/containers/systemd/users",
+          "d 755 root:root /etc/containers/systemd/users/102",
+          "d 755 root:root /var/lib/provision/backups",
+          "d 755 root:root /var/lib/provision/backups/lab",
+          "d 755 root:root /var/lib/provision/backups/lab/postgresql",
+          "d 755 root:root /var/lib/provision/environments/lab/services",
+          "d 755 root:root /var/lib/provision/environments/lab/services/postgresql",
+          "d 755 root:root /var/lib/provision/environments/lab/services/postgresql/generations",
+          "d 755 root:root /var/lib/provision/environments/lab/services/postgresql/generations/postgresql-17-6-b86568d3e0fe",
+          "d 755 root:root /var/lib/provision/environments/lab/services/postgresql/generations/postgresql-17-7-030da09481c3",
+          "d 755 root:root /var/lib/provision/environments/lab/services/postgresql/generations/retained",
+          "d 755 root:root /var/lib/provision/environments/lab/services/postgresql/restore-candidates",
+          "d 755 root:root /var/lib/provision/environments/lab/services/postgresql/restore-candidates/postgresql-17-6-b86568d3e0fe-restore-check",
+          "d 755 root:root /var/lib/provision/environments/lab/services/postgresql/restore-candidates/postgresql-17-7-030da09481c3-restore-check",
+          "f 440 provision-lab:provision-lab /var/lib/provision/backups/lab/postgresql/provision-lab-data/PLAN-op-02.dump",
+          "f 440 provision-lab:provision-lab /var/lib/provision/backups/lab/postgresql/provision-lab-data/PLAN-op-04.dump",
+          "f 440 root:root /var/lib/provision/backups/lab/postgresql/provision-lab-data/PLAN-op-02.json",
+          "f 440 root:root /var/lib/provision/backups/lab/postgresql/provision-lab-data/PLAN-op-04.json",
+          "f 444 root:root /var/lib/provision/environments/lab/services/postgresql/generations/postgresql-17-6-b86568d3e0fe/generation.json",
+          "f 444 root:root /var/lib/provision/environments/lab/services/postgresql/generations/postgresql-17-7-030da09481c3/generation.json",
+          "f 444 root:root /var/lib/provision/environments/lab/services/postgresql/generations/retained/postgresql-17-6-b86568d3e0fe.json",
+          "f 444 root:root /var/lib/provision/environments/lab/services/postgresql/restore-candidates/PLAN-op-03.json",
+          "f 444 root:root /var/lib/provision/environments/lab/services/postgresql/restore-candidates/PLAN-op-05.json",
+          "f 644 root:root /etc/containers/systemd/users/102/provision-lab-postgresql-candidate.container",
+          "f 644 root:root /etc/containers/systemd/users/102/provision-lab-postgresql-restore.container",
+          "f 644 root:root /etc/containers/systemd/users/102/provision-lab-postgresql.container",
+          "f 755 root:root /var/lib/provision/environments/lab/services/postgresql/credential-entrypoint"
+        ],
+        "restoreVerification": {
+          "initial": {
+            "backupId": "PLAN-op-02",
+            "candidateGeneration": "postgresql-17-6-b86568d3e0fe-restore-check",
+            "candidateOwnedResources": [
+              "systemd-unit:provision-lab-postgresql-restore.service",
+              "container:provision-lab-postgresql-restore",
+              "data-path:/var/lib/provision/environments/lab/services/postgresql/restore-candidates/postgresql-17-6-b86568d3e0fe-restore-check/data",
+              "quadlet:/etc/containers/systemd/users/102/provision-lab-postgresql-restore.container",
+              "generation-record:/var/lib/provision/environments/lab/services/postgresql/restore-candidates/postgresql-17-6-b86568d3e0fe-restore-check/generation.json",
+              "credential-entrypoint:/var/lib/provision/environments/lab/services/postgresql/credential-entrypoint",
+              "encrypted-credential:/var/lib/provision/runtime/lab/.config/credstore.encrypted/postgresql-url",
+              "encrypted-credential:/var/lib/provision/environments/lab/credentials/postgresql-url",
+              "postgresql-database:app"
+            ],
+            "isolated": true,
+            "schemaVersion": "provision.dev/database-restore-verification/v1alpha1",
+            "verified": true
+          },
+          "transition": {
+            "backupId": "PLAN-op-04",
+            "candidateGeneration": "postgresql-17-7-030da09481c3-restore-check",
+            "candidateOwnedResources": [
+              "systemd-unit:provision-lab-postgresql-restore.service",
+              "container:provision-lab-postgresql-restore",
+              "data-path:/var/lib/provision/environments/lab/services/postgresql/restore-candidates/postgresql-17-7-030da09481c3-restore-check/data",
+              "quadlet:/etc/containers/systemd/users/102/provision-lab-postgresql-restore.container",
+              "generation-record:/var/lib/provision/environments/lab/services/postgresql/restore-candidates/postgresql-17-7-030da09481c3-restore-check/generation.json",
+              "credential-entrypoint:/var/lib/provision/environments/lab/services/postgresql/credential-entrypoint",
+              "encrypted-credential:/var/lib/provision/runtime/lab/.config/credstore.encrypted/postgresql-url",
+              "encrypted-credential:/var/lib/provision/environments/lab/credentials/postgresql-url",
+              "postgresql-database:app"
+            ],
+            "isolated": true,
+            "schemaVersion": "provision.dev/database-restore-verification/v1alpha1",
+            "verified": true
+          }
+        },
+        "retention": "postgresql-17-6-b86568d3e0fe",
+        "storeGenerations": {
+          "active": {
+            "authority": "authoritative",
+            "id": "postgresql-17-7-030da09481c3",
+            "imageManifest": "sha256:030da09481c3876b71a7e49738a932e1c18c398201a1e4ccfdbff1e5a541215b",
+            "logicalId": "provision-lab-data",
+            "ownedResources": [
+              "systemd-unit:provision-lab-postgresql.service",
+              "container:provision-lab-postgresql",
+              "data-path:/var/lib/provision/environments/lab/services/postgresql/generations/postgresql-17-7-030da09481c3/data",
+              "quadlet:/etc/containers/systemd/users/102/provision-lab-postgresql.container",
+              "generation-record:/var/lib/provision/environments/lab/services/postgresql/generations/postgresql-17-7-030da09481c3/generation.json",
+              "credential-entrypoint:/var/lib/provision/environments/lab/services/postgresql/credential-entrypoint",
+              "encrypted-credential:/var/lib/provision/runtime/lab/.config/credstore.encrypted/postgresql-url",
+              "encrypted-credential:/var/lib/provision/environments/lab/credentials/postgresql-url",
+              "postgresql-database:app"
+            ],
+            "postgresqlVersion": "17.7",
+            "role": "active"
+          },
+          "initial": {
+            "authority": "authoritative",
+            "id": "postgresql-17-6-b86568d3e0fe",
+            "imageManifest": "sha256:b86568d3e0fe1dfaeff52714f9da36f206a30e4c49131b82bf96982d78627409",
+            "logicalId": "provision-lab-data",
+            "ownedResources": [
+              "systemd-unit:provision-lab-postgresql.service",
+              "container:provision-lab-postgresql",
+              "data-path:/var/lib/provision/environments/lab/services/postgresql/generations/postgresql-17-6-b86568d3e0fe/data",
+              "quadlet:/etc/containers/systemd/users/102/provision-lab-postgresql.container",
+              "generation-record:/var/lib/provision/environments/lab/services/postgresql/generations/postgresql-17-6-b86568d3e0fe/generation.json",
+              "credential-entrypoint:/var/lib/provision/environments/lab/services/postgresql/credential-entrypoint",
+              "encrypted-credential:/var/lib/provision/runtime/lab/.config/credstore.encrypted/postgresql-url",
+              "encrypted-credential:/var/lib/provision/environments/lab/credentials/postgresql-url",
+              "postgresql-database:app"
+            ],
+            "postgresqlVersion": "17.6",
+            "role": "active"
+          },
+          "retained": [
+            {
+              "authority": "authoritative",
+              "id": "postgresql-17-6-b86568d3e0fe",
+              "imageManifest": "sha256:b86568d3e0fe1dfaeff52714f9da36f206a30e4c49131b82bf96982d78627409",
+              "logicalId": "provision-lab-data",
+              "ownedResources": [
+                "systemd-unit:provision-lab-postgresql.service",
+                "container:provision-lab-postgresql",
+                "data-path:/var/lib/provision/environments/lab/services/postgresql/generations/postgresql-17-6-b86568d3e0fe/data",
+                "quadlet:/etc/containers/systemd/users/102/provision-lab-postgresql.container",
+                "generation-record:/var/lib/provision/environments/lab/services/postgresql/generations/postgresql-17-6-b86568d3e0fe/generation.json",
+                "credential-entrypoint:/var/lib/provision/environments/lab/services/postgresql/credential-entrypoint",
+                "encrypted-credential:/var/lib/provision/runtime/lab/.config/credstore.encrypted/postgresql-url",
+                "encrypted-credential:/var/lib/provision/environments/lab/credentials/postgresql-url",
+                "postgresql-database:app"
+              ],
+              "postgresqlVersion": "17.6",
+              "role": "active"
+            }
+          ]
+        },
+        "workloadRecords": {
+          "initial": {
+            "generationId": "postgresql-17-6-b86568d3e0fe",
+            "logicalId": "provision-lab-data",
+            "records": [
+              {
+                "id": "provision-lab-data/provision-example-database-http-v1/record-0001",
+                "namespace": "provision-lab-data/provision-example-database-http-v1"
+              }
+            ],
+            "status": "verified"
+          },
+          "transition": {
+            "generationId": "postgresql-17-7-030da09481c3",
+            "logicalId": "provision-lab-data",
+            "records": [
+              {
+                "id": "provision-lab-data/provision-example-database-http-v1/record-0001",
+                "namespace": "provision-lab-data/provision-example-database-http-v1"
+              }
+            ],
+            "status": "verified"
+          }
+        },
+        "writeFence": "active-database-read-only"
+      },
+      "checks": {
+        "accountingMatches": true,
+        "executorDigestMatches": true,
+        "hostPlatformMatches": true,
+        "podmanMatches": true,
+        "postgresqlMatches": true,
+        "remoteIdentityPinned": true
+      },
+      "controller": {
+        "architecture": "arm64",
+        "os": "Darwin",
+        "osVersion": "24.6.0"
+      },
+      "faultMode": "undecidable",
+      "ssh": {
+        "hostFingerprint": "SHA256:3jl37pF+Utxxbic8EUHRQ5qshhP6SdxOX6SnXHjg+Qs",
+        "knownHostsEntries": [
+          "provision-acceptance.local ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIBSvmLScuJmegLEk0xqFSrff5sFdEdOGUTGhULmLRG0+",
+          "provision-acceptance.local ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABgQChdjKpvXuUePH+D5Ggn3JkD7mvpgXoXWeFmr5acJOUFphejeRclq0hfHG7wBqXVGt2xaG2V4VSYnk4J1Z9CkdMeDl6z2wksnstW78NNyexRK5ZTdranpvWnGA8IjLSDORloNM6L5XpDbxYuBqpYO6Pcdo8ou7J0IvORuu3oHf98CYqosglZFN46Af4qHh1we0cdzTIykyZmJabR5gftPwaEZqDZIdK4v4MddGKoHSrT1Dr6WYWgpAobPuZuwrnmeWK5MrXB0pqGkv2pcgVnzGxRJ6aHHDtF1RhXiToUx23JoEKjBmSo4btJkmsaWLjzhEL8ogS1zyAY9gB9H4I7eCv+8rIvDpXSLd64ED6/6mz5uh9KBc/Pk72vh7kIq8fzPkSUZryZAwgMr2CR2TypYeCjetgXhDmpYHizQTP8wMvY1/tEx5KHlcIjtDKFbF31C+j6t98DcdPxutSso1Q2JMG4dPzqIG2xxnC/RKQb/Hru1+BTVrvdRUw8wvcp6zM8VE=",
+          "provision-acceptance.local ecdsa-sha2-nistp256 AAAAE2VjZHNhLXNoYTItbmlzdHAyNTYAAAAIbmlzdHAyNTYAAABBBDcP2fKVQIZb/iKe12t0zk4YXMhLtr9eupnyXYQo4IF20e4FTviBnJaxgLGQAaqqM3FLlNDkZea2TRGf+eGbQZ4="
+        ],
+        "passwordAuthentication": false,
+        "serverVersion": "OpenSSH_10.2p1 Ubuntu-2ubuntu3.6, OpenSSL 3.5.5 27 Jan 2026",
+        "strictHostKeyChecking": true,
+        "target": "provision-acceptance.local",
+        "targetUser": "marlinf"
+      },
+      "versions": {
+        "directLocalProvisionBinary": "sha256:04d34df231477405eb6759f6b613136cc2a55138de0228ca0074c8c1532a00fd",
+        "executor": "sha256:50b71f5495b66b73b83eaf500b589732cd22e77a48f1d354d097c3e49fbfb2fe",
+        "podman": "5.7.0+ds2-3build1",
+        "postgresql": "17.7",
+        "postgresqlImageManifest": "sha256:030da09481c3876b71a7e49738a932e1c18c398201a1e4ccfdbff1e5a541215b",
+        "provisionControllerBinary": "sha256:1ffa9b535c9cefdb45f66f4b32b5981183643cbaa1a34f161ab8bc6b6e6f62cc",
+        "provisionSource": "3875e90c0c05675ac0b1194677e6d29377dd12cf-dirty-e3b5cce4c0a6351fa4b8796ee742ea544255168a8a788b93328da2c466ae5334",
+        "systemd": "systemd 259 (259.5-0ubuntu3.4)",
+        "topology": {
+          "databaseNodes": 1,
+          "hostFailureTolerance": 0
+        }
+      }
+    }
+  ],
+  "schemaVersion": "provision.dev/remote-ssh-postgresql-parity/v1alpha1",
+  "sourceVersion": "3875e90c0c05675ac0b1194677e6d29377dd12cf",
+  "supportQualification": {
+    "excluded": [
+      "RDS",
+      "Valkey",
+      "object stores",
+      "multi-node PostgreSQL availability",
+      "production disaster recovery",
+      "external PostgreSQL adoption",
+      "automatic cleanup",
+      "untested host or runtime versions"
+    ],
+    "qualified": [
+      "exactly the combination recorded in each comparison: controller platform, Host Target platform, pinned SSH host key, Provision, executor, PostgreSQL, Podman, systemd, and single-node topology",
+      "managed host-local PostgreSQL provisioning, forward-only same-major Store Transition, backup, isolated restore verification, and retention marking over strict SSH"
+    ]
+  }
+}

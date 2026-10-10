@@ -486,13 +486,17 @@ remove_unsafe_candidate_record() {
 
 write_summary() {
   local destination="$work_dir/support-observation.json"
-  python3 - "$destination" "$provision" "$provision_version" "$actual_host" "$(uname -sr)" "$fault_mode" "$work_dir/initial-host.json" "$work_dir/transition-final-host.json" <<'PY'
+  # shellcheck disable=SC2024 # The inventory is written by this user; only find needs privilege.
+  sudo find /var/lib/provision/environments/lab/services /var/lib/provision/backups /etc/containers/systemd/users \
+    -maxdepth 4 -printf '%y %m %u:%g %p\n' >"$work_dir/owned-inventory.txt"
+  "$script_dir/postgresql-matrix-accounting.py" "$work_dir" "$work_dir/owned-inventory.txt" >"$work_dir/accounting.json"
+  python3 - "$destination" "$provision" "$provision_version" "$actual_host" "$(uname -sr)" "$fault_mode" "$work_dir/initial-host.json" "$work_dir/transition-final-host.json" "$work_dir/accounting.json" <<'PY'
 import hashlib
 import json
 from pathlib import Path
 import sys
 
-destination, provision, version, hostname, kernel, fault_mode, initial_path, final_path = sys.argv[1:]
+destination, provision, version, hostname, kernel, fault_mode, initial_path, final_path, accounting_path = sys.argv[1:]
 initial = json.loads(Path(initial_path).read_text(encoding="utf-8"))
 final = json.loads(Path(final_path).read_text(encoding="utf-8"))
 binary_digest = "sha256:" + hashlib.sha256(Path(provision).read_bytes()).hexdigest()
@@ -515,6 +519,7 @@ summary = {
         "stale executor rejection",
         "secret redaction",
     ],
+    "accounting": json.loads(Path(accounting_path).read_text(encoding="utf-8")),
     "provisionSourceVersion": version,
     "provisionBinarySha256": binary_digest,
     "host": hostname,

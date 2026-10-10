@@ -174,7 +174,9 @@ func inspectPostgreSQLDeployment(ctx context.Context, capability host.DatabaseCa
 		generation.RecoveryAction = "restore or restart the Environment user manager before planning Database lifecycle work"
 		return host.DatabaseDeploymentStatus{Candidate: generation}, findings
 	}
-	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	// One budget covers about eight sequential rootless podman invocations; 10s starved the last
+	// SQL identity query on a loaded Host and reported a healthy generation as unobservable.
+	ctx, cancel := context.WithTimeout(ctx, 60*time.Second)
 	defer cancel()
 	status, err := runAsEnvironment(ctx, bootstrapRecord{Environment: strings.TrimPrefix(record.Account, "provision-"), Account: record.Account}, "systemctl", "--user", "is-active", record.ServiceUnit)
 	if err != nil || strings.TrimSpace(string(status)) != "active" {
@@ -1957,8 +1959,14 @@ func verifyDatabaseGeneration(ctx context.Context, input planner.DatabaseOperati
 	versionArgs = append(versionArgs, "-Atc", "SHOW server_version;")
 	identityArgs := append([]string{"exec", input.Container, "psql"}, psqlTarget...)
 	identityArgs = append(identityArgs, "-Atc", "SELECT current_database() || ':' || current_user;")
-	version, versionErr := runAsEnvironment(ctx, record, "podman", versionArgs...)
-	identity, identityErr := runAsEnvironment(ctx, record, "podman", identityArgs...)
+	runPSQL := runPSQLWithRetry
+	if urlErr != nil {
+		runPSQL = func(ctx context.Context, record bootstrapRecord, args []string) ([]byte, error) {
+			return runAsEnvironment(ctx, record, "podman", args...)
+		}
+	}
+	version, versionErr := runPSQL(ctx, record, versionArgs)
+	identity, identityErr := runPSQL(ctx, record, identityArgs)
 	observed.Checks.ServiceHealth = statusErr == nil && healthErr == nil && strings.TrimSpace(string(status)) == "active" && strings.TrimSpace(string(health)) == "healthy"
 	observed.Checks.SQLConnectivity = urlErr == nil && versionErr == nil && strings.HasPrefix(strings.TrimSpace(string(version)), input.PostgreSQLVersion)
 	observed.Checks.DatabaseIdentity = urlErr == nil && identityErr == nil && strings.TrimSpace(string(identity)) == input.DatabaseName+":"+username
@@ -1979,6 +1987,24 @@ func verifyDatabaseGeneration(ctx context.Context, input planner.DatabaseOperati
 	observed.RecoveryAction = "inspect the Environment user journal, PostgreSQL container health, credential boundary, and SQL identity before retrying"
 	observed.Database.RecoveryAction = observed.RecoveryAction
 	return observed, errors.New(observed.Reason)
+}
+
+// runPSQLWithRetry tolerates the official image's init-time server restart: the container can report
+// healthy while the temporary init server is going away, so the first SQL attempt may fail transiently.
+func runPSQLWithRetry(ctx context.Context, record bootstrapRecord, args []string) ([]byte, error) {
+	var out []byte
+	var err error
+	for attempt := 0; attempt < 15; attempt++ {
+		if out, err = runAsEnvironment(ctx, record, "podman", args...); err == nil {
+			return out, nil
+		}
+		select {
+		case <-ctx.Done():
+			return out, err
+		case <-time.After(2 * time.Second):
+		}
+	}
+	return out, err
 }
 
 func databasePSQLTargetArgs(input planner.DatabaseOperationInput, credentialURL, username string) ([]string, error) {

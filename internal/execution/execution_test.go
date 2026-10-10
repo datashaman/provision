@@ -483,7 +483,7 @@ func TestEngineResumeRequiresInterruptedOrUncertainJournalState(t *testing.T) {
 	}
 }
 
-func executionFixture(t *testing.T, now *time.Time, handler Handler) (Engine, state.Backend, planner.Plan) {
+func executionFixture(t *testing.T, now *time.Time, handler Handler, operations ...planner.Operation) (Engine, state.Backend, planner.Plan) {
 	t.Helper()
 	dir := t.TempDir()
 	privatePath := filepath.Join(dir, "authority.key")
@@ -505,6 +505,9 @@ func executionFixture(t *testing.T, now *time.Time, handler Handler) (Engine, st
 			ID: "op-01", Kind: planner.StageArtifact, DependsOn: []string{}, Recovery: planner.DiscardStaged,
 			Input: planner.OperationInput{Artifact: &planner.ArtifactInput{Source: "https://artifacts.example/release.tar.gz", Digest: "sha256:" + strings.Repeat("3", 64)}},
 		}},
+	}
+	if len(operations) > 0 {
+		plan.Operations = operations
 	}
 	encoded, err := json.Marshal(plan)
 	if err != nil {
@@ -534,5 +537,67 @@ func matchingResult(envelope operation.Envelope, outcome operation.Outcome, obse
 	return operation.Result{
 		SchemaVersion: operation.ResultSchemaVersion, PlanID: claim.PlanID, OperationID: claim.OperationID,
 		AttemptID: claim.AttemptID, FencingToken: claim.FencingToken, Outcome: outcome, Observation: json.RawMessage(observed),
+	}
+}
+
+// Use the production Host verifier so malformed restore evidence cannot be
+// hidden by the generic fake's envelope-only validation.
+type restoreResultHandler struct{ *handlerFake }
+
+func (*restoreResultHandler) Verify(envelope operation.Envelope, result operation.Result) error {
+	return verifyHostResult(envelope, result)
+}
+
+func TestEnginePreservesDatabaseRestoreFailureDiagnostics(t *testing.T) {
+	for _, outcome := range []operation.Outcome{operation.OutcomeFailed, operation.OutcomeUncertain} {
+		t.Run(string(outcome), func(t *testing.T) {
+			now := time.Date(2026, 9, 30, 12, 0, 0, 0, time.UTC)
+			input := databaseOperationInputFixture()
+			input.CredentialReference = "secret://lab/postgresql-url"
+			planned := planner.Operation{ID: "op-02", Kind: planner.VerifyDatabaseRestore, DependsOn: []string{"op-01"}, Input: planner.OperationInput{Database: &input}}
+			const reason = "restore PostgreSQL backup into isolated candidate: context deadline exceeded"
+			observed := host.DatabaseOperationObservation{
+				Status: string(outcome), FailureCategory: "host-operation-failed",
+				Reason: reason, RecoveryAction: "inspect the isolated restore candidate before retrying",
+			}
+			evidence := mustJSON(t, observed)
+			handler := &restoreResultHandler{&handlerFake{
+				observations: []HandlerObservation{{State: ObservationPending}},
+				apply: func(envelope operation.Envelope) (operation.Result, error) {
+					return matchingResult(envelope, outcome, string(evidence)), nil
+				},
+			}}
+			engine, backend, plan := executionFixture(t, &now, handler, planner.Operation{ID: "op-01", Kind: planner.BackupDatabase, Input: planner.OperationInput{Database: &input}}, planned)
+			defer backend.Close()
+			backup, err := backend.BeginOperation(context.Background(), state.BeginOperationRequest{
+				PlanID: plan.ID, OperationID: "op-01", Holder: "test-holder", StartedAt: now, LeaseDuration: time.Minute,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := backend.CompleteOperation(context.Background(), state.CompleteOperationRequest{
+				AttemptID: backup.AttemptID, Holder: backup.Holder, PlanID: plan.ID, OperationID: "op-01",
+				FencingToken: backup.FencingToken, Outcome: state.ExecutionSucceeded,
+				Observation: json.RawMessage(`{"status":"verified"}`), CompletedAt: now,
+			}); err != nil {
+				t.Fatal(err)
+			}
+			engine.ResolvedSecrets = map[string]string{input.CredentialReference: "test-only-credential"}
+			result, err := engine.Execute(context.Background(), Request{PlanID: plan.ID, OperationID: planned.ID, Holder: "test-holder", LeaseDuration: time.Minute})
+			if err == nil || !strings.Contains(err.Error(), reason) || strings.Contains(err.Error(), "does not match the Plan") {
+				t.Fatalf("restore error = %v, want original failure reason", err)
+			}
+			if result.Outcome != outcome {
+				t.Fatalf("restore outcome = %q, want %q", result.Outcome, outcome)
+			}
+			events, err := backend.LoadJournal(context.Background(), plan.ID)
+			if err != nil || len(events) != 4 {
+				t.Fatalf("journal = %+v, %v", events, err)
+			}
+			last := events[3]
+			if last.Kind != state.JournalOutcome || string(last.Outcome) != string(outcome) || string(last.Observation) != string(evidence) {
+				t.Fatalf("restore outcome lost original diagnostics: %+v", last)
+			}
+		})
 	}
 }

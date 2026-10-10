@@ -272,6 +272,9 @@ func resultOutcomeError(planned planner.Operation, result operation.Result) erro
 		return errors.New(prefix)
 	}
 	if result.Outcome == operation.OutcomeUncertain {
+		if reason := operationFailureReason(result.Observation); reason != "" {
+			return fmt.Errorf("operation %s (%s) requires explicit recovery because its outcome is uncertain: %s", planned.ID, planned.Kind, reason)
+		}
 		return errors.New("host operation requires explicit recovery because its outcome is uncertain")
 	}
 	return nil

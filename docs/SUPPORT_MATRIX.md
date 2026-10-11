@@ -39,6 +39,21 @@ dead-letter delivery, TTL expiry, ordering, and deduplication remain
 unqualified runtime behavior. Alarm, feature, and health fields are observed
 state rather than broader guarantees.
 
+## Managed Valkey Host packaging
+
+| Acceptance client | Host OS | Runtime identity | Service and topology | Result |
+| --- | --- | --- | --- | --- |
+| proof harness `sha256:7d5046bb52931f3a7d2fa46bfd56c9ec27f5376c0e5aa2be7377a9d7e05c38bb`; controller harness `sha256:9bc43ff55ef8992da07852c3825612cdb8a7af7075e81eb9da1ae2fe60592d05`; approval records `sha256:40b13cc8ad416c5cb35efb653c1b594dff3c7ad1f0d24e0dab90f21d21654d9c` (`9.1.2`), `sha256:01bd451323b78cf199abdf11ba0d792d044c6ae662880574aaaf9ed34d946913` (`9.1.1`) | Ubuntu Server 26.04 VM, kernel `7.0.0-34-generic`, `x86_64`; systemd `259 (259.5-0ubuntu3.4)` | Podman `5.7.0+ds2-3build1`; Valkey `9.1.2` image `docker.io/valkey/valkey@sha256:ac9c858b86dc81f3482d53a9d854547379a5f41e012500f839ab257c399063e0` (index `sha256:418652cfb58ef879d4978c33553735d7147016032d5aefaa14c828e611eb9dfd`, qualification `sha256:76f79d213d3cc181a6868a7879fa3133f2bdd3affa01542a54beb43c2fff3769`); Valkey `9.1.1` image `docker.io/valkey/valkey@sha256:cc03bc07761acc552c960bfbcc66196dcf02e949dadb92d941d970ed6c782fea` (index `sha256:64e361b630ecf18dff7ca4df6a88e6eafc193687eb48cff2c7e0a293ab67d29a`, qualification `sha256:01112f9103a64f8b4a2b2e30835552895f27d29e9841111d2b0808ef660ba9bd`) | Rootless Environment account `provision-lab`; user unit `provision-lab-valkey.service`; container `provision-lab-valkey`; generations `valkey-9-1-2-ac9c858b86dc` and `valkey-9-1-1-cc03bc07761a`; loopback listener `127.0.0.1:26379` | Exact digest/config, loopback-only listener, authenticated client connectivity, AOF `appendonly yes` with `appendfsync everysec`, non-secret credential reference, owned generation data path, and keys surviving a full Host reboot passed for both images from a clean disposable VM snapshot; the VM restored clean afterward. See [ADR 0076](adr/0076-select-managed-host-valkey-packaging.md) and the [packaging evidence](evidence/2026-10-10-valkey-packaging-comparison.md). |
+
+These rows qualify the packaging choice for the first managed Host-local
+key-value store tracer, authoritative Store Data Role only. They advertise no
+Store Transition, replication, write fence, or rollback guarantee, and exclude
+backup, restore, host-loss recovery and crash durability beyond a clean reboot,
+derived or ephemeral roles, multi-node Valkey, ElastiCache, external Valkey, and
+other Valkey/image/Podman/OS versions. The credential proof covers systemd
+encrypted credential delivery scoped to the Environment user unit; it does not
+assert that the VM's backing media is encrypted.
+
 ## Managed PostgreSQL Host packaging
 
 | Acceptance client | Host OS | Runtime identity | Service and topology | Result |

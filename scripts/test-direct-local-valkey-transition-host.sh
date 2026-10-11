@@ -41,7 +41,8 @@ if [[ -n "$target" ]]; then
   fault_bin="$repo_root/scripts/remote-ssh-fault-bin"
   real_ssh="$(command -v ssh)"
   ssh_options=(-o BatchMode=yes -o PasswordAuthentication=no -o StrictHostKeyChecking=yes -o ServerAliveInterval=15 -o ServerAliveCountMax=20 -o ConnectTimeout=15)
-  host_run() { "$real_ssh" "${ssh_options[@]}" "$target_user@$target" "$@"; }
+  # -n keeps ssh from consuming the stdin of read loops in the caller.
+  host_run() { "$real_ssh" -n "${ssh_options[@]}" "$target_user@$target" "$@"; }
   host_sh() { host_run "$1"; }
   host_check() { "$provision" host bootstrap check --address "$target" --user "$target_user" --environment lab --operator "$operator"; }
   fault_helper=ssh
@@ -209,6 +210,7 @@ assert_keys() {
     count=$((count + 1))
   done < <(python3 -c 'import json,sys; print("\n".join(json.load(open(sys.argv[1]))["keyValue"]["binding"]["keys"]))' "$plan")
   [[ $count -gt 0 ]] || fail "$label plan declares no deterministic keys"
+  [[ $count -eq $(python3 -c 'import json,sys; print(len(json.load(open(sys.argv[1]))["keyValue"]["binding"]["keys"]))' "$plan") ]] || fail "$label read back $count keys, not every declared key"
 }
 
 assert_active() {

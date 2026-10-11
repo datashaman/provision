@@ -614,6 +614,9 @@ type KeyValueStatus struct {
 	Findings            []string                  `json:"findings"`
 	Capabilities        KeyValueCapabilities      `json:"capabilities"`
 	Active              *KeyValueGenerationStatus `json:"active,omitempty"`
+	// Candidate is an observed, not yet authoritative generation that a Store
+	// Transition would promote. Absent means none was observed.
+	Candidate *KeyValueGenerationStatus `json:"candidate,omitempty"`
 }
 
 type KeyValueCapabilities struct {
@@ -636,27 +639,33 @@ type KeyValueCapabilities struct {
 // KeyValueGenerationStatus reports exactly what was observed: the running
 // Valkey version, packaging identity, persistence configuration, and listener.
 type KeyValueGenerationStatus struct {
-	ID                  string   `json:"id"`
-	LogicalID           string   `json:"logicalId"`
-	Role                string   `json:"role,omitempty"`
-	Ready               bool     `json:"ready"`
-	ValkeyVersion       string   `json:"valkeyVersion,omitempty"`
-	ImageReference      string   `json:"imageReference"`
-	ImageManifest       string   `json:"imageManifest"`
-	QualificationDigest string   `json:"qualificationDigest"`
-	ServiceUnit         string   `json:"serviceUnit"`
-	Container           string   `json:"container"`
-	Account             string   `json:"account"`
-	DataPath            string   `json:"dataPath"`
-	QuadletPath         string   `json:"quadletPath"`
-	ListenAddress       string   `json:"listenAddress"`
-	Port                int      `json:"port"`
-	AppendOnly          string   `json:"appendOnly,omitempty"`
-	AppendFsync         string   `json:"appendFsync,omitempty"`
-	Connectivity        bool     `json:"connectivity"`
-	Health              string   `json:"health,omitempty"`
-	Reason              string   `json:"reason,omitempty"`
-	RecoveryAction      string   `json:"recoveryAction,omitempty"`
+	ID                  string `json:"id"`
+	LogicalID           string `json:"logicalId"`
+	Role                string `json:"role,omitempty"`
+	Ready               bool   `json:"ready"`
+	ValkeyVersion       string `json:"valkeyVersion,omitempty"`
+	ImageReference      string `json:"imageReference"`
+	ImageManifest       string `json:"imageManifest"`
+	QualificationDigest string `json:"qualificationDigest"`
+	ServiceUnit         string `json:"serviceUnit"`
+	Container           string `json:"container"`
+	Account             string `json:"account"`
+	DataPath            string `json:"dataPath"`
+	QuadletPath         string `json:"quadletPath"`
+	ListenAddress       string `json:"listenAddress"`
+	Port                int    `json:"port"`
+	AppendOnly          string `json:"appendOnly,omitempty"`
+	AppendFsync         string `json:"appendFsync,omitempty"`
+	Connectivity        bool   `json:"connectivity"`
+	Health              string `json:"health,omitempty"`
+	Reason              string `json:"reason,omitempty"`
+	RecoveryAction      string `json:"recoveryAction,omitempty"`
+	// Compatibility is the observed evidence that this generation can replace
+	// the active one: "compatible", "incompatible", or empty when unknown.
+	Compatibility string `json:"compatibility,omitempty"`
+	// ReplicationLinkUp is whether a candidate's replication link to the
+	// active generation was observed up.
+	ReplicationLinkUp   bool     `json:"replicationLinkUp,omitempty"`
 	SupportedGuarantees []string `json:"supportedGuarantees,omitempty"`
 	OwnedResources      []string `json:"ownedResources,omitempty"`
 }

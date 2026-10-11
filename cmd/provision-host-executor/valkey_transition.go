@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"net"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -402,18 +401,6 @@ func applyKeyValueCandidate(ctx context.Context, input planner.KeyValuePlan, rec
 	return encoded, nil
 }
 
-// activeContainerAddress is the active container's address on the shared
-// rootless Podman network, which the candidate replicates from. Host loopback
-// is not reachable from inside a container.
-func activeContainerAddress(ctx context.Context, record bootstrapRecord, container string) (string, error) {
-	out, err := keyValueRun(ctx, record, "podman", "inspect", "--format", "{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}", container)
-	address := strings.TrimSpace(string(out))
-	if err != nil || net.ParseIP(address) == nil {
-		return "", errors.New("resolve the active Key-Value Store container address")
-	}
-	return address, nil
-}
-
 func applyKeyValueSynchronization(ctx context.Context, input planner.KeyValuePlan, record bootstrapRecord, paths executionPaths) (json.RawMessage, error) {
 	candidate := input.Candidate()
 	observed, state := keyValueTransitionBase(ctx, planner.SynchronizeKeyValueCandidate, keyValueSyncPhase, input, record, paths)
@@ -424,11 +411,8 @@ func applyKeyValueSynchronization(ctx context.Context, input planner.KeyValuePla
 	if _, err := previousKeyValue(ctx, input, record, paths); err != nil {
 		return nil, err
 	}
-	address, err := activeContainerAddress(ctx, record, input.Previous.Container)
-	if err != nil {
-		return nil, err
-	}
-	if out, err := keyValueExec(ctx, record, candidate.Container, "REPLICAOF", address, "6379"); err != nil || !strings.HasPrefix(strings.TrimSpace(string(out)), "OK") {
+	// The host-network candidate reaches the active generation's loopback listener directly.
+	if out, err := keyValueExec(ctx, record, candidate.Container, "REPLICAOF", input.Previous.ListenAddress, strconv.Itoa(input.Previous.Port)); err != nil || !strings.HasPrefix(strings.TrimSpace(string(out)), "OK") {
 		return nil, errors.New("start candidate replication from the active generation")
 	}
 	deadline := time.Now().Add(keyValueSyncBudget)

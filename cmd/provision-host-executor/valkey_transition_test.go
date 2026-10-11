@@ -83,13 +83,16 @@ func TestCandidateQuadletIsSeparateAndReplicaAuthenticated(t *testing.T) {
 	input := *planned.Input.KeyValue
 	candidate := input.Candidate()
 	quadlet := renderKeyValueQuadlet(candidate, keyValueEntrypointPath(candidate))
-	for _, want := range []string{"ContainerName=" + input.Container + "-candidate", "PublishPort=127.0.0.1:26380:6379", "credential-entrypoint-candidate", "--appendonly yes --appendfsync everysec"} {
+	for _, want := range []string{"ContainerName=" + input.Container + "-candidate", "Network=host", "--bind 127.0.0.1 --port 26380", "credential-entrypoint-candidate", "--appendonly yes --appendfsync everysec"} {
 		if !strings.Contains(quadlet, want) {
 			t.Fatalf("candidate Quadlet lacks %q:\n%s", want, quadlet)
 		}
 	}
 	if keyValueRecordPath(candidate) == keyValueRecordPath(input) || keyValueEntrypointPath(candidate) == keyValueEntrypointPath(input) || candidate.DataPath != input.DataPath {
 		t.Fatal("candidate must have its own record and entrypoint but the target generation's data path")
+	}
+	if strings.Contains(quadlet, "PublishPort") || !strings.Contains(keyValueCredentialEntrypoint(true), "valkey-cli -p 26380 --user") || strings.Contains(keyValueCredentialEntrypoint(false), "-p 26380") {
+		t.Fatal("candidate must share the host network and address its own port; the stable generation must not")
 	}
 	if !strings.Contains(keyValueCredentialEntrypoint(true), `--masteruser "$user" --masterauth "$password"`) || strings.Contains(keyValueCredentialEntrypoint(false), "masterauth") {
 		t.Fatal("only the candidate entrypoint authenticates replication")
@@ -310,4 +313,35 @@ func testAuthority(t *testing.T, dir string, record *bootstrapRecord) (authority
 	}
 	record.AuthorityKeyID = info.ID
 	return signer, publicKey
+}
+
+func TestCandidateListenerIsObservedFromConfigNotPublishedPorts(t *testing.T) {
+	planned, record, _ := keyValueTransitionFixture(t)
+	input := *planned.Input.KeyValue
+	candidate := input.Candidate()
+	var calls []string
+	old := keyValueRun
+	keyValueRun = func(_ context.Context, _ bootstrapRecord, name string, args ...string) ([]byte, error) {
+		calls = append(calls, name+" "+strings.Join(args, " "))
+		if strings.Contains(strings.Join(args, " "), "CONFIG GET bind") {
+			return []byte("bind\n127.0.0.1\n"), nil
+		}
+		return []byte("127.0.0.1:26379\n"), nil
+	}
+	t.Cleanup(func() { keyValueRun = old })
+
+	out, err := observeKeyValueListener(context.Background(), record, candidate)
+	if err != nil || strings.TrimSpace(string(out)) != "127.0.0.1:26380" {
+		t.Fatalf("candidate listener = %q, %v", out, err)
+	}
+	for _, call := range calls {
+		if strings.Contains(call, "podman port") {
+			t.Fatalf("candidate listener must not query published ports: %v", calls)
+		}
+	}
+	calls = nil
+	out, err = observeKeyValueListener(context.Background(), record, input)
+	if err != nil || strings.TrimSpace(string(out)) != "127.0.0.1:26379" || len(calls) != 1 || !strings.Contains(calls[0], "port") {
+		t.Fatalf("stable listener = %q, %v, calls %v", out, err, calls)
+	}
 }

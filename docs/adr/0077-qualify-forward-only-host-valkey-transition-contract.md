@@ -75,9 +75,12 @@ fails writes immediately and does not expire.
 - Deterministic keys are namespaced by revision. A transition must use the
   revision that prepared them, otherwise `prepareKeyValueCandidate` fails
   closed before any mutation.
-- The candidate reaches the active container by its address on the shared
-  rootless Podman network, because host loopback is not reachable from a
-  container.
+- The candidate shares the host network namespace (`Network=host`), binds only
+  `127.0.0.1:26380`, and replicates from the active generation's loopback
+  listener. Rootless pasta networking gives containers no inspectable address
+  and no route to host loopback; the first live run (#100) proved the original
+  container-address approach cannot work. The stable generation still publishes
+  `127.0.0.1:26379` without host networking.
 - A fence failure after the ACL revocation is `uncertain` and leaves the
   application locked out of writes until an operator resumes or recovers; there
   is no automatic un-fence.

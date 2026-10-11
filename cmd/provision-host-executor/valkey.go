@@ -17,6 +17,7 @@ import (
 
 	"provision/internal/host"
 	"provision/internal/implementation/hostkeyvalue"
+	"provision/internal/planmodel"
 	"provision/internal/planner"
 )
 
@@ -138,9 +139,11 @@ func keyValueURLCredentialPath(environment string) string {
 // generation with the same credential, passed as server options, so the
 // executor never handles the password for synchronization.
 func keyValueCredentialEntrypoint(replica bool) string {
-	launch := `exec docker-entrypoint.sh "$@"`
+	launch, cli := `exec docker-entrypoint.sh "$@"`, "valkey-cli --user"
 	if replica {
 		launch = `exec docker-entrypoint.sh "$@" --masteruser "$user" --masterauth "$password"`
+		// The candidate shares the host network namespace and listens on its own port.
+		cli = fmt.Sprintf("valkey-cli -p %d --user", planmodel.KeyValueCandidatePort)
 	}
 	return `#!/usr/bin/env bash
 set -euo pipefail
@@ -159,7 +162,7 @@ printf 'user default off\nuser %s on #%s ~* &* +@all\n' "$user" "$hash" > /tmp/u
 chmod 0644 /tmp/users.acl
 cat > /tmp/provision-cli.sh <<CLI
 #!/bin/sh
-REDISCLI_AUTH='$password' exec valkey-cli --user '$user' "\$@"
+REDISCLI_AUTH='$password' exec ` + cli + ` '$user' "\$@"
 CLI
 cat > /tmp/provision-health.sh <<HEALTH
 #!/bin/sh
@@ -169,7 +172,28 @@ chmod 0700 /tmp/provision-cli.sh /tmp/provision-health.sh
 ` + launch + "\n"
 }
 
+// keyValueNetwork is the Quadlet network line and server bind options. Rootless pasta
+// networking cannot reach host loopback, so a candidate shares the host namespace to
+// replicate from the active listener, bound to loopback only.
+func keyValueNetwork(input planner.KeyValuePlan) (network, bind string) {
+	if keyValueIsCandidate(input) {
+		return "Network=host", fmt.Sprintf("127.0.0.1 --port %d", input.Port)
+	}
+	return fmt.Sprintf("PublishPort=127.0.0.1:%d:6379", input.Port), "0.0.0.0"
+}
+
+// observeKeyValueListener returns the loopback listener as "address:port". A
+// host-network candidate publishes nothing, so its listener is the configured bind.
+func observeKeyValueListener(ctx context.Context, record bootstrapRecord, input planner.KeyValuePlan) ([]byte, error) {
+	if !keyValueIsCandidate(input) {
+		return keyValueRun(ctx, record, "podman", "port", input.Container, "6379/tcp")
+	}
+	bound, err := keyValueCLI(ctx, record, input, "CONFIG", "GET", "bind")
+	return []byte(fmt.Sprintf("%s:%d", configValue(bound), input.Port)), err
+}
+
 func renderKeyValueQuadlet(input planner.KeyValuePlan, entrypoint string) string {
+	network, bind := keyValueNetwork(input)
 	return fmt.Sprintf(`[Unit]
 Description=Provision managed Valkey Key-Value Store generation %s
 Wants=network-online.target
@@ -178,12 +202,12 @@ After=network-online.target
 [Container]
 Image=%s
 ContainerName=%s
-PublishPort=127.0.0.1:%d:6379
+%s
 Volume=%s:/data
 Volume=%%d/%s:/run/provision-credential/valkey-credential:ro
 Volume=%s:/usr/local/bin/provision-valkey-credential-entrypoint:ro
 Entrypoint=/usr/local/bin/provision-valkey-credential-entrypoint
-Exec=valkey-server --aclfile /tmp/users.acl --appendonly %s --appendfsync %s --dir /data --bind 0.0.0.0
+Exec=valkey-server --aclfile /tmp/users.acl --appendonly %s --appendfsync %s --dir /data --bind %s
 HealthCmd=/tmp/provision-health.sh
 HealthInterval=5s
 HealthRetries=24
@@ -196,7 +220,7 @@ TimeoutStartSec=900
 
 [Install]
 WantedBy=default.target
-`, input.GenerationID, input.ImageReference, input.Container, input.Port, input.DataPath, keyValueCredentialName, entrypoint, input.AppendOnly, input.AppendFsync, keyValueCredentialName)
+`, input.GenerationID, input.ImageReference, input.Container, network, input.DataPath, keyValueCredentialName, entrypoint, input.AppendOnly, input.AppendFsync, bind, keyValueCredentialName)
 }
 
 func keyValueServiceRoot(input planner.KeyValuePlan) string {
@@ -418,7 +442,7 @@ func observeKeyValueGeneration(ctx context.Context, input planner.KeyValuePlan, 
 	active, activeErr := runAsEnvironment(ctx, record, "systemctl", "--user", "is-active", input.ServiceUnit)
 	health, healthErr := runAsEnvironment(ctx, record, "podman", "inspect", "--format", "{{.State.Health.Status}}", input.Container)
 	manifest, manifestErr := runAsEnvironment(ctx, record, "podman", "inspect", "--format", "{{.ImageDigest}}", input.Container)
-	port, portErr := runAsEnvironment(ctx, record, "podman", "port", input.Container, "6379/tcp")
+	port, portErr := observeKeyValueListener(ctx, record, input)
 	ping, pingErr := keyValueCLI(ctx, record, input, "PING")
 	appendonly, aofErr := keyValueCLI(ctx, record, input, "CONFIG", "GET", "appendonly")
 	appendfsync, fsyncErr := keyValueCLI(ctx, record, input, "CONFIG", "GET", "appendfsync")

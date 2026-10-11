@@ -1,16 +1,18 @@
 #!/usr/bin/env bash
 # Destructive direct-local failure matrix for the managed Valkey Store Transition
-# (issue #100). Runs on the disposable Host Target as its bootstrap operator. The
+# (issue #100) and its strict-SSH parity run (issue #101). Without --target it runs
+# on the disposable Host Target as its bootstrap operator (direct-local); with
+# --target/--target-user it runs on the controller over pinned strict SSH. The
 # initial generation is provisioned by the CLI (no out-of-band seeding), then
 # every transition operation is interrupted per --fault-mode.
 set -euo pipefail
 
 usage() {
-  echo "usage: $0 --provision BINARY --signing-key FILE --secret-file FILE --work-dir EMPTY_PATH --provision-version VERSION --confirm-disposable-host HOSTNAME --fault-mode before|after|undecidable" >&2
+  echo "usage: $0 --provision BINARY --signing-key FILE --secret-file FILE --work-dir EMPTY_PATH --provision-version VERSION --confirm-disposable-host HOSTNAME --fault-mode before|after|undecidable [--target ADDRESS --target-user USER]" >&2
   exit 2
 }
 
-provision="" signing_key="" secret_file="" work_dir="" provision_version="" confirmed_host="" fault_mode=""
+provision="" signing_key="" secret_file="" work_dir="" provision_version="" confirmed_host="" fault_mode="" target="" target_user=""
 while (($#)); do
   case "$1" in
     --provision) (($# >= 2)) || usage; provision="$2"; shift 2 ;;
@@ -20,6 +22,8 @@ while (($#)); do
     --provision-version) (($# >= 2)) || usage; provision_version="$2"; shift 2 ;;
     --confirm-disposable-host) (($# >= 2)) || usage; confirmed_host="$2"; shift 2 ;;
     --fault-mode) (($# >= 2)) || usage; fault_mode="$2"; shift 2 ;;
+    --target) (($# >= 2)) || usage; target="$2"; shift 2 ;;
+    --target-user) (($# >= 2)) || usage; target_user="$2"; shift 2 ;;
     *) usage ;;
   esac
 done
@@ -28,19 +32,37 @@ done
 [[ -n "$secret_file" && -f "$secret_file" && ! -L "$secret_file" ]] || usage
 [[ -n "$work_dir" && ! -e "$work_dir" && -n "$provision_version" && -n "$confirmed_host" ]] || usage
 [[ "$fault_mode" =~ ^(before|after|undecidable)$ ]] || usage
-[[ "$(uname -s)" == Linux ]] || { echo "direct-local Valkey matrix requires Linux" >&2; exit 1; }
-[[ "$(id -u)" != 0 ]] || { echo "run as the bootstrapped non-root operator, not root" >&2; exit 1; }
-operator="$(id -un)"
-[[ "$operator" =~ ^[a-z_][a-z0-9_-]*$ ]] || { echo "operator identity is unsupported" >&2; exit 1; }
-actual_host="$(hostname)"
-[[ "$confirmed_host" == "$actual_host" ]] || { echo "disposable-host confirmation does not match $actual_host" >&2; exit 1; }
-
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd "$script_dir/.." && pwd)"
-fault_bin="$repo_root/scripts/direct-local-fault-bin"
-[[ -x "$fault_bin/sudo" ]] || { echo "fault-injection sudo wrapper is not executable" >&2; exit 1; }
+if [[ -n "$target" ]]; then
+  transport=ssh
+  [[ "$target" =~ ^[A-Za-z0-9][A-Za-z0-9.-]*$ && "$target_user" =~ ^[a-z_][a-z0-9_-]*$ ]] || usage
+  operator="$target_user"
+  fault_bin="$repo_root/scripts/remote-ssh-fault-bin"
+  real_ssh="$(command -v ssh)"
+  ssh_options=(-o BatchMode=yes -o PasswordAuthentication=no -o StrictHostKeyChecking=yes -o ServerAliveInterval=15 -o ServerAliveCountMax=20 -o ConnectTimeout=15)
+  host_run() { "$real_ssh" "${ssh_options[@]}" "$target_user@$target" "$@"; }
+  host_sh() { host_run "$1"; }
+  host_check() { "$provision" host bootstrap check --address "$target" --user "$target_user" --environment lab --operator "$operator"; }
+  fault_helper=ssh
+else
+  transport=direct-local
+  [[ "$(uname -s)" == Linux ]] || { echo "direct-local Valkey matrix requires Linux" >&2; exit 1; }
+  [[ "$(id -u)" != 0 ]] || { echo "run as the bootstrapped non-root operator, not root" >&2; exit 1; }
+  operator="$(id -un)"
+  [[ "$operator" =~ ^[a-z_][a-z0-9_-]*$ ]] || { echo "operator identity is unsupported" >&2; exit 1; }
+  fault_bin="$repo_root/scripts/direct-local-fault-bin"
+  real_ssh=""
+  host_run() { "$@"; }
+  host_sh() { bash -c "$1"; }
+  host_check() { "$provision" host bootstrap check --local --environment lab --operator "$operator"; }
+  fault_helper=sudo
+fi
+actual_host="$(host_run hostname)"
+[[ "$confirmed_host" == "$actual_host" ]] || { echo "disposable-host confirmation does not match $actual_host" >&2; exit 1; }
+[[ -x "$fault_bin/$fault_helper" ]] || { echo "fault-injection helper is not executable" >&2; exit 1; }
 command -v python3 >/dev/null
-sudo -n true
+host_run sudo -n true
 
 mkdir -m 0700 "$work_dir"
 work_dir="$(cd "$work_dir" && pwd)"
@@ -55,7 +77,7 @@ generations_root=/var/lib/provision/environments/lab/services/valkey/generations
 config_dir="$work_dir/config"
 mkdir -m 0700 "$config_dir"
 
-fail() { echo "direct-local Valkey matrix ($fault_mode): $*" >&2; exit 1; }
+fail() { echo "Valkey transition matrix ($transport/$fault_mode): $*" >&2; exit 1; }
 # shellcheck source=lib/matrix-helpers.sh
 source "$script_dir/lib/matrix-helpers.sh"
 
@@ -89,10 +111,11 @@ plan_generation() { python3 -c 'import json,sys; print(json.load(open(sys.argv[1
 
 switch_marker() { echo "$generations_root/$transition_generation/transition/authority-switch.json"; }
 
-container_started_at() (
-  cd / && sudo -n runuser -u provision-lab -- env HOME=/var/lib/provision/runtime/lab XDG_RUNTIME_DIR="/run/user/$(id -u provision-lab)" \
-    podman inspect --format '{{.State.StartedAt}}' provision-lab-valkey
-)
+container_started_at() {
+  local uid
+  uid="$(host_run id -u provision-lab)"
+  host_sh "cd / && sudo -n runuser -u provision-lab -- env HOME=/var/lib/provision/runtime/lab XDG_RUNTIME_DIR=/run/user/$uid podman inspect --format '{{.State.StartedAt}}' provision-lab-valkey"
+}
 
 execute_with_interruption_and_resume() {
   local name="$1" operation="$2"
@@ -106,7 +129,7 @@ execute_with_interruption_and_resume() {
   lease=5s resume_delay=6
   [[ "$mode" == after ]] && { lease=30s; resume_delay=31; }
   set +e
-  PATH="$fault_bin:$PATH" PROVISION_FAULT_MODE="$mode" PROVISION_FAULT_MARKER="$marker" \
+  PATH="$fault_bin:$PATH" PROVISION_REAL_SSH="$real_ssh" PROVISION_FAULT_MODE="$mode" PROVISION_FAULT_MARKER="$marker" \
     "$provision" deployment execute --plan "$plan_id" --operation "$operation" --state "$state" --signing-key "$signing_key" \
       --secret-file "$secret_reference=$secret_file" --lease-duration "$lease" >"$work_dir/$name/$operation-$mode.txt" 2>&1
   result=$?
@@ -124,15 +147,15 @@ execute_with_interruption_and_resume() {
     local evidence started_before started_after
     evidence="$(switch_marker)"
     started_before="$(container_started_at)"
-    sudo mv "$evidence" "$evidence.orig"
-    sudo mkdir "$evidence"
+    host_run sudo -n mv "$evidence" "$evidence.orig"
+    host_run sudo -n mkdir "$evidence"
     set +e
     "$provision" deployment resume --plan "$plan_id" --state "$state" --signing-key "$signing_key" \
       --secret-file "$secret_reference=$secret_file" --lease-duration 2m >"$work_dir/$name/$operation-undecidable.txt" 2>&1
     result=$?
     set -e
-    sudo rmdir "$evidence"
-    sudo mv "$evidence.orig" "$evidence"
+    host_run sudo -n rmdir "$evidence"
+    host_run sudo -n mv "$evidence.orig" "$evidence"
     [[ $result -ne 0 ]] || fail "$operation resumed despite an undecidable authority-switch observation"
     assert_contains "$work_dir/$name/$operation-undecidable.txt" "requires explicit recovery because its outcome is uncertain"
     started_after="$(container_started_at)"
@@ -155,7 +178,7 @@ PYEOF
   fi
   if [[ "$mode" == after ]]; then
     replay_marker="$work_dir/$name/$operation-unexpected-replay"
-    PATH="$fault_bin:$PATH" PROVISION_FAULT_MODE=after PROVISION_FAULT_MARKER="$replay_marker" \
+    PATH="$fault_bin:$PATH" PROVISION_REAL_SSH="$real_ssh" PROVISION_FAULT_MODE=after PROVISION_FAULT_MARKER="$replay_marker" \
       "$provision" deployment resume --plan "$plan_id" --state "$state" --signing-key "$signing_key" \
         --secret-file "$secret_reference=$secret_file" --lease-duration 2m >"$work_dir/$name/$operation-resumed.json"
     [[ ! -e "$replay_marker" ]] || fail "$operation resume replayed a completed $kind host mutation"
@@ -177,10 +200,10 @@ PYEOF
 
 assert_keys() {
   local label="$1" plan="$2" uid value key count=0
-  uid="$(id -u provision-lab)"
+  uid="$(host_run id -u provision-lab)"
   : >"$work_dir/$label-keys.txt"
   while read -r key; do
-    value="$(cd / && sudo -n runuser -u provision-lab -- env HOME=/var/lib/provision/runtime/lab XDG_RUNTIME_DIR=/run/user/"$uid" podman exec provision-lab-valkey /tmp/provision-cli.sh GET "$key" | tr -d '\r')"
+    value="$(host_sh "cd / && sudo -n runuser -u provision-lab -- env HOME=/var/lib/provision/runtime/lab XDG_RUNTIME_DIR=/run/user/$uid podman exec provision-lab-valkey /tmp/provision-cli.sh GET '$key'" | tr -d '\r')"
     [[ "$value" == "provision-deterministic-v1:$key" ]] || fail "$label key $key = $value"
     printf '%s %s\n' "$key" "$value" >>"$work_dir/$label-keys.txt"
     count=$((count + 1))
@@ -190,7 +213,7 @@ assert_keys() {
 
 assert_active() {
   local label="$1" version="$2" generation="$3"
-  "$provision" host bootstrap check --local --environment lab --operator "$operator" >"$work_dir/$label-host.json"
+  host_check >"$work_dir/$label-host.json"
   json_assert "$work_dir/$label-host.json" ready true
   json_assert "$work_dir/$label-host.json" keyValue.active.id "\"$generation\""
   json_assert "$work_dir/$label-host.json" keyValue.active.valkeyVersion "\"$version\""
@@ -216,15 +239,15 @@ PY
 }
 
 cp "$repo_root/examples/host-key-value/"{application,revision,root}.yaml "$config_dir/"
-python3 - "$repo_root/examples/host-key-value/environment.yaml" "$config_dir/environment.yaml" "$operator" <<'PY'
+python3 - "$repo_root/examples/host-key-value/environment.yaml" "$config_dir/environment.yaml" "$operator" "$target" <<'PY'
 import sys
 from pathlib import Path
-src, dst, operator = sys.argv[1:]
+src, dst, operator, target = sys.argv[1:]
 out = []
 for line in Path(src).read_text(encoding="utf-8").splitlines():
     s = line.strip()
     if s.startswith("address:"):
-        out.append("    local: true")
+        out.append(f"    address: {target}" if target else "    local: true")
     elif s.startswith("user:"):
         out.append(f"    user: {operator}")
     else:
@@ -233,9 +256,9 @@ Path(dst).write_text("\n".join(out) + "\n", encoding="utf-8")
 PY
 set_environment_version "$initial_version"
 
-"$provision" host bootstrap check --local --environment lab --operator "$operator" >"$work_dir/initial-host.json"
+host_check >"$work_dir/initial-host.json"
 json_assert "$work_dir/initial-host.json" ready true
-if find "$generations_root" -mindepth 1 -maxdepth 1 -print -quit 2>/dev/null | grep -q .; then
+if host_run sudo -n find "$generations_root" -mindepth 1 -maxdepth 1 -print -quit 2>/dev/null | grep -q .; then
   fail "Valkey generation storage is not empty; reset the disposable host before running the matrix"
 fi
 
@@ -273,19 +296,18 @@ echo "[4/4] accounting and evidence redaction"
 password="$(sed -E 's#^valkey://[^:]+:([^@]+)@.*#\1#' "$secret_file" | tr -d '\n')"
 [[ -n "$password" ]]
 if grep -R --binary-files=without-match -F "$password" "$work_dir" >/dev/null 2>&1; then fail "resolved Valkey secret appeared in evidence"; fi
-# shellcheck disable=SC2024 # The inventory is written by this user; only find needs privilege.
-sudo find /var/lib/provision/environments/lab/services /etc/containers/systemd/users -maxdepth 4 -printf '%y %m %u:%g %p\n' >"$work_dir/owned-inventory.txt"
+host_sh "sudo -n find /var/lib/provision/environments/lab/services /etc/containers/systemd/users -maxdepth 4 -printf '%y %m %u:%g %p\\n'" >"$work_dir/owned-inventory.txt"
 "$script_dir/valkey-matrix-accounting.py" "$work_dir" "$work_dir/owned-inventory.txt" >"$work_dir/accounting.json"
-python3 - "$work_dir" "$provision" "$provision_version" "$actual_host" "$(uname -sr)" "$fault_mode" <<'PY'
+python3 - "$work_dir" "$provision" "$provision_version" "$actual_host" "$(host_run uname -sr)" "$fault_mode" "$transport" <<'PY'
 import hashlib, json, sys
 from pathlib import Path
-work, provision, version, host, kernel, mode = sys.argv[1:]
+work, provision, version, host, kernel, mode, transport = sys.argv[1:]
 w = Path(work)
 initial = json.loads((w / "initial-host.json").read_text())
 final = json.loads((w / "transition-final-host.json").read_text())
 summary = {
     "schemaVersion": "provision.dev/direct-local-valkey-failure-matrix/v1alpha1",
-    "result": "passed", "faultMode": mode,
+    "result": "passed", "faultMode": mode, "transport": transport,
     "provisionSourceVersion": version,
     "provisionBinarySha256": "sha256:" + hashlib.sha256(Path(provision).read_bytes()).hexdigest(),
     "host": host, "kernel": kernel, "os": initial["os"], "osVersion": initial["osVersion"],
@@ -300,4 +322,4 @@ summary = {
 }
 (w / "support-observation.json").write_text(json.dumps(summary, indent=2, sort_keys=True) + "\n")
 PY
-echo "direct-local Valkey $fault_mode matrix passed"
+echo "Valkey transition matrix ($transport/$fault_mode) passed"

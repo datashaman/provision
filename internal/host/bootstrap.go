@@ -484,6 +484,7 @@ type GenerationStatus struct {
 	Port             int                        `json:"port"`
 	RouteID          string                     `json:"routeId"`
 	DatabaseBinding  *HTTPDatabaseBindingStatus `json:"databaseBinding,omitempty"`
+	KeyValueBinding  *HTTPKeyValueBindingStatus `json:"keyValueBinding,omitempty"`
 	UnitActive       bool                       `json:"unitActive"`
 	UnitMatches      bool                       `json:"unitMatches"`
 	RouteObserved    bool                       `json:"routeObserved"`
@@ -676,4 +677,14 @@ type KeyValueOperationObservation struct {
 	Verified bool                       `json:"verified"`
 	Checks   KeyValueVerificationChecks `json:"checks"`
 	Keys     []DeterministicKeyStatus   `json:"keys,omitempty"`
+}
+
+// HTTPKeyValueBindingStatus is the logical Key-Value Store binding observed on a
+// running HTTP generation's systemd unit. It carries no credential value.
+type HTTPKeyValueBindingStatus struct {
+	Component           string `json:"component"`
+	LogicalID           string `json:"logicalId"`
+	GenerationID        string `json:"generationId"`
+	EnvironmentVariable string `json:"environmentVariable"`
+	BindingState        string `json:"bindingState"`
 }

@@ -445,7 +445,13 @@ func buildKeyValueBoundHTTP(compiled config.Compiled, observation host.Bootstrap
 		return Preview{}, err
 	}
 	operations := []Operation{hostkeyvalue.Operation(keyValue)}
+	// An exactly active, exactly bound workload needs only the idempotent store
+	// preparation, which observes the already-satisfied generation.
+	exact := exactActiveHTTP(compiled, httpSelection, observation, nil, []KeyValueHTTPBinding{binding})
 	httpOps := httpOperations(compiled, httpSelection, observation, observationDigest)
+	if exact {
+		httpOps = nil
+	}
 	for index := range httpOps {
 		httpOps[index] = offsetOperation(httpOps[index], 1)
 		attachKeyValueBindings(&httpOps[index], []KeyValueHTTPBinding{binding})
@@ -647,7 +653,7 @@ func databaseBoundHTTPOperations(compiled config.Compiled, selection databaseBou
 		Component: selection.HTTPComponent, Implementation: selection.HTTPImplementation, Artifact: selection.HTTPArtifact,
 		TargetName: selection.TargetName, Target: selection.Target,
 	}
-	if exactActiveHTTP(compiled, httpSelection, observation, bindings) && len(databaseOps) <= 2 {
+	if exactActiveHTTP(compiled, httpSelection, observation, bindings, nil) && len(databaseOps) <= 2 {
 		return databaseOps
 	}
 	httpOps := httpOperations(compiled, httpSelection, observation, observationDigest)
@@ -662,7 +668,7 @@ func databaseBoundHTTPOperations(compiled config.Compiled, selection databaseBou
 	return append(databaseOps, httpOps...)
 }
 
-func exactActiveHTTP(compiled config.Compiled, selection config.HostSelection, observation host.BootstrapStatus, bindings []DatabaseBindingInput) bool {
+func exactActiveHTTP(compiled config.Compiled, selection config.HostSelection, observation host.BootstrapStatus, bindings []DatabaseBindingInput, keyValueBindings []KeyValueHTTPBinding) bool {
 	active := observation.Deployment.Active
 	if active == nil {
 		return false
@@ -680,7 +686,20 @@ func exactActiveHTTP(compiled config.Compiled, selection config.HostSelection, o
 		active.UnitMatches &&
 		active.RouteObserved &&
 		active.RouteMatches &&
-		activeHTTPDatabaseBindingMatches(active.DatabaseBinding, bindings)
+		activeHTTPDatabaseBindingMatches(active.DatabaseBinding, bindings) &&
+		activeHTTPKeyValueBindingMatches(active.KeyValueBinding, keyValueBindings)
+}
+
+func activeHTTPKeyValueBindingMatches(observed *host.HTTPKeyValueBindingStatus, bindings []KeyValueHTTPBinding) bool {
+	if len(bindings) == 0 {
+		return observed == nil
+	}
+	if len(bindings) != 1 || observed == nil {
+		return false
+	}
+	binding := bindings[0]
+	return observed.Component == binding.Component && observed.LogicalID == binding.LogicalID && observed.GenerationID == binding.GenerationID &&
+		observed.EnvironmentVariable == binding.EnvironmentVariable && observed.BindingState == "key-value-bound"
 }
 
 func activeHTTPDatabaseBindingMatches(observed *host.HTTPDatabaseBindingStatus, bindings []DatabaseBindingInput) bool {

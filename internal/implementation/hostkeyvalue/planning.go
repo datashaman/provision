@@ -44,10 +44,20 @@ func Evaluate(compiled config.Compiled, observation host.BootstrapStatus) Evalua
 	case image.Evidence == "":
 		evaluation.Reasons = append(evaluation.Reasons, fmt.Sprintf("Valkey %s has no packaging qualification evidence yet", image.Version))
 	}
+	if active := activeGeneration(observation); active != nil && ok && active.ID != image.Generation() {
+		evaluation.Reasons = append(evaluation.Reasons, "replacing the active Key-Value Store generation is a Store Transition, which is not qualified yet")
+	}
 	if len(evaluation.Reasons) == 0 {
 		evaluation.SupportEvidence = []string{"valkey-" + image.Version + "-image-index-and-manifest-pinned", "packaging-qualification-" + image.Evidence}
 	}
 	return evaluation
+}
+
+func activeGeneration(observation host.BootstrapStatus) *host.KeyValueGenerationStatus {
+	if observation.KeyValue == nil {
+		return nil
+	}
+	return observation.KeyValue.Active
 }
 
 func capabilityReasons(observation host.BootstrapStatus) []string {

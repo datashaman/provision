@@ -62,11 +62,23 @@ assert that the VM's backing media is encrypted.
 
 This row qualifies only the exact combination above (Valkey `9.1.2`; not `9.1.1`
 live-executed in this slice). It advertises no Store Transition, replication,
-write fence, or rollback guarantee, and excludes strict-SSH parity, the
-`undecidable` interruption mode, backup, restore, host-loss recovery, derived or
-ephemeral roles, multi-node Valkey, ElastiCache, external Valkey and re-planning
-an already-active Key-Value-bound workload. Evidence is kept under the
+write fence, or rollback guarantee, and excludes backup, restore, host-loss recovery, derived or
+ephemeral roles, multi-node Valkey, ElastiCache and external Valkey. Evidence is kept under the
 git-ignored `work/issue-97-live/evidence`.
+
+## Managed Valkey first generation: strict-SSH parity
+
+| Acceptance client | Host OS | Runtime identity | Service and topology | Result |
+| --- | --- | --- | --- | --- |
+| harness `sha256:3dbfe23f4be58aee2883138f15924fc0c16a80a008cb61b2b056555d179806a5`; controller `sha256:18e66f0708de23ada99b80cc7b09051c146fba4db535fce5ef8ac03bdb2111f6`; direct-local controller `sha256:e2dc5f6cfa18f225bbbb6dceb18c299bcc59c1d68898469bae498796c022c25a`; Provision controller binary built on macOS, executor `sha256:640de6d71e8e52859aa7532a1d237a0dc3d0239fbae2120f9a4b3010dfeccf59` | Ubuntu Server 26.04 VM `provision-acceptance` (Linux 7.0.0-34-generic), clean snapshot restored before every mode | Valkey `9.1.2` image `sha256:ac9c858b86dc81f3482d53a9d854547379a5f41e012500f839ab257c399063e0`, AOF `appendonly yes` `appendfsync everysec`, listener `127.0.0.1:26379`, Podman `5.7.0+ds2-3build1` | one authoritative Key-Value Store generation; Provision, approval state and signing key on the controller, Host Target reached only through strict SSH with a pinned host key | passed: modes `none`, `before`, `after`, `undecidable` on direct-local and strict SSH with identical accounting (2 deterministic keys read back, no resolved credential in evidence); `undecidable` leaves the unreadable-record resume unreplayed and recorded uncertain, then recovers |
+
+The `undecidable` mode makes the generation record unreadable after an
+interrupted, completed mutation; resume must observe, refuse to replay, and
+record an uncertain outcome. Re-planning an exactly active Key-Value-bound
+workload now emits only the idempotent store preparation, and an active
+Key-Value Store generation that differs from the plan fails closed as an
+unqualified Store Transition. Exclusions are unchanged from the row above.
+Evidence is under the git-ignored `work/issue-97-live/parity-evidence`.
 
 ## Managed PostgreSQL Host packaging
 

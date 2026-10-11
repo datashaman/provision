@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Disposable-VM acceptance for issue #97: first managed Valkey generation.
 set -euo pipefail
+# shellcheck disable=SC2029 # Remote commands intentionally expand client-side acceptance paths.
 
 root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 target="${PROVISION_ACCEPTANCE_TARGET:-provision-acceptance.local}"
@@ -41,7 +42,7 @@ GOOS=linux GOARCH=amd64 go build -o "$build_dir/provision-host-executor" ./cmd/p
 source_version="$(git -C "$root" rev-parse HEAD)"
 git -C "$root" diff --quiet HEAD -- || source_version="$source_version-dirty-$(git -C "$root" diff --binary HEAD -- | shasum -a 256 | awk '{print $1}')"
 
-bash -n "$root/scripts/test-direct-local-valkey-host.sh" "$root/scripts/test-direct-local-valkey-http-host.sh" "$root/scripts/run-direct-local-valkey-acceptance.sh"
+bash -n "$root/scripts/test-valkey-host.sh" "$root/scripts/test-direct-local-valkey-http-host.sh" "$root/scripts/run-direct-local-valkey-acceptance.sh"
 go test ./cmd/... ./internal/... >/dev/null
 
 [[ ! -e "$local_evidence" ]] || mv "$local_evidence" "$local_evidence.old-$(date -u +%Y%m%dT%H%M%SZ)"
@@ -80,12 +81,12 @@ run_mode() {
       "cd '$remote' && ./scripts/test-direct-local-valkey-http-host.sh --provision ./provision --signing-key ./host-authority.key --secret-file ./$(basename "$secret") --artifact-bundle ./$(basename "$fixture_bundle") --work-dir '$remote_evidence/$mode' --provision-version '$source_version' --confirm-disposable-host provision-acceptance"
   else
     ssh "${ssh_opts[@]}" "$target_user@$target" \
-      "cd '$remote' && ./scripts/test-direct-local-valkey-host.sh --provision ./provision --signing-key ./host-authority.key --secret-file ./$(basename "$secret") --work-dir '$remote_evidence/$mode' --provision-version '$source_version' --confirm-disposable-host provision-acceptance --fault-mode '$mode'"
+      "cd '$remote' && ./scripts/test-valkey-host.sh --provision ./provision --signing-key ./host-authority.key --secret-file ./$(basename "$secret") --work-dir '$remote_evidence/$mode' --provision-version '$source_version' --confirm-disposable-host provision-acceptance --fault-mode '$mode'"
   fi
   scp "${scp_opts[@]}" -r "$target_user@$target:$remote_evidence/$mode" "$local_evidence/$mode"
 }
 
-for mode in ${PROVISION_ACCEPTANCE_MODES:-none before after http}; do
+for mode in ${PROVISION_ACCEPTANCE_MODES:-none before after undecidable http}; do
   run_mode "$mode"
 done
 "$root/work/acceptance-host/reset-acceptance-vm.sh" --yes

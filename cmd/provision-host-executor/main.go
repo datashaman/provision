@@ -173,6 +173,7 @@ func inspect(environment, operator string) host.BootstrapStatus {
 		unitEnvironment := strings.Fields(command("systemctl", "show", active.SystemdUnit, "--property=Environment", "--value"))
 		unitCredentials := strings.Fields(command("systemctl", "show", active.SystemdUnit, "--property=LoadCredentialEncrypted", "--value"))
 		active.DatabaseBinding = observedHTTPDatabaseBinding(environment, unitEnvironment, unitCredentials)
+		active.KeyValueBinding = observedHTTPKeyValueBinding(environment, unitEnvironment, unitCredentials)
 		active.UnitMatches = workingDirectory == active.ReleaseDirectory && contains(unitEnvironment, fmt.Sprintf("PROVISION_HTTP_LISTEN=127.0.0.1:%d", active.Port)) && contains(unitEnvironment, "PROVISION_REVISION="+active.Revision)
 		route, routeOK := caddyAdminRead("/id/" + url.PathEscape(active.RouteID))
 		active.RouteObserved = routeOK
@@ -197,6 +198,7 @@ func inspect(environment, operator string) host.BootstrapStatus {
 			previousEnvironment := strings.Fields(command("systemctl", "show", previous.SystemdUnit, "--property=Environment", "--value"))
 			previousCredentials := strings.Fields(command("systemctl", "show", previous.SystemdUnit, "--property=LoadCredentialEncrypted", "--value"))
 			previous.DatabaseBinding = observedHTTPDatabaseBinding(environment, previousEnvironment, previousCredentials)
+			previous.KeyValueBinding = observedHTTPKeyValueBinding(environment, previousEnvironment, previousCredentials)
 			previous.UnitMatches = previousDirectory == previous.ReleaseDirectory && contains(previousEnvironment, fmt.Sprintf("PROVISION_HTTP_LISTEN=127.0.0.1:%d", previous.Port)) && contains(previousEnvironment, "PROVISION_REVISION="+previous.Revision)
 			if !previous.UnitMatches || !previous.UnitActive && activeRecord.PreviousDrainedAt == nil {
 				result.Findings = append(result.Findings, "retained previous Generation is not runnable")

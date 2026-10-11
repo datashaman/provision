@@ -501,3 +501,29 @@ Environment=PROVISION_KEYVALUE_VALUE_PREFIX=%s
 Environment=%s=%%d/valkey-url
 `, keyValueURLCredentialPath(environment), b.Component, b.LogicalID, b.GenerationID, b.Namespace, strings.Join(b.Keys, ","), b.ValuePrefix, b.EnvironmentVariable)
 }
+
+// observedHTTPKeyValueBinding reads the logical binding a running HTTP unit
+// declares, and whether its encrypted credential is delivered. It never reads
+// the credential value.
+func observedHTTPKeyValueBinding(environment string, unitEnvironment, unitCredentials []string) *host.HTTPKeyValueBindingStatus {
+	values := map[string]string{}
+	for _, entry := range unitEnvironment {
+		if key, value, ok := strings.Cut(entry, "="); ok {
+			values[key] = value
+		}
+	}
+	if values["PROVISION_KEYVALUE_LOGICAL_ID"] == "" && values["PROVISION_KEYVALUE_GENERATION"] == "" && values["PROVISION_KEYVALUE_URL_FILE"] == "" {
+		return nil
+	}
+	status := &host.HTTPKeyValueBindingStatus{
+		Component: values["PROVISION_KEYVALUE_COMPONENT"], LogicalID: values["PROVISION_KEYVALUE_LOGICAL_ID"],
+		GenerationID: values["PROVISION_KEYVALUE_GENERATION"], EnvironmentVariable: "PROVISION_KEYVALUE_URL_FILE", BindingState: "declared",
+	}
+	credentialPath := keyValueURLCredentialPath(environment)
+	if status.Component == "" || status.LogicalID == "" || status.GenerationID == "" || values["PROVISION_KEYVALUE_URL_FILE"] == "" {
+		status.BindingState = "incomplete"
+	} else if contains(unitCredentials, "valkey-url:"+credentialPath) && commandSucceeded("test", "-s", credentialPath) {
+		status.BindingState = "key-value-bound"
+	}
+	return status
+}

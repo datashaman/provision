@@ -210,3 +210,42 @@ func TestKeyValueBoundHTTPPlanBindsWorkloadByLogicalReference(t *testing.T) {
 		t.Fatal("Key-Value-bound HTTP Plan is not deterministic")
 	}
 }
+
+func TestKeyValueBoundHTTPReplanOfExactActiveWorkloadIsIdempotent(t *testing.T) {
+	compiled, observation := keyValueHTTPFixture(t)
+	first, _ := Build(compiled, observation)
+	var stage, health *Operation
+	for i := range first.Plan.Operations {
+		switch first.Plan.Operations[i].Kind {
+		case StageArtifact:
+			stage = &first.Plan.Operations[i]
+		case SwitchEndpoint:
+			health = &first.Plan.Operations[i]
+		}
+	}
+	endpoint := health.Input.Endpoint
+	binding := endpoint.KeyValueBindings[0]
+	observation.Deployment.Active = &host.GenerationStatus{
+		ID: endpoint.ID, Revision: endpoint.Revision, ArtifactDigest: stage.Input.Artifact.Digest, SystemdUnit: endpoint.Unit, RouteID: endpoint.RouteID,
+		UnitActive: true, UnitMatches: true, RouteObserved: true, RouteMatches: true,
+		KeyValueBinding: &host.HTTPKeyValueBindingStatus{Component: binding.Component, LogicalID: binding.LogicalID, GenerationID: binding.GenerationID, EnvironmentVariable: binding.EnvironmentVariable, BindingState: "key-value-bound"},
+	}
+	replan, err := Build(compiled, observation)
+	if err != nil || !replan.Executable || len(replan.Plan.Operations) != 1 || replan.Plan.Operations[0].Kind != PrepareKeyValue {
+		t.Fatalf("exact active workload was not re-planned idempotently: %+v %v", replan, err)
+	}
+	observation.Deployment.Active.KeyValueBinding.BindingState = "incomplete"
+	replan, _ = Build(compiled, observation)
+	if replan.Plan != nil && len(replan.Plan.Operations) == 1 {
+		t.Fatal("an unbound active workload was treated as exact")
+	}
+}
+
+func TestKeyValueActiveGenerationDifferingFromPlanFailsClosed(t *testing.T) {
+	compiled, observation := keyValueFixture(t, "")
+	observation.KeyValue.Active = &host.KeyValueGenerationStatus{ID: "valkey-9-1-1-cc03bc07761a"}
+	preview, _ := Build(compiled, observation)
+	if preview.Executable || preview.Plan != nil || len(preview.Reasons) != 1 || !strings.Contains(preview.Reasons[0], "Store Transition") {
+		t.Fatalf("differing active generation was not rejected: %+v", preview)
+	}
+}

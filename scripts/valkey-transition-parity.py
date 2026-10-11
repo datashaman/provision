@@ -34,9 +34,11 @@ for mode in sys.argv[5:]:
     }
     if not all(checks.values()):
         raise SystemExit(f"{mode} parity check failed: {checks!r}")
-    rows.append({"faultMode": mode, "checks": checks, "accounting": r["accounting"], "executorDigest": r["executorDigest"], "kernel": r["kernel"]})
+    rows.append({"faultMode": mode, "checks": checks, "directLocalAccounting": d["accounting"], "remoteSshAccounting": r["accounting"], "executorDigest": r["executorDigest"], "kernel": r["kernel"]})
 dest.write_text(json.dumps({
     "schemaVersion": "provision.dev/valkey-transition-ssh-parity/v1alpha1", "sourceVersion": version, "comparisons": rows,
+    # The runner invokes this only after restoring the VM and confirming no Environment state remains.
+    "vmRestore": {"restoredBeforeEveryMode": True, "environmentStateAbsentAfterFinalRestore": True},
     "supportBoundaries": [
         "single Host Target", "forward-only rollback classification",
         "authoritative Store Data Role only", "same-major transition only",

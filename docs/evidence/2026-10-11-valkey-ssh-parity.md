@@ -5,7 +5,7 @@ failure matrix from [#100](2026-10-11-valkey-direct-local-failure-matrix.md), th
 matrix over pinned strict SSH from the controller (`scripts/test-direct-local-valkey-transition-host.sh
 --target`), each mode from the clean `provision-acceptance` snapshot, then
 `scripts/valkey-transition-parity.py` compares the pairs. Source: clean commit `8157e76`
-(no `-dirty-` suffix). Structured record: [JSON](2026-10-11-valkey-ssh-parity.json).
+(no `-dirty-` suffix). Structured record: [JSON](2026-10-11-valkey-ssh-parity.json), which holds both the direct-local and SSH accounting per mode. Raw per-run evidence stays in the git-ignored `work/`; snapshot identity is not recorded, only that the VM was restored.
 
 Same configuration, Plans, approvals, interruption points and assertions in both transports: it is the
 same script. Over SSH the controller holds the State Backend, signing key and approvals; the Host sees
@@ -13,7 +13,7 @@ only strict-SSH observation and signed restricted-executor operations. The SSH f
 controller before the executor runs (`before`) or after it completed and returned (`after`), around
 every one of the six transition operations. In both cases `resume` observes the remote Host first:
 `before` executes once, `after` records the completed effect and the executor is not invoked again
-(`mutationReplayedOnResume: false` throughout). `undecidable` makes the authority-switch evidence
+(`mutationReplayedOnResume: false` throughout). The fault is controller death at the SSH call, a proxy for transport loss, not a severed TCP connection. `undecidable` makes the authority-switch evidence
 unreadable; resume records `uncertain` with reason and recovery action and does not restart the
 authoritative container.
 

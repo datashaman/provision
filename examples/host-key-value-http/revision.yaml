@@ -1,0 +1,10 @@
+schemaVersion: provision.dev/v1alpha1
+kind: Revision
+name: provision-example-key-value-http-v1
+application: provision-example-key-value-http
+artifacts:
+  web:
+    # Placeholder identity: the live acceptance harness builds a fixture
+    # workload and substitutes its real digest before planning.
+    source: https://github.com/datashaman/provision-example-key-value-http/releases/download/v0.1.0/provision-example-key-value-http-linux-amd64.tar.gz
+    digest: sha256:0000000000000000000000000000000000000000000000000000000000000000

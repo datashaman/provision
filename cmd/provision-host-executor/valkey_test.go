@@ -102,3 +102,52 @@ func TestConfigValueParsesCLIOutput(t *testing.T) {
 		t.Fatal("CONFIG GET output misparsed")
 	}
 }
+
+func keyValueBindingFixture() planner.KeyValueHTTPBinding {
+	ns := "provision-lab-sessions/rev-1"
+	return planner.KeyValueHTTPBinding{
+		Component: "sessions", LogicalID: "provision-lab-sessions", GenerationID: "valkey-9-1-2-ac9c858b86dc", Reference: "secret://lab/valkey-url",
+		Host: "127.0.0.1", Port: 26379, EnvironmentVariable: "PROVISION_KEYVALUE_URL_FILE", Namespace: ns, Keys: []string{ns + "/key-0001"}, ValuePrefix: "v:",
+	}
+}
+
+func TestKeyValueBindingValidationRejectsDriftAndUnpreparedStore(t *testing.T) {
+	record := bootstrapRecord{Environment: "lab", Account: "provision-lab"}
+	paths := executionPaths{environmentHome: t.TempDir()}
+	good := keyValueBindingFixture()
+	// A binding with no verified prepared generation record is rejected.
+	if err := validateKeyValueBindings([]planner.KeyValueHTTPBinding{good}, record, paths); err == nil {
+		t.Fatal("binding to an unprepared Key-Value Store accepted")
+	}
+	for name, mutate := range map[string]func(*planner.KeyValueHTTPBinding){
+		"foreign logical id": func(b *planner.KeyValueHTTPBinding) { b.LogicalID = "other" },
+		"foreign secret":     func(b *planner.KeyValueHTTPBinding) { b.Reference = "secret://prod/valkey-url" },
+		"public host":        func(b *planner.KeyValueHTTPBinding) { b.Host = "0.0.0.0" },
+		"key outside space":  func(b *planner.KeyValueHTTPBinding) { b.Keys = []string{"other/key"} },
+		"comma key":          func(b *planner.KeyValueHTTPBinding) { b.Keys = []string{b.Namespace + "/a,b"} },
+	} {
+		b := good
+		mutate(&b)
+		if err := validateKeyValueBindings([]planner.KeyValueHTTPBinding{b}, record, paths); err == nil {
+			t.Fatalf("%s accepted", name)
+		}
+	}
+	if err := validateKeyValueBindings([]planner.KeyValueHTTPBinding{good, good}, record, paths); err == nil {
+		t.Fatal("two bindings accepted")
+	}
+	if err := validateKeyValueBindings(nil, record, paths); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestKeyValueUnitBindingDeliversCredentialByReferenceOnly(t *testing.T) {
+	unit := keyValueUnitBinding(planner.SystemdInput{GenerationReference: planner.GenerationReference{Account: "provision-lab", KeyValueBindings: []planner.KeyValueHTTPBinding{keyValueBindingFixture()}}})
+	for _, want := range []string{"LoadCredentialEncrypted=valkey-url:/var/lib/provision/environments/lab/credentials/valkey-url", "PROVISION_KEYVALUE_LOGICAL_ID=provision-lab-sessions", "PROVISION_KEYVALUE_URL_FILE=%d/valkey-url"} {
+		if !strings.Contains(unit, want) {
+			t.Fatalf("unit lacks %q:\n%s", want, unit)
+		}
+	}
+	if strings.Contains(unit, "valkey://") || keyValueUnitBinding(planner.SystemdInput{}) != "" {
+		t.Fatal("credential value rendered or empty binding not empty")
+	}
+}

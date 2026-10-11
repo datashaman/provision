@@ -139,3 +139,74 @@ func TestKeyValuePlanBindsDeterministicKeysByLogicalReference(t *testing.T) {
 		t.Fatalf("binding is not by logical component reference: %+v", binding)
 	}
 }
+
+func keyValueHTTPFixture(t *testing.T) (config.Compiled, host.BootstrapStatus) {
+	t.Helper()
+	compiled, err := config.Load(filepath.Join("..", "..", "examples", "host-key-value-http", "root.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	observation := readyKeyValueHost()
+	observation.SchemaVersion = "provision.dev/host-inspection/v1alpha1"
+	observation.CaddyVersion, observation.CaddyActive, observation.CaddyConfigValid = "2.6.2", true, true
+	observation.CaddyAdminReachable, observation.CaddyConfigDurable = true, true
+	observation.GenerationStorageReady, observation.JournaldActive = true, true
+	observation.ExecutorDigest, observation.AuthorityKeyID, observation.SSHHostKeyFingerprint = "sha256:e", "key", "SHA256:host"
+	observation.SystemdVersion, observation.CgroupV2 = "systemd 259", true
+	return compiled, observation
+}
+
+func TestKeyValueBoundHTTPPlanBindsWorkloadByLogicalReference(t *testing.T) {
+	compiled, observation := keyValueHTTPFixture(t)
+	preview, err := Build(compiled, observation)
+	if err != nil || !preview.Executable || preview.Plan == nil {
+		t.Fatalf("Key-Value-bound HTTP preview = %+v, %v", preview, err)
+	}
+	plan := preview.Plan
+	if plan.Operations[0].Kind != PrepareKeyValue || plan.Operations[1].Kind != StageArtifact || len(plan.Operations[1].DependsOn) != 1 || plan.Operations[1].DependsOn[0] != "op-01" {
+		t.Fatalf("operation order is wrong: %+v", plan.Operations)
+	}
+	var bound int
+	for _, operation := range plan.Operations {
+		in := operation.Input
+		for _, bindings := range [][]KeyValueHTTPBinding{
+			func() []KeyValueHTTPBinding {
+				if in.Systemd != nil {
+					return in.Systemd.KeyValueBindings
+				}
+				return nil
+			}(),
+			func() []KeyValueHTTPBinding {
+				if in.Health != nil {
+					return in.Health.KeyValueBindings
+				}
+				return nil
+			}(),
+			func() []KeyValueHTTPBinding {
+				if in.Endpoint != nil {
+					return in.Endpoint.KeyValueBindings
+				}
+				return nil
+			}(),
+		} {
+			if len(bindings) == 1 {
+				bound++
+				b := bindings[0]
+				if b.Component != "sessions" || b.LogicalID != "provision-lab-sessions" || b.Reference != "secret://lab/valkey-url" || b.EnvironmentVariable != "PROVISION_KEYVALUE_URL_FILE" || len(b.Keys) == 0 {
+					t.Fatalf("binding is not by logical reference: %+v", b)
+				}
+			}
+		}
+	}
+	if bound < 3 {
+		t.Fatalf("binding reached only %d of the systemd, health, and endpoint inputs", bound)
+	}
+	encoded, _ := json.Marshal(preview)
+	if strings.Contains(string(encoded), "valkey://") {
+		t.Fatal("Plan contains a credential-bearing URL")
+	}
+	second, _ := Build(compiled, observation)
+	if second.Plan.ID != plan.ID {
+		t.Fatal("Key-Value-bound HTTP Plan is not deterministic")
+	}
+}

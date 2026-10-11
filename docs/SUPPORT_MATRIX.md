@@ -54,6 +54,20 @@ other Valkey/image/Podman/OS versions. The credential proof covers systemd
 encrypted credential delivery scoped to the Environment user unit; it does not
 assert that the VM's backing media is encrypted.
 
+## Managed Valkey first generation and HTTP binding
+
+| Acceptance client | Host OS | Runtime identity | Service and topology | Result |
+| --- | --- | --- | --- | --- |
+| direct-local harness `sha256:25dc50db91b5de7f156cb4b6c98507e9b3a47b4607bd6bdecfccd9ebcb355958`; HTTP harness `sha256:a4bb04ab14b0be49b61e046f937315258ad0ab777594430ee3086be9a079372b`; controller `sha256:40a27b879ce058adef3cecc04bf47d0085ffc19f9150ff25dbb2140a8fbafaee`; fixture workload source `sha256:933bb6b62ae83b4dc066be70e5d44ff57f344257cb580d21bdb016e1a98b068b`; built on top of `1018b9f0b2cc67198681e65feac23edec8c2c470` | Ubuntu Server 26.04 VM (`provision-acceptance`, clean snapshot restored before each mode), direct-local Host Handler | Valkey `9.1.2` digest-pinned image, rootless Podman/Quadlet, AOF `appendonly yes` `appendfsync everysec`, loopback listener `127.0.0.1:26379` | one authoritative Key-Value Store generation; `prepareKeyValue` executed through the restricted executor, with `none`, `before` and `after` interruption/resume modes; plus a Key-Value-bound HTTP workload behind the stable Caddy Endpoint | passed: inspection reports exact version, packaging identity, persistence and listener; authenticated client round trip and deterministic key read-back before the generation is reported active; the workload binds by logical reference and proves the same keys through its candidate verification; the resolved credential appears in no Plan, journal, status or evidence |
+
+This row qualifies only the exact combination above (Valkey `9.1.2`; not `9.1.1`
+live-executed in this slice). It advertises no Store Transition, replication,
+write fence, or rollback guarantee, and excludes strict-SSH parity, the
+`undecidable` interruption mode, backup, restore, host-loss recovery, derived or
+ephemeral roles, multi-node Valkey, ElastiCache, external Valkey and re-planning
+an already-active Key-Value-bound workload. Evidence is kept under the
+git-ignored `work/issue-97-live/evidence`.
+
 ## Managed PostgreSQL Host packaging
 
 | Acceptance client | Host OS | Runtime identity | Service and topology | Result |

@@ -441,3 +441,63 @@ func inspectKeyValue(environment, account string, paths executionPaths) *host.Ke
 	}
 	return status
 }
+
+func keyValueHTTPKeysMatch(binding planner.KeyValueHTTPBinding, observed []host.DeterministicKeyStatus) bool {
+	if len(binding.Keys) == 0 || len(observed) != len(binding.Keys) {
+		return false
+	}
+	for i, key := range binding.Keys {
+		if observed[i].Key != key || observed[i].Value != binding.ValuePrefix+key {
+			return false
+		}
+	}
+	return true
+}
+
+// validateKeyValueBindings checks that an HTTP Generation binds only a verified
+// prepared Key-Value Store generation, by logical reference, with its
+// credential delivered as an encrypted credential file.
+func validateKeyValueBindings(bindings []planner.KeyValueHTTPBinding, record bootstrapRecord, paths executionPaths) error {
+	if len(bindings) > 1 {
+		return errors.New("only one Key-Value Store binding is qualified for HTTP components")
+	}
+	for _, b := range bindings {
+		if !deploymentIdentifier.MatchString(b.Component) || b.LogicalID != "provision-"+record.Environment+"-"+b.Component ||
+			b.Reference != "secret://"+record.Environment+"/valkey-url" || b.Host != keyValueListenAddress || b.Port != keyValuePort ||
+			b.EnvironmentVariable != "PROVISION_KEYVALUE_URL_FILE" || !strings.HasPrefix(b.Namespace, b.LogicalID+"/") || len(b.Keys) == 0 || b.ValuePrefix == "" {
+			return errors.New("Key-Value Store binding does not match the bootstrapped Environment or logical Key-Value Store")
+		}
+		for _, key := range b.Keys {
+			if !strings.HasPrefix(key, b.Namespace+"/") || strings.ContainsAny(key, ", \n") {
+				return errors.New("Key-Value Store binding deterministic key is outside the planned namespace")
+			}
+		}
+		var generation keyValueGenerationRecord
+		path := filepath.Join(paths.environmentHome, "services", "valkey", "generations", b.GenerationID, "generation.json")
+		if err := readExactJSON(path, &generation); err != nil || generation.SchemaVersion != keyValueGenerationSchema ||
+			generation.KeyValue.LogicalID != b.LogicalID || generation.KeyValue.GenerationID != b.GenerationID ||
+			generation.KeyValue.Account != record.Account || generation.KeyValue.CredentialReference != b.Reference || generation.KeyValue.Port != b.Port {
+			return errors.New("Key-Value Store binding does not match a verified prepared Key-Value Store generation")
+		}
+	}
+	return nil
+}
+
+// keyValueUnitBinding renders the workload's systemd credential and logical
+// binding environment. The credential value is never in the unit text.
+func keyValueUnitBinding(input planner.SystemdInput) string {
+	if len(input.KeyValueBindings) != 1 {
+		return ""
+	}
+	b := input.KeyValueBindings[0]
+	environment := strings.TrimPrefix(input.Account, "provision-")
+	return fmt.Sprintf(`LoadCredentialEncrypted=valkey-url:%s
+Environment=PROVISION_KEYVALUE_COMPONENT=%s
+Environment=PROVISION_KEYVALUE_LOGICAL_ID=%s
+Environment=PROVISION_KEYVALUE_GENERATION=%s
+Environment=PROVISION_KEYVALUE_NAMESPACE=%s
+Environment=PROVISION_KEYVALUE_KEYS=%s
+Environment=PROVISION_KEYVALUE_VALUE_PREFIX=%s
+Environment=%s=%%d/valkey-url
+`, keyValueURLCredentialPath(environment), b.Component, b.LogicalID, b.GenerationID, b.Namespace, strings.Join(b.Keys, ","), b.ValuePrefix, b.EnvironmentVariable)
+}

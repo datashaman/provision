@@ -1,0 +1,21 @@
+schemaVersion: provision.dev/v1alpha1
+kind: Application
+name: provision-example-key-value-http
+components:
+  sessions:
+    role: key-value-store
+    keyValue:
+      engine: valkey
+      dataRole: authoritative
+      transitionCleanupPolicy: retain-previous-generation
+  web:
+    role: http
+    requires:
+      - sessions
+    health:
+      liveness:
+        path: /live
+      readiness:
+        path: /ready
+      candidateVerification:
+        path: /verify

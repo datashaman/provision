@@ -296,6 +296,17 @@ func (c Compiled) IsDatabaseBoundHTTP() bool {
 	return roles["database"] && roles["http"]
 }
 
+func (c Compiled) IsKeyValueBoundHTTP() bool {
+	if len(c.Application.Components) != 2 {
+		return false
+	}
+	roles := map[string]bool{}
+	for _, component := range c.Application.Components {
+		roles[component.Role] = true
+	}
+	return roles["key-value-store"] && roles["http"]
+}
+
 func (c Compiled) IsKeyValueOnly() bool {
 	if len(c.Application.Components) != 1 {
 		return false
@@ -628,6 +639,9 @@ func (c Compiled) validateAsync() error {
 	if c.IsDatabaseBoundHTTP() {
 		return c.validateDatabaseBoundHTTP()
 	}
+	if c.IsKeyValueBoundHTTP() {
+		return c.validateKeyValueBoundHTTP()
+	}
 	if c.IsQueueOnly() {
 		return c.validateQueueOnly()
 	}
@@ -922,21 +936,8 @@ func (c Compiled) validateKeyValueOnly() error {
 		if component.Health != (Health{}) || component.Database != (DatabaseContract{}) || component.Queue != (QueueContract{}) || component.Worker != (WorkerContract{}) || component.Task != (TaskContract{}) || component.Schedule != (ScheduleContract{}) {
 			return fmt.Errorf("Key-Value Store %q contains fields for another component type", n)
 		}
-		contract := component.KeyValue
-		if contract.Engine != "valkey" {
-			return fmt.Errorf("Key-Value Store %q requires the valkey engine", n)
-		}
-		switch contract.DataRole {
-		case "authoritative":
-		case "derived", "ephemeral":
-			return fmt.Errorf("Key-Value Store %q dataRole %q is not supported by managed Valkey; declare authoritative", n, contract.DataRole)
-		case "":
-			return fmt.Errorf("Key-Value Store %q requires an explicit dataRole (authoritative)", n)
-		default:
-			return fmt.Errorf("Key-Value Store %q has unknown dataRole %q; managed Valkey requires authoritative", n, contract.DataRole)
-		}
-		if contract.TransitionCleanupPolicy != "retain-previous-generation" {
-			return fmt.Errorf("Key-Value Store %q requires previous Store Generation retention policy", n)
+		if err := validateKeyValueContract(n, component); err != nil {
+			return err
 		}
 	}
 	implementation, ok := c.Environment.Implementations[name]
@@ -963,9 +964,17 @@ func (c Compiled) validateKeyValueOnly() error {
 	return nil
 }
 
-func (c Compiled) validateDatabaseBoundHTTP() error {
+func (c Compiled) validateDatabaseBoundHTTP() error { return c.validateStoreBoundHTTP("database") }
+
+func (c Compiled) validateKeyValueBoundHTTP() error {
+	return c.validateStoreBoundHTTP("key-value-store")
+}
+
+// validateStoreBoundHTTP validates one HTTP component bound to one managed
+// store, where storeRole is "database" or "key-value-store".
+func (c Compiled) validateStoreBoundHTTP(storeRole string) error {
 	if len(c.Environment.Implementations) != 2 {
-		return errors.New("Database-bound HTTP tracer requires exactly one HTTP component implementation and one Database implementation")
+		return errors.New("Store-bound HTTP tracer requires exactly one HTTP component implementation and one store implementation")
 	}
 	var httpName, databaseName string
 	for name, component := range c.Application.Components {
@@ -990,11 +999,20 @@ func (c Compiled) validateDatabaseBoundHTTP() error {
 					return fmt.Errorf("HTTP component %q requires a valid %s health path", name, check.name)
 				}
 			}
-		case "database":
+		case storeRole:
 			if databaseName != "" {
 				return errors.New("Database-bound HTTP tracer requires exactly one Database")
 			}
 			databaseName = name
+			if storeRole == "key-value-store" {
+				if component.Health != (Health{}) || component.Database != (DatabaseContract{}) || component.Queue != (QueueContract{}) || component.Worker != (WorkerContract{}) || component.Task != (TaskContract{}) || component.Schedule != (ScheduleContract{}) {
+					return fmt.Errorf("Key-Value Store %q contains fields for another component type", name)
+				}
+				if err := validateKeyValueContract(name, component); err != nil {
+					return err
+				}
+				break
+			}
 			if component.Health != (Health{}) || component.Queue != (QueueContract{}) || component.Worker != (WorkerContract{}) || component.Task != (TaskContract{}) || component.Schedule != (ScheduleContract{}) {
 				return fmt.Errorf("Database %q contains fields for another component type", name)
 			}
@@ -1039,9 +1057,15 @@ func (c Compiled) validateDatabaseBoundHTTP() error {
 			return errors.New("Database-bound HTTP tracer requires the HTTP component and Database on the same Host Target")
 		}
 		switch component.Role {
-		case "database":
+		case storeRole:
 			if implementation.Endpoint != (Endpoint{}) || implementation.Worker != (WorkerImplementation{}) || implementation.Schedule != (ScheduleImplementation{}) {
 				return fmt.Errorf("Database %q contains fields for another implementation type", name)
+			}
+			if storeRole == "key-value-store" {
+				if implementation.Kind != "valkey-quadlet" || implementation.Lifecycle != "managed" || implementation.Rollout != "required" || !validSecretReference(implementation.Credential) {
+					return fmt.Errorf("Key-Value Store %q requires a managed valkey-quadlet implementation and credential Secret Reference", name)
+				}
+				break
 			}
 			if implementation.Kind != "postgresql-quadlet" || implementation.Lifecycle != "managed" || implementation.Rollout != "required" || !validSecretReference(implementation.Credential) {
 				return fmt.Errorf("Database %q requires a managed postgresql-quadlet implementation and Database credential Secret Reference", name)
@@ -1077,6 +1101,26 @@ func (c Compiled) validateDatabaseBoundHTTP() error {
 	}
 	if _, ok := c.Revision.Artifacts[httpName]; !ok {
 		return fmt.Errorf("HTTP component %q requires an immutable Artifact", httpName)
+	}
+	return nil
+}
+
+func validateKeyValueContract(name string, component Component) error {
+	contract := component.KeyValue
+	if contract.Engine != "valkey" {
+		return fmt.Errorf("Key-Value Store %q requires the valkey engine", name)
+	}
+	switch contract.DataRole {
+	case "authoritative":
+	case "derived", "ephemeral":
+		return fmt.Errorf("Key-Value Store %q dataRole %q is not supported by managed Valkey; declare authoritative", name, contract.DataRole)
+	case "":
+		return fmt.Errorf("Key-Value Store %q requires an explicit dataRole (authoritative)", name)
+	default:
+		return fmt.Errorf("Key-Value Store %q has unknown dataRole %q; managed Valkey requires authoritative", name, contract.DataRole)
+	}
+	if contract.TransitionCleanupPolicy != "retain-previous-generation" {
+		return fmt.Errorf("Key-Value Store %q requires previous Store Generation retention policy", name)
 	}
 	return nil
 }

@@ -843,3 +843,24 @@ func TestVerifyKeyValueResultRequiresClientRoundTripAndExactKeys(t *testing.T) {
 		})
 	}
 }
+
+func TestKeyValueBindingEvidenceRequiresExactKeysAndLogicalIdentity(t *testing.T) {
+	binding := planner.KeyValueHTTPBinding{LogicalID: "l", GenerationID: "g", Keys: []string{"ns/key-0001"}, ValuePrefix: "v:"}
+	good := &host.KeyValueBindingObservation{LogicalID: "l", GenerationID: "g", Status: "verified", Keys: []host.DeterministicKeyStatus{{Key: "ns/key-0001", Value: "v:ns/key-0001"}}}
+	if !keyValueBindingEvidenceMatches([]planner.KeyValueHTTPBinding{binding}, good) || !keyValueBindingEvidenceMatches(nil, nil) {
+		t.Fatal("valid evidence rejected")
+	}
+	for name, observed := range map[string]*host.KeyValueBindingObservation{
+		"missing":    nil,
+		"unverified": {LogicalID: "l", GenerationID: "g", Status: "failed", Keys: good.Keys},
+		"wrong key":  {LogicalID: "l", GenerationID: "g", Status: "verified", Keys: []host.DeterministicKeyStatus{{Key: "x", Value: "v:x"}}},
+		"wrong gen":  {LogicalID: "l", GenerationID: "h", Status: "verified", Keys: good.Keys},
+	} {
+		if keyValueBindingEvidenceMatches([]planner.KeyValueHTTPBinding{binding}, observed) {
+			t.Fatalf("%s evidence accepted", name)
+		}
+	}
+	if keyValueBindingEvidenceMatches(nil, good) {
+		t.Fatal("unplanned binding evidence accepted")
+	}
+}

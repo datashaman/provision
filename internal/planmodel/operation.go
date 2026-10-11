@@ -319,6 +319,9 @@ type GenerationReference struct {
 	Account          string                 `json:"account"`
 	ReleaseDirectory string                 `json:"releaseDirectory"`
 	DatabaseBindings []DatabaseBindingInput `json:"databaseBindings,omitempty"`
+	// KeyValueBindings bind the HTTP workload to a managed Key-Value Store by
+	// logical component reference. They carry the Secret Reference only.
+	KeyValueBindings []KeyValueHTTPBinding `json:"keyValueBindings,omitempty"`
 }
 
 type GenerationInput struct {
@@ -405,3 +408,19 @@ type KeyValueBinding struct {
 
 // DeterministicValue is the value stored under a deterministic workload key.
 func (b KeyValueBinding) DeterministicValue(key string) string { return b.ValuePrefix + key }
+
+// KeyValueHTTPBinding is how an HTTP Generation binds a Key-Value Store: by
+// logical component and Store Generation, with a Secret Reference delivered as
+// an encrypted credential file and deterministic keys it must read back.
+type KeyValueHTTPBinding struct {
+	Component           string   `json:"component"`
+	LogicalID           string   `json:"logicalId"`
+	GenerationID        string   `json:"generationId"`
+	Reference           string   `json:"reference"`
+	Host                string   `json:"host"`
+	Port                int      `json:"port"`
+	EnvironmentVariable string   `json:"environmentVariable"`
+	Namespace           string   `json:"namespace"`
+	Keys                []string `json:"keys"`
+	ValuePrefix         string   `json:"valuePrefix"`
+}

@@ -118,7 +118,7 @@ func validateGenerationReference(input planner.GenerationReference, record boots
 	if err := validateDatabaseBindings(input.DatabaseBindings, record, paths); err != nil {
 		return err
 	}
-	return nil
+	return validateKeyValueBindings(input.KeyValueBindings, record, paths)
 }
 
 func validateDatabaseBindings(bindings []planner.DatabaseBindingInput, record bootstrapRecord, paths executionPaths) error {
@@ -617,6 +617,7 @@ Environment=PROVISION_DATABASE_NAME=%s
 Environment=PROVISION_DATABASE_URL_FILE=%%d/%s
 `, credentialName, postgresqlURLCredentialPath(environment), binding.Component, binding.LogicalID, binding.GenerationID, binding.Database, credentialName)
 	}
+	databaseBinding += keyValueUnitBinding(input)
 	return fmt.Sprintf(`[Unit]
 Description=Provision candidate %s
 After=network.target
@@ -788,6 +789,7 @@ func checkHTTPHealth(ctx context.Context, input planner.HealthInput, unavailable
 			var body struct {
 				Revision        string                           `json:"revision"`
 				DatabaseBinding *host.DatabaseBindingObservation `json:"databaseBinding"`
+				KeyValueBinding *host.KeyValueBindingObservation `json:"keyValueBinding"`
 			}
 			if json.Unmarshal(data, &body) != nil || body.Revision != input.Revision {
 				observed.Reason = "candidate verification did not report the planned Revision"
@@ -812,6 +814,24 @@ func checkHTTPHealth(ctx context.Context, input planner.HealthInput, unavailable
 					if observed.DatabaseBinding.Reason == "" {
 						observed.DatabaseBinding.Reason = observed.Reason
 					}
+					result = append(result, observed)
+					return result, check.name + " check failed"
+				}
+			}
+			if len(input.KeyValueBindings) > 0 {
+				binding := input.KeyValueBindings[0]
+				observed.KeyValueBinding = body.KeyValueBinding
+				if observed.KeyValueBinding == nil {
+					observed.Reason = "candidate verification did not report the Key-Value Store binding"
+					result = append(result, observed)
+					return result, check.name + " check failed"
+				}
+				if observed.KeyValueBinding.LogicalID != binding.LogicalID ||
+					observed.KeyValueBinding.GenerationID != binding.GenerationID ||
+					observed.KeyValueBinding.Status != "verified" ||
+					!keyValueHTTPKeysMatch(binding, observed.KeyValueBinding.Keys) {
+					observed.Reason = "candidate verification did not prove the planned Key-Value Store binding"
+					observed.KeyValueBinding.Status = "failed"
 					result = append(result, observed)
 					return result, check.name + " check failed"
 				}

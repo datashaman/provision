@@ -660,6 +660,9 @@ func verifyHealthResult(envelope operation.Envelope, result operation.Result) er
 			if check.Name == "candidateVerification" && !databaseBindingEvidenceMatches(input.DatabaseBindings, check.DatabaseBinding) {
 				return errors.New("host health Database binding evidence does not match the Plan")
 			}
+			if check.Name == "candidateVerification" && !keyValueBindingEvidenceMatches(input.KeyValueBindings, check.KeyValueBinding) {
+				return errors.New("host health Key-Value Store binding evidence does not match the Plan")
+			}
 		}
 	}
 	if result.Outcome == operation.OutcomeFailed && (observed.Status != host.CandidateFailed || observed.Reason == "" || observed.SwitchEligible) {
@@ -829,11 +832,23 @@ func exactHealthChecks(checks []host.HealthCheckObservation, input planner.Healt
 		if check.Name != expected[index].name || check.Path != expected[index].path || !check.Healthy || check.StatusCode < 200 || check.StatusCode >= 300 || check.Reason != "" {
 			return false
 		}
-		if check.Name == "candidateVerification" && !databaseBindingEvidenceMatches(input.DatabaseBindings, check.DatabaseBinding) {
+		if check.Name == "candidateVerification" && (!databaseBindingEvidenceMatches(input.DatabaseBindings, check.DatabaseBinding) || !keyValueBindingEvidenceMatches(input.KeyValueBindings, check.KeyValueBinding)) {
 			return false
 		}
 	}
 	return true
+}
+
+func keyValueBindingEvidenceMatches(planned []planner.KeyValueHTTPBinding, observed *host.KeyValueBindingObservation) bool {
+	if len(planned) == 0 {
+		return observed == nil
+	}
+	if len(planned) != 1 || observed == nil {
+		return false
+	}
+	binding := planned[0]
+	return observed.LogicalID == binding.LogicalID && observed.GenerationID == binding.GenerationID && observed.Status == "verified" &&
+		keyValueKeysMatch(planner.KeyValueBinding{Keys: binding.Keys, ValuePrefix: binding.ValuePrefix}, observed.Keys)
 }
 
 func databaseBindingEvidenceMatches(planned []planner.DatabaseBindingInput, observed *host.DatabaseBindingObservation) bool {

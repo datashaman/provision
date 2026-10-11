@@ -525,3 +525,35 @@ func TestLoadKeyValueExample(t *testing.T) {
 		t.Fatalf("Key-Value example did not compile: %v", err)
 	}
 }
+
+func TestLoadKeyValueBoundHTTPExample(t *testing.T) {
+	compiled, err := Load(filepath.Join("..", "..", "examples", "host-key-value-http", "root.yaml"))
+	if err != nil || !compiled.IsKeyValueBoundHTTP() || compiled.IsDatabaseBoundHTTP() {
+		t.Fatalf("Key-Value-bound HTTP example did not compile: %v", err)
+	}
+}
+
+func TestKeyValueBoundHTTPRejectsUnsafeContracts(t *testing.T) {
+	for name, test := range map[string]struct{ from, to, want string }{
+		"derived role":        {"dataRole: authoritative", "dataRole: derived", "not supported by managed Valkey"},
+		"missing requirement": {"    requires:\n      - sessions\n", "", "must require exactly one"},
+		"wrong store kind":    {"kind: valkey-quadlet", "kind: redis-quadlet", "requires a managed valkey-quadlet"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			dir := t.TempDir()
+			for _, file := range []string{"application.yaml", "environment.yaml", "revision.yaml", "root.yaml"} {
+				data, err := os.ReadFile(filepath.Join("..", "..", "examples", "host-key-value-http", file))
+				if err != nil {
+					t.Fatal(err)
+				}
+				text := strings.Replace(string(data), test.from, test.to, 1)
+				if err := os.WriteFile(filepath.Join(dir, file), []byte(text), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if _, err := Load(filepath.Join(dir, "root.yaml")); err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("error = %v; want %q", err, test.want)
+			}
+		})
+	}
+}

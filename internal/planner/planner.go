@@ -159,12 +159,16 @@ type DrainInput = planmodel.DrainInput
 type RetentionInput = planmodel.RetentionInput
 type KeyValueBinding = planmodel.KeyValueBinding
 type KeyValuePlan = planmodel.KeyValuePlan
+type KeyValueHTTPBinding = planmodel.KeyValueHTTPBinding
 
 // Build converts validated configuration and a restricted Host Target
 // inspection into canonical preview data. It never changes or persists state.
 func Build(compiled config.Compiled, observation host.BootstrapStatus) (Preview, error) {
 	if compiled.IsKeyValueOnly() {
 		return buildKeyValue(compiled, observation)
+	}
+	if compiled.IsKeyValueBoundHTTP() {
+		return buildKeyValueBoundHTTP(compiled, observation)
 	}
 	if compiled.IsDatabaseOnly() {
 		return buildDatabase(compiled, observation)
@@ -382,6 +386,7 @@ func buildKeyValue(compiled config.Compiled, observation host.BootstrapStatus) (
 		ArtifactDigests:          map[string]string{},
 		Target:                   Target{Name: target.Name, Kind: target.Target.Kind, Local: target.Target.Local, Address: target.Target.Address, User: target.Target.User},
 		Capability:               evidence,
+		ApprovalRequirements:     []ApprovalRequirement{{Capability: "approve", Reason: "environment key-value policy requires approval of this exact Plan"}},
 		SensitiveValueReferences: []string{keyValue.CredentialReference},
 		KeyValue:                 keyValue,
 		Operations:               []Operation{operation},
@@ -391,6 +396,114 @@ func buildKeyValue(compiled config.Compiled, observation host.BootstrapStatus) (
 		return Preview{}, err
 	}
 	return preview, nil
+}
+
+// buildKeyValueBoundHTTP previews an HTTP component bound to a managed
+// Key-Value Store: prepareKeyValue first, then the HTTP blue-green operations
+// carrying a logical-reference binding the candidate must prove by reading its
+// deterministic keys.
+func buildKeyValueBoundHTTP(compiled config.Compiled, observation host.BootstrapStatus) (Preview, error) {
+	selection, err := storeBoundHTTPSelection(compiled, "key-value-store")
+	if err != nil {
+		return Preview{}, err
+	}
+	if observation.Environment != compiled.Environment.Name || observation.Operator != selection.Target.User {
+		return Preview{}, errors.New("host observation does not identify the configured Environment and operator")
+	}
+	evaluation := hostkeyvalue.Evaluate(compiled, observation)
+	httpSelection := config.HostSelection{
+		Component: selection.HTTPComponent, Implementation: selection.HTTPImplementation, Artifact: selection.HTTPArtifact,
+		TargetName: selection.TargetName, Target: selection.Target,
+	}
+	evidence := CapabilityEvidence{
+		Contract:     "host-valkey-quadlet-key-value-store+http-component/v1alpha1",
+		RequiredMode: "required",
+		Guarantees: unique(append([]string{
+			"logical-key-value-binding",
+			"secret-reference-only-plan",
+			"application-health-distinct-from-store-health",
+			"deterministic-key-evidence",
+		}, append(evaluation.Guarantees, "separate-candidate-generation", "candidate-health-gate", "atomic-caddy-route-load", "previous-generation-retention")...)),
+		SupportEvidence: unique(append(evaluation.SupportEvidence, "restricted-bootstrap-ready", "caddy-config-valid", "generation-storage-ready", "restricted-executor-identity-matched")),
+		Observed:        observation,
+		Decision:        "unsupported",
+	}
+	reasons := unique(append(capabilityIssues(observation, httpSelection), evaluation.Reasons...))
+	preview := Preview{SchemaVersion: PreviewSchemaVersion, Capability: evidence, Reasons: reasons}
+	if len(reasons) != 0 {
+		return preview, nil
+	}
+	keyValue := hostkeyvalue.Plan(compiled, observation)
+	binding := KeyValueHTTPBinding{
+		Component: selection.DatabaseComponent, LogicalID: keyValue.LogicalID, GenerationID: keyValue.GenerationID,
+		Reference: keyValue.CredentialReference, Host: keyValue.ListenAddress, Port: keyValue.Port,
+		EnvironmentVariable: "PROVISION_KEYVALUE_URL_FILE",
+		Namespace:           keyValue.Binding.Namespace, Keys: keyValue.Binding.Keys, ValuePrefix: keyValue.Binding.ValuePrefix,
+	}
+	observationDigest, err := digest(observation)
+	if err != nil {
+		return Preview{}, err
+	}
+	operations := []Operation{hostkeyvalue.Operation(keyValue)}
+	httpOps := httpOperations(compiled, httpSelection, observation, observationDigest)
+	for index := range httpOps {
+		httpOps[index] = offsetOperation(httpOps[index], 1)
+		attachKeyValueBindings(&httpOps[index], []KeyValueHTTPBinding{binding})
+		if httpOps[index].Kind == StageArtifact {
+			httpOps[index] = withDependencies(httpOps[index], "op-01")
+		}
+	}
+	operations = append(operations, httpOps...)
+	for _, operation := range operations {
+		if !slices.Contains(observation.AllowedOperations, string(operation.Kind)) {
+			reasons = append(reasons, fmt.Sprintf("host executor does not allow typed %s operations", operation.Kind))
+		}
+	}
+	if len(reasons) != 0 {
+		preview.Reasons = unique(reasons)
+		return preview, nil
+	}
+	preview.Executable = true
+	evidence.Decision = "required-key-value-bound-http-supported"
+	preview.Capability = evidence
+	plan := Plan{
+		SchemaVersion: SchemaVersion, Application: compiled.Application.Name, Environment: compiled.Environment.Name, Revision: compiled.Revision.Name,
+		ConfigurationDigest: compiled.Digest, ArtifactDigests: map[string]string{selection.HTTPComponent: selection.HTTPArtifact.Digest},
+		Target:            Target{Name: selection.TargetName, Kind: selection.Target.Kind, Local: selection.Target.Local, Address: selection.Target.Address, User: selection.Target.User},
+		ObservationDigest: observationDigest, Capability: evidence,
+		ApprovalRequirements:     []ApprovalRequirement{{Capability: "approve", Reason: "environment key-value-bound HTTP policy requires approval of this exact Plan"}},
+		SensitiveValueReferences: []string{keyValue.CredentialReference},
+		KeyValue:                 keyValue,
+		Operations:               operations,
+	}
+	plan.ID, err = digest(plan)
+	if err != nil {
+		return Preview{}, err
+	}
+	preview.Plan = &plan
+	return preview, nil
+}
+
+func attachKeyValueBindings(operation *Operation, bindings []KeyValueHTTPBinding) {
+	copyOf := func() []KeyValueHTTPBinding { return append([]KeyValueHTTPBinding(nil), bindings...) }
+	if operation.Input.Generation != nil {
+		operation.Input.Generation.KeyValueBindings = copyOf()
+	}
+	if operation.Input.Systemd != nil {
+		operation.Input.Systemd.KeyValueBindings = copyOf()
+	}
+	if operation.Input.Health != nil {
+		operation.Input.Health.KeyValueBindings = copyOf()
+	}
+	if operation.Input.Endpoint != nil {
+		operation.Input.Endpoint.KeyValueBindings = copyOf()
+	}
+	if operation.Input.Drain != nil {
+		operation.Input.Drain.Endpoint.KeyValueBindings = copyOf()
+	}
+	if operation.Input.Retention != nil {
+		operation.Input.Retention.Endpoint.KeyValueBindings = copyOf()
+	}
 }
 
 func buildDatabase(compiled config.Compiled, observation host.BootstrapStatus) (Preview, error) {
@@ -477,6 +590,12 @@ type databaseBoundHTTPPlanSelection struct {
 }
 
 func databaseBoundHTTPSelection(compiled config.Compiled) (databaseBoundHTTPPlanSelection, error) {
+	return storeBoundHTTPSelection(compiled, "database")
+}
+
+// storeBoundHTTPSelection selects the one HTTP component and the one store
+// component of the given role ("database" or "key-value-store").
+func storeBoundHTTPSelection(compiled config.Compiled, storeRole string) (databaseBoundHTTPPlanSelection, error) {
 	target, err := compiled.PlanningTarget()
 	if err != nil {
 		return databaseBoundHTTPPlanSelection{}, err
@@ -493,7 +612,7 @@ func databaseBoundHTTPSelection(compiled config.Compiled) (databaseBoundHTTPPlan
 			selection.HTTPComponent = name
 			selection.HTTPImplementation = compiled.Environment.Implementations[name]
 			selection.HTTPArtifact = artifact
-		case "database":
+		case storeRole:
 			selection.DatabaseComponent = name
 		}
 	}

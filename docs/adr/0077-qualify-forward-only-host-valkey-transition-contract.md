@@ -96,5 +96,5 @@ fails writes immediately and does not expire.
   external Valkey, cross-major upgrade, Redis, and any zero-loss or
   bounded-loss rollback.
 - Live direct-local interruption proof is in
-  `docs/evidence/2026-10-11-valkey-direct-local-failure-matrix.md`. SSH parity
-  and candidate failure remain the work of #101–#102.
+  `docs/evidence/2026-10-11-valkey-direct-local-failure-matrix.md`; SSH parity is in
+  `docs/evidence/2026-10-11-valkey-ssh-parity.md`. Candidate failure remains the work of #102.

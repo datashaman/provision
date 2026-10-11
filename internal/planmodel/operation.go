@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"provision/internal/config"
@@ -48,6 +49,12 @@ const (
 	VerifyDatabaseActive         OperationKind = "verifyDatabaseActive"
 	RetainDatabasePrevious       OperationKind = "retainDatabasePrevious"
 	PrepareKeyValue              OperationKind = "prepareKeyValue"
+	PrepareKeyValueCandidate     OperationKind = "prepareKeyValueCandidate"
+	SynchronizeKeyValueCandidate OperationKind = "synchronizeKeyValueCandidate"
+	FenceKeyValueWrites          OperationKind = "fenceKeyValueWrites"
+	SwitchKeyValueAuthority      OperationKind = "switchKeyValueAuthority"
+	VerifyKeyValueActive         OperationKind = "verifyKeyValueActive"
+	RetainKeyValuePrevious       OperationKind = "retainKeyValuePrevious"
 )
 
 type RecoveryMode string
@@ -396,6 +403,45 @@ type KeyValuePlan struct {
 	// Binding is by logical component reference. Keys are deterministic so the
 	// active generation can be read back directly.
 	Binding KeyValueBinding `json:"binding"`
+	// Previous and Transition are set only for a Store Transition: Previous is
+	// the exact observed active generation being replaced.
+	Previous   *host.KeyValueGenerationStatus `json:"previous,omitempty"`
+	Transition *KeyValueTransition            `json:"transition,omitempty"`
+}
+
+// KeyValueTransition is the approved Store Transition contract for one managed
+// Valkey generation replacement. The candidate runs as a separate service,
+// container and loopback listener until authority switches.
+type KeyValueTransition struct {
+	Synchronization         string `json:"synchronization"`
+	WriteFence              string `json:"writeFence"`
+	WriteFenceMaximum       string `json:"writeFenceMaximum"`
+	ForwardCutoverGuarantee string `json:"forwardCutoverGuarantee"`
+	StoreRollbackGuarantee  string `json:"storeRollbackGuarantee"`
+	CandidateServiceUnit    string `json:"candidateServiceUnit"`
+	CandidateContainer      string `json:"candidateContainer"`
+	CandidateQuadletPath    string `json:"candidateQuadletPath"`
+	CandidatePort           int    `json:"candidatePort"`
+}
+
+const (
+	KeyValueSynchronization = "replicaof-offset-equality"
+	KeyValueWriteFence      = "acl-write-revocation-with-client-kill"
+	KeyValueFenceMaximum    = "30s"
+	KeyValueForwardCutover  = "lossless-after-bounded-write-fence"
+	KeyValueRollback        = "forward-only"
+	KeyValueCandidatePort   = 26380
+)
+
+// KeyValueCandidateTransition derives the candidate identity from the stable
+// service identity; the executor re-derives and compares it.
+func KeyValueCandidateTransition(serviceUnit, container, quadletPath string) *KeyValueTransition {
+	return &KeyValueTransition{
+		Synchronization: KeyValueSynchronization, WriteFence: KeyValueWriteFence, WriteFenceMaximum: KeyValueFenceMaximum,
+		ForwardCutoverGuarantee: KeyValueForwardCutover, StoreRollbackGuarantee: KeyValueRollback,
+		CandidateServiceUnit: strings.TrimSuffix(serviceUnit, ".service") + "-candidate.service", CandidateContainer: container + "-candidate",
+		CandidateQuadletPath: strings.TrimSuffix(quadletPath, ".container") + "-candidate.container", CandidatePort: KeyValueCandidatePort,
+	}
 }
 
 type KeyValueBinding struct {
@@ -423,4 +469,32 @@ type KeyValueHTTPBinding struct {
 	Namespace           string   `json:"namespace"`
 	Keys                []string `json:"keys"`
 	ValuePrefix         string   `json:"valuePrefix"`
+}
+
+// Candidate is the plan retargeted at the candidate service, container,
+// Quadlet and loopback listener of a Store Transition.
+func (p KeyValuePlan) Candidate() KeyValuePlan {
+	candidate := p
+	if t := p.Transition; t != nil {
+		candidate.ServiceUnit, candidate.Container, candidate.QuadletPath, candidate.Port = t.CandidateServiceUnit, t.CandidateContainer, t.CandidateQuadletPath, t.CandidatePort
+	}
+	return candidate
+}
+
+// IsKeyValueTransition reports a Store Transition step on a managed Key-Value Store.
+func (k OperationKind) IsKeyValueTransition() bool {
+	switch k {
+	case PrepareKeyValueCandidate, SynchronizeKeyValueCandidate, FenceKeyValueWrites, SwitchKeyValueAuthority, VerifyKeyValueActive, RetainKeyValuePrevious:
+		return true
+	}
+	return false
+}
+
+// IsKeyValue reports any typed operation that carries a KeyValuePlan.
+func (k OperationKind) IsKeyValue() bool { return k == PrepareKeyValue || k.IsKeyValueTransition() }
+
+// ObservesKeyValueCandidate is true for the steps whose observation describes
+// the candidate generation rather than the stable service.
+func (k OperationKind) ObservesKeyValueCandidate() bool {
+	return k == PrepareKeyValueCandidate || k == SynchronizeKeyValueCandidate || k == FenceKeyValueWrites
 }

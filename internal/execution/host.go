@@ -116,13 +116,13 @@ func verifyHostResult(envelope operation.Envelope, result operation.Result) erro
 	if err := result.ValidateAgainst(envelope); err != nil {
 		return err
 	}
-	if result.Outcome == operation.OutcomeUncertain && envelope.Operation.Kind != planner.SwitchEndpoint && envelope.Operation.Kind != planner.VerifyActive && envelope.Operation.Kind != planner.DrainPrevious && envelope.Operation.Kind != planner.RetainPrevious && envelope.Operation.Kind != planner.VerifyWorkerActive && !isDatabaseTransitionHostKind(envelope.Operation.Kind) {
+	if result.Outcome == operation.OutcomeUncertain && envelope.Operation.Kind != planner.SwitchEndpoint && envelope.Operation.Kind != planner.VerifyActive && envelope.Operation.Kind != planner.DrainPrevious && envelope.Operation.Kind != planner.RetainPrevious && envelope.Operation.Kind != planner.VerifyWorkerActive && !isDatabaseTransitionHostKind(envelope.Operation.Kind) && !envelope.Operation.Kind.IsKeyValueTransition() {
 		return errors.New("host operation kind cannot return an uncertain structured outcome")
 	}
 	switch envelope.Operation.Kind {
 	case planner.PrepareQueue:
 		return verifyQueueResult(envelope, result)
-	case planner.PrepareKeyValue:
+	case planner.PrepareKeyValue, planner.PrepareKeyValueCandidate, planner.SynchronizeKeyValueCandidate, planner.FenceKeyValueWrites, planner.SwitchKeyValueAuthority, planner.VerifyKeyValueActive, planner.RetainKeyValuePrevious:
 		return verifyKeyValueResult(envelope, result)
 	case planner.PrepareDatabase, planner.BackupDatabase, planner.VerifyDatabaseRestore, planner.PrepareDatabaseCandidate, planner.SynchronizeDatabaseCandidate, planner.FenceDatabaseWrites, planner.SwitchDatabaseAuthority, planner.VerifyDatabaseActive, planner.RetainDatabasePrevious:
 		return verifyDatabaseResult(envelope, result)
@@ -530,6 +530,14 @@ func verifyKeyValueResult(envelope operation.Envelope, result operation.Result) 
 	if input == nil {
 		return errors.New("host Key-Value Store observation has no planned Key-Value Store")
 	}
+	kind := envelope.Operation.Kind
+	if kind.IsKeyValueTransition() && (input.Transition == nil || input.Previous == nil) {
+		return errors.New("host Key-Value Store transition operation has no planned Store Transition")
+	}
+	expected := *input
+	if kind.ObservesKeyValueCandidate() {
+		expected = input.Candidate()
+	}
 	var observed host.KeyValueOperationObservation
 	if err := decodeObservation(result.Observation, &observed); err != nil {
 		return errors.New("host Key-Value Store observation is invalid")
@@ -538,22 +546,83 @@ func verifyKeyValueResult(envelope operation.Envelope, result operation.Result) 
 		return errors.New("host Key-Value Store observation has an unsupported schema version")
 	}
 	kv := observed.KeyValue
-	if kv.ID != input.GenerationID || kv.LogicalID != input.LogicalID || kv.ImageManifest != input.ImageManifest || kv.ImageReference != input.ImageReference || kv.QualificationDigest != input.QualificationDigest || kv.ServiceUnit != input.ServiceUnit || kv.Container != input.Container || kv.Account != input.Account || kv.DataPath != input.DataPath || kv.QuadletPath != input.QuadletPath || kv.ListenAddress != input.ListenAddress || kv.Port != input.Port {
+	if kv.ID != expected.GenerationID || kv.LogicalID != expected.LogicalID || kv.ImageManifest != expected.ImageManifest || kv.ImageReference != expected.ImageReference || kv.QualificationDigest != expected.QualificationDigest || kv.ServiceUnit != expected.ServiceUnit || kv.Container != expected.Container || kv.Account != expected.Account || kv.DataPath != expected.DataPath || kv.QuadletPath != expected.QuadletPath || kv.ListenAddress != expected.ListenAddress || kv.Port != expected.Port {
 		return errors.New("host Key-Value Store observation does not match the Plan")
 	}
 	switch result.Outcome {
 	case operation.OutcomeSucceeded:
 		c := observed.Checks
 		if observed.Status != "verified" || !observed.Verified || !kv.Ready || !kv.Connectivity || kv.Health != "healthy" || kv.Role != input.DataRole || kv.ValkeyVersion != input.ValkeyVersion || kv.AppendOnly != input.AppendOnly || kv.AppendFsync != input.AppendFsync ||
-			!c.ServiceHealth || !c.ClientRoundTrip || !c.GenerationIdentity || !c.Persistence || !c.CredentialBoundary || len(kv.SupportedGuarantees) == 0 || len(kv.OwnedResources) == 0 || !keyValueKeysMatch(input.Binding, observed.Keys) {
+			!c.ServiceHealth || !c.ClientRoundTrip || !c.GenerationIdentity || !c.Persistence || !c.CredentialBoundary || len(kv.SupportedGuarantees) == 0 || len(kv.OwnedResources) == 0 {
 			return errors.New("host Key-Value Store success observation is invalid")
 		}
+		if !kind.ObservesKeyValueCandidate() && !keyValueKeysMatch(input.Binding, observed.Keys) {
+			return errors.New("host Key-Value Store success observation lacks deterministic key evidence")
+		}
+		if kind.IsKeyValueTransition() {
+			return verifyKeyValueTransitionSuccess(*input, kind, observed)
+		}
 	case operation.OutcomeFailed:
+		if kind.IsKeyValueTransition() {
+			return verifyKeyValueTransitionFailure(observed, "failed")
+		}
 		if observed.Status != "failed" || kv.Health != "failed" || kv.Reason == "" || kv.RecoveryAction == "" {
 			return errors.New("host Key-Value Store failure observation is invalid")
 		}
-	default:
+	case operation.OutcomeUncertain:
+		if kind.IsKeyValueTransition() {
+			return verifyKeyValueTransitionFailure(observed, "uncertain")
+		}
 		return errors.New("host Key-Value Store uncertain observation is invalid")
+	default:
+		return errors.New("host Key-Value Store observation outcome is invalid")
+	}
+	return nil
+}
+
+func verifyKeyValueTransitionFailure(observed host.KeyValueOperationObservation, status string) error {
+	if observed.Status != status || observed.FailureCategory == "" || observed.Reason == "" || observed.RecoveryAction == "" {
+		return fmt.Errorf("host Key-Value Store %s transition observation is invalid", status)
+	}
+	return nil
+}
+
+// verifyKeyValueTransitionSuccess requires the phase-specific evidence the Plan
+// asked for; a generic healthy observation is not enough.
+func verifyKeyValueTransitionSuccess(input planner.KeyValuePlan, kind planner.OperationKind, observed host.KeyValueOperationObservation) error {
+	offsetsEqual := observed.Replication != nil && observed.Replication.LinkUp && observed.Replication.ActiveOffset > 0 && observed.Replication.ActiveOffset == observed.Replication.CandidateOffset
+	switch kind {
+	case planner.PrepareKeyValueCandidate:
+		if observed.TransitionPhase != "prepareKeyValueCandidate" {
+			return errors.New("host Key-Value Store candidate preparation lacks exact transition evidence")
+		}
+	case planner.SynchronizeKeyValueCandidate:
+		if observed.TransitionPhase != "synchronizeKeyValueCandidate" || observed.Synchronization != "replicaof-initial-sync" || observed.WriteFence != "" || observed.Replication == nil || !observed.Replication.LinkUp {
+			return errors.New("host Key-Value Store synchronization success lacks exact transition evidence")
+		}
+	case planner.FenceKeyValueWrites:
+		f := observed.Fence
+		if observed.TransitionPhase != "fenceKeyValueWrites" || observed.WriteFence != input.Transition.WriteFence || observed.Synchronization != "offset-equal-after-write-fence" || !offsetsEqual ||
+			f == nil || !f.WriteRevoked || !f.ProbeRejected || !f.ProbeAbsent || f.ElapsedMillis < 0 || f.ElapsedMillis > 30000 {
+			return errors.New("host Key-Value Store write-fence success lacks exact fence and offset-equality evidence")
+		}
+	case planner.SwitchKeyValueAuthority:
+		if observed.TransitionPhase != "switchKeyValueAuthority" || observed.Synchronization != "authority-switched-after-write-fence" || !offsetsEqual {
+			return errors.New("host Key-Value Store authority-switch success lacks exact transition and offset evidence")
+		}
+	case planner.VerifyKeyValueActive:
+		if observed.TransitionPhase != "verifyKeyValueActive" || observed.Synchronization != "verified-after-authority-switch" || !offsetsEqual {
+			return errors.New("host Key-Value Store active verification lacks exact transition evidence")
+		}
+	case planner.RetainKeyValuePrevious:
+		p := observed.Previous
+		want := input.Previous
+		if observed.TransitionPhase != "retainKeyValuePrevious" || observed.Synchronization != "retained-forward-only" || observed.RetainedUntil == "" || p == nil || want == nil ||
+			observed.StoreRollbackGuarantee != input.Transition.StoreRollbackGuarantee || observed.TransitionCleanupPolicy != input.TransitionCleanupPolicy ||
+			p.Role != want.Role || p.AppendOnly != want.AppendOnly || p.AppendFsync != want.AppendFsync ||
+			p.ID != want.ID || p.ImageManifest != want.ImageManifest || p.ImageReference != want.ImageReference || p.ServiceUnit != want.ServiceUnit || p.Container != want.Container || p.DataPath != want.DataPath || p.QuadletPath != want.QuadletPath || p.Port != want.Port {
+			return errors.New("host Key-Value Store retention success lacks exact previous-generation evidence")
+		}
 	}
 	return nil
 }

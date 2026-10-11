@@ -101,6 +101,12 @@ const (
 	RetainWorkerPrevious         = planmodel.RetainWorkerPrevious
 	PrepareDatabase              = planmodel.PrepareDatabase
 	PrepareKeyValue              = planmodel.PrepareKeyValue
+	PrepareKeyValueCandidate     = planmodel.PrepareKeyValueCandidate
+	SynchronizeKeyValueCandidate = planmodel.SynchronizeKeyValueCandidate
+	FenceKeyValueWrites          = planmodel.FenceKeyValueWrites
+	SwitchKeyValueAuthority      = planmodel.SwitchKeyValueAuthority
+	VerifyKeyValueActive         = planmodel.VerifyKeyValueActive
+	RetainKeyValuePrevious       = planmodel.RetainKeyValuePrevious
 	BackupDatabase               = planmodel.BackupDatabase
 	VerifyDatabaseRestore        = planmodel.VerifyDatabaseRestore
 	PrepareDatabaseCandidate     = planmodel.PrepareDatabaseCandidate
@@ -158,6 +164,10 @@ type EndpointInput = planmodel.EndpointInput
 type DrainInput = planmodel.DrainInput
 type RetentionInput = planmodel.RetentionInput
 type KeyValueBinding = planmodel.KeyValueBinding
+type KeyValueTransition = planmodel.KeyValueTransition
+
+var KeyValueCandidateTransition = planmodel.KeyValueCandidateTransition
+
 type KeyValuePlan = planmodel.KeyValuePlan
 type KeyValueHTTPBinding = planmodel.KeyValueHTTPBinding
 
@@ -369,13 +379,20 @@ func buildKeyValue(compiled config.Compiled, observation host.BootstrapStatus) (
 	}
 	keyValue := hostkeyvalue.Plan(compiled, observation)
 	preview.Reasons = nil
-	operation := hostkeyvalue.Operation(keyValue)
-	if !slices.Contains(observation.AllowedOperations, string(operation.Kind)) {
-		preview.Reasons = []string{fmt.Sprintf("host executor does not allow typed %s operations", operation.Kind)}
-		return preview, nil
+	operations := []Operation{hostkeyvalue.Operation(keyValue)}
+	decision := "required-initial-generation-supported"
+	if evaluation.Transition {
+		operations = hostkeyvalue.TransitionOperations(keyValue)
+		decision = "required-store-transition-supported"
+	}
+	for _, operation := range operations {
+		if !slices.Contains(observation.AllowedOperations, string(operation.Kind)) {
+			preview.Reasons = []string{fmt.Sprintf("host executor does not allow typed %s operations", operation.Kind)}
+			return preview, nil
+		}
 	}
 	preview.Executable = true
-	preview.Capability.Decision = "required-initial-generation-supported"
+	preview.Capability.Decision = decision
 	evidence.Decision = preview.Capability.Decision
 	preview.Plan = &Plan{
 		SchemaVersion:            SchemaVersion,
@@ -389,7 +406,7 @@ func buildKeyValue(compiled config.Compiled, observation host.BootstrapStatus) (
 		ApprovalRequirements:     []ApprovalRequirement{{Capability: "approve", Reason: "environment key-value policy requires approval of this exact Plan"}},
 		SensitiveValueReferences: []string{keyValue.CredentialReference},
 		KeyValue:                 keyValue,
-		Operations:               []Operation{operation},
+		Operations:               operations,
 	}
 	preview.Plan.ID, err = digest(preview.Plan)
 	if err != nil {
@@ -429,6 +446,9 @@ func buildKeyValueBoundHTTP(compiled config.Compiled, observation host.Bootstrap
 		Decision:        "unsupported",
 	}
 	reasons := unique(append(capabilityIssues(observation, httpSelection), evaluation.Reasons...))
+	if evaluation.Transition {
+		reasons = append(reasons, "replacing the active Key-Value Store generation under an HTTP-bound workload is not qualified; transition the Key-Value Store on its own")
+	}
 	preview := Preview{SchemaVersion: PreviewSchemaVersion, Capability: evidence, Reasons: reasons}
 	if len(reasons) != 0 {
 		return preview, nil

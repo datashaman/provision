@@ -154,8 +154,8 @@ func runObserveOperation(args []string) error {
 		return err
 	}
 	var observed host.OperationObservation
-	if planned.Kind == planner.PrepareKeyValue {
-		observed, err = observeKeyValueOperation(context.Background(), planned, record, paths)
+	if planned.Kind.IsKeyValue() {
+		observed, err = observeKeyValueOperation(context.Background(), *planID, planned, record, paths)
 	} else if planned.Kind == planner.PrepareQueue {
 		observed, err = observeQueueOperation(context.Background(), planned, record, paths)
 	} else if isDatabaseOperationKind(planned.Kind) {
@@ -248,7 +248,7 @@ func executeAuthorized(ctx context.Context, envelope operation.Envelope, record 
 	if err != nil || digest != claim.OperationDigest {
 		return operation.Result{}, errors.New("authorized operation digest does not match its payload")
 	}
-	if envelope.Operation.Kind == planner.PrepareKeyValue {
+	if envelope.Operation.Kind.IsKeyValue() {
 		if err := validateKeyValueOperation(envelope.Operation, record, paths); err != nil {
 			return operation.Result{}, err
 		}
@@ -307,6 +307,8 @@ func executeAuthorized(ctx context.Context, envelope operation.Envelope, record 
 			}
 		} else if envelope.Operation.Kind == planner.PrepareKeyValue {
 			encoded, actionErr = applyKeyValueOperation(ctx, envelope.Operation, record, paths, envelope.SensitiveValues)
+		} else if envelope.Operation.Kind.IsKeyValueTransition() {
+			encoded, actionErr = applyKeyValueTransitionOperation(ctx, envelope.Operation, claim, record, paths, envelope.SensitiveValues)
 		} else if envelope.Operation.Kind == planner.PrepareQueue {
 			encoded, actionErr = applyQueueOperation(ctx, envelope.Operation, record, paths, envelope.SensitiveValues)
 		} else if isDatabaseOperationKind(envelope.Operation.Kind) {
@@ -359,8 +361,8 @@ func executeAuthorized(ctx context.Context, envelope operation.Envelope, record 
 			if encodeErr != nil {
 				return operation.Result{}, encodeErr
 			}
-		} else if envelope.Operation.Kind == planner.PrepareKeyValue {
-			observed := host.KeyValueOperationObservation{SchemaVersion: host.KeyValueOperationSchema, KeyValue: keyValueStatusIdentity(*envelope.Operation.Input.KeyValue)}
+		} else if envelope.Operation.Kind.IsKeyValue() {
+			observed := host.KeyValueOperationObservation{SchemaVersion: host.KeyValueOperationSchema, KeyValue: keyValueStatusIdentity(keyValueTransitionObservedInput(envelope.Operation.Kind, *envelope.Operation.Input.KeyValue))}
 			if len(encoded) != 0 {
 				_ = json.Unmarshal(encoded, &observed)
 			}
@@ -368,6 +370,13 @@ func executeAuthorized(ctx context.Context, envelope operation.Envelope, record 
 			observed.KeyValue.Health = "failed"
 			observed.KeyValue.Reason = actionErr.Error()
 			observed.KeyValue.RecoveryAction = "observe the exact managed Key-Value Store generation before retrying"
+			if envelope.Operation.Kind.IsKeyValueTransition() {
+				observed.FailureCategory, observed.Reason, observed.RecoveryAction = "host-operation-failed", actionErr.Error(), observed.KeyValue.RecoveryAction
+				if errors.Is(actionErr, errUncertainRecovery) {
+					observed.Status, observed.FailureCategory = "uncertain", "ambiguous-data-bearing-state"
+					observed.KeyValue.Health = "uncertain"
+				}
+			}
 			var encodeErr error
 			encoded, encodeErr = json.Marshal(observed)
 			if encodeErr != nil {

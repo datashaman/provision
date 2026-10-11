@@ -95,6 +95,6 @@ fails writes immediately and does not expire.
 - Excluded: derived and ephemeral roles, multi-node Valkey, ElastiCache,
   external Valkey, cross-major upgrade, Redis, and any zero-loss or
   bounded-loss rollback.
-- Live disposable-Host proof (interruption modes, SSH parity, candidate failure)
-  is the work of #100–#102. Until then SUPPORT_MATRIX qualifies the contract
-  shape only.
+- Live direct-local interruption proof is in
+  `docs/evidence/2026-10-11-valkey-direct-local-failure-matrix.md`. SSH parity
+  and candidate failure remain the work of #101–#102.

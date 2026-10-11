@@ -1,0 +1,445 @@
+{
+  "issue": 100,
+  "runs": {
+    "after": {
+      "accounting": {
+        "authoritySwitch": {
+          "synchronization": "authority-switched-after-write-fence",
+          "transitionPhase": "switchKeyValueAuthority"
+        },
+        "faultRecord": {
+          "op-01": {
+            "injection": "after",
+            "interruption": "after",
+            "kind": "prepareKeyValueCandidate",
+            "mutationReplayedOnResume": false,
+            "pausedWithAttemptAndFencingEvidence": true,
+            "resumeOutcome": "succeeded"
+          },
+          "op-02": {
+            "injection": "after",
+            "interruption": "after",
+            "kind": "synchronizeKeyValueCandidate",
+            "mutationReplayedOnResume": false,
+            "pausedWithAttemptAndFencingEvidence": true,
+            "resumeOutcome": "succeeded"
+          },
+          "op-03": {
+            "injection": "after",
+            "interruption": "after",
+            "kind": "fenceKeyValueWrites",
+            "mutationReplayedOnResume": false,
+            "pausedWithAttemptAndFencingEvidence": true,
+            "resumeOutcome": "succeeded"
+          },
+          "op-04": {
+            "injection": "after",
+            "interruption": "after",
+            "kind": "switchKeyValueAuthority",
+            "mutationReplayedOnResume": false,
+            "pausedWithAttemptAndFencingEvidence": true,
+            "resumeOutcome": "succeeded"
+          },
+          "op-05": {
+            "injection": "after",
+            "interruption": "after",
+            "kind": "verifyKeyValueActive",
+            "mutationReplayedOnResume": false,
+            "pausedWithAttemptAndFencingEvidence": true,
+            "resumeOutcome": "succeeded"
+          },
+          "op-06": {
+            "injection": "after",
+            "interruption": "after",
+            "kind": "retainKeyValuePrevious",
+            "mutationReplayedOnResume": false,
+            "pausedWithAttemptAndFencingEvidence": true,
+            "resumeOutcome": "succeeded"
+          }
+        },
+        "logicalStore": "provision-lab-sessions",
+        "operationOutcomes": {
+          "op-01-resumed.json": "succeeded",
+          "op-02-resumed.json": "succeeded",
+          "op-03-resumed.json": "succeeded",
+          "op-04-resumed.json": "succeeded",
+          "op-05-resumed.json": "succeeded",
+          "op-06-resumed.json": "succeeded"
+        },
+        "ownedResourceInventory": [
+          "d 700 166534:166534 /var/lib/provision/environments/lab/services/valkey/generations/valkey-9-1-1-cc03bc07761a/data",
+          "d 700 166534:166534 /var/lib/provision/environments/lab/services/valkey/generations/valkey-9-1-2-ac9c858b86dc/data",
+          "d 755 root:root /etc/containers/systemd/users",
+          "d 755 root:root /etc/containers/systemd/users/102",
+          "d 755 root:root /var/lib/provision/environments/lab/services",
+          "d 755 root:root /var/lib/provision/environments/lab/services/valkey",
+          "d 755 root:root /var/lib/provision/environments/lab/services/valkey/generations",
+          "d 755 root:root /var/lib/provision/environments/lab/services/valkey/generations/valkey-9-1-1-cc03bc07761a",
+          "d 755 root:root /var/lib/provision/environments/lab/services/valkey/generations/valkey-9-1-2-ac9c858b86dc",
+          "d 755 root:root /var/lib/provision/environments/lab/services/valkey/generations/valkey-9-1-2-ac9c858b86dc/transition",
+          "d 755 root:root /var/lib/provision/environments/lab/services/valkey/retained",
+          "f 444 root:root /var/lib/provision/environments/lab/services/valkey/generations/valkey-9-1-1-cc03bc07761a/generation.previous.json",
+          "f 444 root:root /var/lib/provision/environments/lab/services/valkey/generations/valkey-9-1-2-ac9c858b86dc/generation.json",
+          "f 444 root:root /var/lib/provision/environments/lab/services/valkey/retained/valkey-9-1-1-cc03bc07761a.json",
+          "f 644 root:root /etc/containers/systemd/users/102/provision-lab-valkey.container",
+          "f 755 root:root /var/lib/provision/environments/lab/services/valkey/credential-entrypoint"
+        ],
+        "replicationAtFence": {
+          "activeOffset": 142,
+          "candidateOffset": 142,
+          "linkUp": true
+        },
+        "retention": {
+          "storeRollbackGuarantee": "forward-only",
+          "synchronization": "retained-forward-only",
+          "transitionCleanupPolicy": "retain-previous-generation"
+        },
+        "storeGenerations": {
+          "active": {
+            "appendFsync": "everysec",
+            "appendOnly": "yes",
+            "health": "healthy",
+            "id": "valkey-9-1-2-ac9c858b86dc",
+            "imageManifest": "sha256:ac9c858b86dc81f3482d53a9d854547379a5f41e012500f839ab257c399063e0",
+            "logicalId": "provision-lab-sessions",
+            "port": 26379,
+            "valkeyVersion": "9.1.2"
+          },
+          "initial": {
+            "appendFsync": "everysec",
+            "appendOnly": "yes",
+            "health": "healthy",
+            "id": "valkey-9-1-1-cc03bc07761a",
+            "imageManifest": "sha256:cc03bc07761acc552c960bfbcc66196dcf02e949dadb92d941d970ed6c782fea",
+            "logicalId": "provision-lab-sessions",
+            "port": 26379,
+            "valkeyVersion": "9.1.1"
+          },
+          "retained": "valkey-9-1-1-cc03bc07761a"
+        },
+        "uncertainOutcomes": {},
+        "workloadKeys": {
+          "initial": [
+            "provision-lab-sessions/provision-example-key-value-v1/key-0001 provision-deterministic-v1:provision-lab-sessions/provision-example-key-value-v1/key-0001",
+            "provision-lab-sessions/provision-example-key-value-v1/key-0002 provision-deterministic-v1:provision-lab-sessions/provision-example-key-value-v1/key-0002"
+          ],
+          "transition": [
+            "provision-lab-sessions/provision-example-key-value-v1/key-0001 provision-deterministic-v1:provision-lab-sessions/provision-example-key-value-v1/key-0001",
+            "provision-lab-sessions/provision-example-key-value-v1/key-0002 provision-deterministic-v1:provision-lab-sessions/provision-example-key-value-v1/key-0002"
+          ]
+        },
+        "writeFence": "acl-write-revocation-with-client-kill"
+      },
+      "architecture": "x86_64",
+      "executorDigest": "sha256:5197e97bee11524d48531f75ee3ba38f7647a7f48eecde715cfcd0ab67b628ce",
+      "kernel": "Linux 7.0.0-34-generic",
+      "os": "ubuntu",
+      "osVersion": "26.04",
+      "provisionBinarySha256": "sha256:210063ed175166f30c45435f29654a653d88aae21f6c399e994b1caf5970279b",
+      "provisionSourceVersion": "bcd15dad2ee0a1666761567455d3b5df696bbcd5",
+      "result": "passed",
+      "systemdVersion": "systemd 259 (259.5-0ubuntu3.4)"
+    },
+    "before": {
+      "accounting": {
+        "authoritySwitch": {
+          "synchronization": "authority-switched-after-write-fence",
+          "transitionPhase": "switchKeyValueAuthority"
+        },
+        "faultRecord": {
+          "op-01": {
+            "injection": "before",
+            "interruption": "before",
+            "kind": "prepareKeyValueCandidate",
+            "mutationReplayedOnResume": false,
+            "pausedWithAttemptAndFencingEvidence": true,
+            "resumeOutcome": "succeeded"
+          },
+          "op-02": {
+            "injection": "before",
+            "interruption": "before",
+            "kind": "synchronizeKeyValueCandidate",
+            "mutationReplayedOnResume": false,
+            "pausedWithAttemptAndFencingEvidence": true,
+            "resumeOutcome": "succeeded"
+          },
+          "op-03": {
+            "injection": "before",
+            "interruption": "before",
+            "kind": "fenceKeyValueWrites",
+            "mutationReplayedOnResume": false,
+            "pausedWithAttemptAndFencingEvidence": true,
+            "resumeOutcome": "succeeded"
+          },
+          "op-04": {
+            "injection": "before",
+            "interruption": "before",
+            "kind": "switchKeyValueAuthority",
+            "mutationReplayedOnResume": false,
+            "pausedWithAttemptAndFencingEvidence": true,
+            "resumeOutcome": "succeeded"
+          },
+          "op-05": {
+            "injection": "before",
+            "interruption": "before",
+            "kind": "verifyKeyValueActive",
+            "mutationReplayedOnResume": false,
+            "pausedWithAttemptAndFencingEvidence": true,
+            "resumeOutcome": "succeeded"
+          },
+          "op-06": {
+            "injection": "before",
+            "interruption": "before",
+            "kind": "retainKeyValuePrevious",
+            "mutationReplayedOnResume": false,
+            "pausedWithAttemptAndFencingEvidence": true,
+            "resumeOutcome": "succeeded"
+          }
+        },
+        "logicalStore": "provision-lab-sessions",
+        "operationOutcomes": {
+          "op-01-resumed.json": "succeeded",
+          "op-02-resumed.json": "succeeded",
+          "op-03-resumed.json": "succeeded",
+          "op-04-resumed.json": "succeeded",
+          "op-05-resumed.json": "succeeded",
+          "op-06-resumed.json": "succeeded"
+        },
+        "ownedResourceInventory": [
+          "d 700 166534:166534 /var/lib/provision/environments/lab/services/valkey/generations/valkey-9-1-1-cc03bc07761a/data",
+          "d 700 166534:166534 /var/lib/provision/environments/lab/services/valkey/generations/valkey-9-1-2-ac9c858b86dc/data",
+          "d 755 root:root /etc/containers/systemd/users",
+          "d 755 root:root /etc/containers/systemd/users/102",
+          "d 755 root:root /var/lib/provision/environments/lab/services",
+          "d 755 root:root /var/lib/provision/environments/lab/services/valkey",
+          "d 755 root:root /var/lib/provision/environments/lab/services/valkey/generations",
+          "d 755 root:root /var/lib/provision/environments/lab/services/valkey/generations/valkey-9-1-1-cc03bc07761a",
+          "d 755 root:root /var/lib/provision/environments/lab/services/valkey/generations/valkey-9-1-2-ac9c858b86dc",
+          "d 755 root:root /var/lib/provision/environments/lab/services/valkey/generations/valkey-9-1-2-ac9c858b86dc/transition",
+          "d 755 root:root /var/lib/provision/environments/lab/services/valkey/retained",
+          "f 444 root:root /var/lib/provision/environments/lab/services/valkey/generations/valkey-9-1-1-cc03bc07761a/generation.previous.json",
+          "f 444 root:root /var/lib/provision/environments/lab/services/valkey/generations/valkey-9-1-2-ac9c858b86dc/generation.json",
+          "f 444 root:root /var/lib/provision/environments/lab/services/valkey/retained/valkey-9-1-1-cc03bc07761a.json",
+          "f 644 root:root /etc/containers/systemd/users/102/provision-lab-valkey.container",
+          "f 755 root:root /var/lib/provision/environments/lab/services/valkey/credential-entrypoint"
+        ],
+        "replicationAtFence": {
+          "activeOffset": 100,
+          "candidateOffset": 100,
+          "linkUp": true
+        },
+        "retention": {
+          "storeRollbackGuarantee": "forward-only",
+          "synchronization": "retained-forward-only",
+          "transitionCleanupPolicy": "retain-previous-generation"
+        },
+        "storeGenerations": {
+          "active": {
+            "appendFsync": "everysec",
+            "appendOnly": "yes",
+            "health": "healthy",
+            "id": "valkey-9-1-2-ac9c858b86dc",
+            "imageManifest": "sha256:ac9c858b86dc81f3482d53a9d854547379a5f41e012500f839ab257c399063e0",
+            "logicalId": "provision-lab-sessions",
+            "port": 26379,
+            "valkeyVersion": "9.1.2"
+          },
+          "initial": {
+            "appendFsync": "everysec",
+            "appendOnly": "yes",
+            "health": "healthy",
+            "id": "valkey-9-1-1-cc03bc07761a",
+            "imageManifest": "sha256:cc03bc07761acc552c960bfbcc66196dcf02e949dadb92d941d970ed6c782fea",
+            "logicalId": "provision-lab-sessions",
+            "port": 26379,
+            "valkeyVersion": "9.1.1"
+          },
+          "retained": "valkey-9-1-1-cc03bc07761a"
+        },
+        "uncertainOutcomes": {},
+        "workloadKeys": {
+          "initial": [
+            "provision-lab-sessions/provision-example-key-value-v1/key-0001 provision-deterministic-v1:provision-lab-sessions/provision-example-key-value-v1/key-0001",
+            "provision-lab-sessions/provision-example-key-value-v1/key-0002 provision-deterministic-v1:provision-lab-sessions/provision-example-key-value-v1/key-0002"
+          ],
+          "transition": [
+            "provision-lab-sessions/provision-example-key-value-v1/key-0001 provision-deterministic-v1:provision-lab-sessions/provision-example-key-value-v1/key-0001",
+            "provision-lab-sessions/provision-example-key-value-v1/key-0002 provision-deterministic-v1:provision-lab-sessions/provision-example-key-value-v1/key-0002"
+          ]
+        },
+        "writeFence": "acl-write-revocation-with-client-kill"
+      },
+      "architecture": "x86_64",
+      "executorDigest": "sha256:5197e97bee11524d48531f75ee3ba38f7647a7f48eecde715cfcd0ab67b628ce",
+      "kernel": "Linux 7.0.0-34-generic",
+      "os": "ubuntu",
+      "osVersion": "26.04",
+      "provisionBinarySha256": "sha256:210063ed175166f30c45435f29654a653d88aae21f6c399e994b1caf5970279b",
+      "provisionSourceVersion": "bcd15dad2ee0a1666761567455d3b5df696bbcd5",
+      "result": "passed",
+      "systemdVersion": "systemd 259 (259.5-0ubuntu3.4)"
+    },
+    "undecidable": {
+      "accounting": {
+        "authoritySwitch": {
+          "synchronization": "authority-switched-after-write-fence",
+          "transitionPhase": "switchKeyValueAuthority"
+        },
+        "faultRecord": {
+          "op-01": {
+            "injection": "after",
+            "interruption": "after",
+            "kind": "prepareKeyValueCandidate",
+            "mutationReplayedOnResume": false,
+            "pausedWithAttemptAndFencingEvidence": true,
+            "resumeOutcome": "succeeded"
+          },
+          "op-02": {
+            "injection": "after",
+            "interruption": "after",
+            "kind": "synchronizeKeyValueCandidate",
+            "mutationReplayedOnResume": false,
+            "pausedWithAttemptAndFencingEvidence": true,
+            "resumeOutcome": "succeeded"
+          },
+          "op-03": {
+            "injection": "after",
+            "interruption": "after",
+            "kind": "fenceKeyValueWrites",
+            "mutationReplayedOnResume": false,
+            "pausedWithAttemptAndFencingEvidence": true,
+            "resumeOutcome": "succeeded"
+          },
+          "op-04": {
+            "injection": "undecidable",
+            "interruption": "after",
+            "kind": "switchKeyValueAuthority",
+            "mutationReplayedOnResume": false,
+            "pausedWithAttemptAndFencingEvidence": true,
+            "resumeOutcome": "succeeded"
+          },
+          "op-05": {
+            "injection": "after",
+            "interruption": "after",
+            "kind": "verifyKeyValueActive",
+            "mutationReplayedOnResume": false,
+            "pausedWithAttemptAndFencingEvidence": true,
+            "resumeOutcome": "succeeded"
+          },
+          "op-06": {
+            "injection": "after",
+            "interruption": "after",
+            "kind": "retainKeyValuePrevious",
+            "mutationReplayedOnResume": false,
+            "pausedWithAttemptAndFencingEvidence": true,
+            "resumeOutcome": "succeeded"
+          }
+        },
+        "logicalStore": "provision-lab-sessions",
+        "operationOutcomes": {
+          "op-01-resumed.json": "succeeded",
+          "op-02-resumed.json": "succeeded",
+          "op-03-resumed.json": "succeeded",
+          "op-04-resumed.json": "succeeded",
+          "op-05-resumed.json": "succeeded",
+          "op-06-resumed.json": "succeeded"
+        },
+        "ownedResourceInventory": [
+          "d 700 166534:166534 /var/lib/provision/environments/lab/services/valkey/generations/valkey-9-1-1-cc03bc07761a/data",
+          "d 700 166534:166534 /var/lib/provision/environments/lab/services/valkey/generations/valkey-9-1-2-ac9c858b86dc/data",
+          "d 755 root:root /etc/containers/systemd/users",
+          "d 755 root:root /etc/containers/systemd/users/102",
+          "d 755 root:root /var/lib/provision/environments/lab/services",
+          "d 755 root:root /var/lib/provision/environments/lab/services/valkey",
+          "d 755 root:root /var/lib/provision/environments/lab/services/valkey/generations",
+          "d 755 root:root /var/lib/provision/environments/lab/services/valkey/generations/valkey-9-1-1-cc03bc07761a",
+          "d 755 root:root /var/lib/provision/environments/lab/services/valkey/generations/valkey-9-1-2-ac9c858b86dc",
+          "d 755 root:root /var/lib/provision/environments/lab/services/valkey/generations/valkey-9-1-2-ac9c858b86dc/transition",
+          "d 755 root:root /var/lib/provision/environments/lab/services/valkey/retained",
+          "f 444 root:root /var/lib/provision/environments/lab/services/valkey/generations/valkey-9-1-1-cc03bc07761a/generation.previous.json",
+          "f 444 root:root /var/lib/provision/environments/lab/services/valkey/generations/valkey-9-1-2-ac9c858b86dc/generation.json",
+          "f 444 root:root /var/lib/provision/environments/lab/services/valkey/retained/valkey-9-1-1-cc03bc07761a.json",
+          "f 644 root:root /etc/containers/systemd/users/102/provision-lab-valkey.container",
+          "f 755 root:root /var/lib/provision/environments/lab/services/valkey/credential-entrypoint"
+        ],
+        "replicationAtFence": {
+          "activeOffset": 114,
+          "candidateOffset": 114,
+          "linkUp": true
+        },
+        "retention": {
+          "storeRollbackGuarantee": "forward-only",
+          "synchronization": "retained-forward-only",
+          "transitionCleanupPolicy": "retain-previous-generation"
+        },
+        "storeGenerations": {
+          "active": {
+            "appendFsync": "everysec",
+            "appendOnly": "yes",
+            "health": "healthy",
+            "id": "valkey-9-1-2-ac9c858b86dc",
+            "imageManifest": "sha256:ac9c858b86dc81f3482d53a9d854547379a5f41e012500f839ab257c399063e0",
+            "logicalId": "provision-lab-sessions",
+            "port": 26379,
+            "valkeyVersion": "9.1.2"
+          },
+          "initial": {
+            "appendFsync": "everysec",
+            "appendOnly": "yes",
+            "health": "healthy",
+            "id": "valkey-9-1-1-cc03bc07761a",
+            "imageManifest": "sha256:cc03bc07761acc552c960bfbcc66196dcf02e949dadb92d941d970ed6c782fea",
+            "logicalId": "provision-lab-sessions",
+            "port": 26379,
+            "valkeyVersion": "9.1.1"
+          },
+          "retained": "valkey-9-1-1-cc03bc07761a"
+        },
+        "uncertainOutcomes": {
+          "op-04": {
+            "authoritativeContainerStartedAtUnchanged": true,
+            "failureCategory": "ambiguous-data-bearing-state",
+            "outcome": "uncertain",
+            "reason": "post-switch recovery is uncertain: record authority-switch evidence: commit durable authorization record",
+            "recoveryAction": "observe the exact managed Key-Value Store generation before retrying"
+          }
+        },
+        "workloadKeys": {
+          "initial": [
+            "provision-lab-sessions/provision-example-key-value-v1/key-0001 provision-deterministic-v1:provision-lab-sessions/provision-example-key-value-v1/key-0001",
+            "provision-lab-sessions/provision-example-key-value-v1/key-0002 provision-deterministic-v1:provision-lab-sessions/provision-example-key-value-v1/key-0002"
+          ],
+          "transition": [
+            "provision-lab-sessions/provision-example-key-value-v1/key-0001 provision-deterministic-v1:provision-lab-sessions/provision-example-key-value-v1/key-0001",
+            "provision-lab-sessions/provision-example-key-value-v1/key-0002 provision-deterministic-v1:provision-lab-sessions/provision-example-key-value-v1/key-0002"
+          ]
+        },
+        "writeFence": "acl-write-revocation-with-client-kill"
+      },
+      "architecture": "x86_64",
+      "executorDigest": "sha256:5197e97bee11524d48531f75ee3ba38f7647a7f48eecde715cfcd0ab67b628ce",
+      "kernel": "Linux 7.0.0-34-generic",
+      "os": "ubuntu",
+      "osVersion": "26.04",
+      "provisionBinarySha256": "sha256:210063ed175166f30c45435f29654a653d88aae21f6c399e994b1caf5970279b",
+      "provisionSourceVersion": "bcd15dad2ee0a1666761567455d3b5df696bbcd5",
+      "result": "passed",
+      "systemdVersion": "systemd 259 (259.5-0ubuntu3.4)"
+    }
+  },
+  "schemaVersion": "provision.dev/direct-local-valkey-failure-matrix-evidence/v1alpha1",
+  "supportBoundaries": [
+    "single Host Target",
+    "forward-only rollback classification",
+    "authoritative Store Data Role only",
+    "same-major transition only",
+    "no crash-durability, host-loss, backup or restore claim"
+  ],
+  "transition": "valkey 9.1.1 -> 9.1.2",
+  "transport": "direct-local",
+  "vmRestore": {
+    "environmentStateAbsentAfterFinalRestore": true,
+    "modes": "before after undecidable",
+    "restoredAfterEveryMode": true
+  }
+}

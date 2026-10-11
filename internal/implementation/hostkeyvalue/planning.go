@@ -47,6 +47,9 @@ func Evaluate(compiled config.Compiled, observation host.BootstrapStatus) Evalua
 	if active := activeGeneration(observation); active != nil && ok && active.ID != image.Generation() {
 		evaluation.Reasons = append(evaluation.Reasons, "replacing the active Key-Value Store generation is a Store Transition, which is not qualified yet")
 	}
+	if candidate := candidateOf(observation); candidate != nil {
+		evaluation.Reasons = append(evaluation.Reasons, unsafeCandidateReasons(candidate, activeGeneration(observation))...)
+	}
 	if len(evaluation.Reasons) == 0 {
 		evaluation.SupportEvidence = []string{"valkey-" + image.Version + "-image-index-and-manifest-pinned", "packaging-qualification-" + image.Evidence}
 	}
@@ -58,6 +61,44 @@ func activeGeneration(observation host.BootstrapStatus) *host.KeyValueGeneration
 		return nil
 	}
 	return observation.KeyValue.Active
+}
+
+func candidateOf(observation host.BootstrapStatus) *host.KeyValueGenerationStatus {
+	if observation.KeyValue == nil {
+		return nil
+	}
+	return observation.KeyValue.Candidate
+}
+
+// unsafeCandidateReasons returns one distinct reason per unsafe condition of an
+// observed candidate generation. Unknown compatibility evidence is unsafe.
+func unsafeCandidateReasons(candidate, active *host.KeyValueGenerationStatus) []string {
+	prefix := fmt.Sprintf("candidate Key-Value Store generation %s ", candidate.ID)
+	var reasons []string
+	image, registered := ImageByReference(candidate.ImageReference)
+	if !registered {
+		reasons = append(reasons, prefix+"uses an unregistered image")
+	}
+	if candidate.AppendOnly != "yes" || candidate.AppendFsync != "everysec" {
+		reasons = append(reasons, prefix+"persistence is not AOF everysec")
+	}
+	if candidate.Role != "authoritative" {
+		reasons = append(reasons, fmt.Sprintf("%shas Store Data Role %q, not authoritative", prefix, candidate.Role))
+	}
+	switch {
+	case candidate.Compatibility == "incompatible":
+		reasons = append(reasons, prefix+"failed compatibility with the active generation")
+	case candidate.Compatibility != "compatible":
+		reasons = append(reasons, prefix+"has unknown compatibility evidence")
+	case active != nil && registered:
+		if activeImage, ok := ImageByReference(active.ImageReference); !ok || activeImage.Major() != image.Major() {
+			reasons = append(reasons, prefix+"is not the same Valkey major as the active generation")
+		}
+	}
+	if !candidate.ReplicationLinkUp {
+		reasons = append(reasons, prefix+"replication from the active generation is unreachable")
+	}
+	return reasons
 }
 
 func capabilityReasons(observation host.BootstrapStatus) []string {

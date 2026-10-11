@@ -8,6 +8,7 @@ import (
 
 	"provision/internal/config"
 	"provision/internal/host"
+	"provision/internal/implementation/hostkeyvalue"
 )
 
 func TestApprovalFingerprintPreservesExactEvidenceWithoutStalingOnExcludedTelemetry(t *testing.T) {
@@ -247,5 +248,49 @@ func TestKeyValueActiveGenerationDifferingFromPlanFailsClosed(t *testing.T) {
 	preview, _ := Build(compiled, observation)
 	if preview.Executable || preview.Plan != nil || len(preview.Reasons) != 1 || !strings.Contains(preview.Reasons[0], "Store Transition") {
 		t.Fatalf("differing active generation was not rejected: %+v", preview)
+	}
+}
+
+func TestKeyValueUnsafeCandidateGenerationIsRejectedWithDistinctEvidence(t *testing.T) {
+	image, _ := hostkeyvalue.ImageFor("9.1.2")
+	active, _ := hostkeyvalue.ImageFor("9.1.1")
+	safe := func() *host.KeyValueGenerationStatus {
+		return &host.KeyValueGenerationStatus{ID: "candidate", ImageReference: image.Reference(), Role: "authoritative", AppendOnly: "yes", AppendFsync: "everysec", Compatibility: "compatible", ReplicationLinkUp: true}
+	}
+	cases := map[string]struct {
+		mutate func(*host.KeyValueGenerationStatus)
+		want   string
+	}{
+		"unregistered image": {func(c *host.KeyValueGenerationStatus) { c.ImageReference = "docker.io/valkey/valkey:9" }, "unregistered image"},
+		"no AOF":             {func(c *host.KeyValueGenerationStatus) { c.AppendOnly = "no" }, "not AOF everysec"},
+		"fsync always":       {func(c *host.KeyValueGenerationStatus) { c.AppendFsync = "always" }, "not AOF everysec"},
+		"incompatible":       {func(c *host.KeyValueGenerationStatus) { c.Compatibility = "incompatible" }, "failed compatibility"},
+		"unknown evidence":   {func(c *host.KeyValueGenerationStatus) { c.Compatibility = "" }, "unknown compatibility evidence"},
+		"wrong role":         {func(c *host.KeyValueGenerationStatus) { c.Role = "derived" }, "not authoritative"},
+		"no replication":     {func(c *host.KeyValueGenerationStatus) { c.ReplicationLinkUp = false }, "replication from the active generation is unreachable"},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			compiled, observation := keyValueFixture(t, "")
+			observation.KeyValue.Active = &host.KeyValueGenerationStatus{ID: "valkey-9-1-1-cc03bc07761a", ImageReference: active.Reference()}
+			observation.KeyValue.Candidate = safe()
+			tc.mutate(observation.KeyValue.Candidate)
+			preview, err := Build(compiled, observation)
+			if err != nil || preview.Executable || preview.Plan != nil {
+				t.Fatalf("unsafe candidate was not rejected: %+v %v", preview, err)
+			}
+			found := false
+			for _, reason := range preview.Reasons {
+				found = found || strings.Contains(reason, tc.want)
+			}
+			if !found {
+				t.Fatalf("missing distinct evidence %q in %v", tc.want, preview.Reasons)
+			}
+		})
+	}
+	compiled, observation := keyValueFixture(t, "")
+	observation.KeyValue.Candidate = safe()
+	if preview, _ := Build(compiled, observation); len(preview.Reasons) != 0 && strings.Contains(strings.Join(preview.Reasons, ";"), "candidate") {
+		t.Fatalf("safe candidate was rejected: %v", preview.Reasons)
 	}
 }

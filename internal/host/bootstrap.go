@@ -16,7 +16,7 @@ import (
 const ExecutorPath = "/usr/local/libexec/provision-host-executor"
 
 func AllowedOperations() []string {
-	return []string{"inspect", "stageArtifact", "installGeneration", "startCandidate", "verifyCandidate", "switchEndpoint", "verifyActive", "drainPrevious", "retainPrevious", "prepareQueue", "installTaskGeneration", "verifyTaskGeneration", "installWorkerGeneration", "startWorkerCandidate", "verifyWorkerCandidate", "fenceWorkerIntake", "drainWorkerPrevious", "activateWorkerIntake", "verifyWorkerActive", "installScheduleRuntime", "handoffSchedule", "verifySchedule", "retainWorkerPrevious", "prepareDatabase", "backupDatabase", "verifyDatabaseRestore", "prepareDatabaseCandidate", "synchronizeDatabaseCandidate", "fenceDatabaseWrites", "switchDatabaseAuthority", "verifyDatabaseActive", "retainDatabasePrevious", "prepareKeyValue"}
+	return []string{"inspect", "stageArtifact", "installGeneration", "startCandidate", "verifyCandidate", "switchEndpoint", "verifyActive", "drainPrevious", "retainPrevious", "prepareQueue", "installTaskGeneration", "verifyTaskGeneration", "installWorkerGeneration", "startWorkerCandidate", "verifyWorkerCandidate", "fenceWorkerIntake", "drainWorkerPrevious", "activateWorkerIntake", "verifyWorkerActive", "installScheduleRuntime", "handoffSchedule", "verifySchedule", "retainWorkerPrevious", "prepareDatabase", "backupDatabase", "verifyDatabaseRestore", "prepareDatabaseCandidate", "synchronizeDatabaseCandidate", "fenceDatabaseWrites", "switchDatabaseAuthority", "verifyDatabaseActive", "retainDatabasePrevious", "prepareKeyValue", "prepareKeyValueCandidate", "synchronizeKeyValueCandidate", "fenceKeyValueWrites", "switchKeyValueAuthority", "verifyKeyValueActive", "retainKeyValuePrevious"}
 }
 
 var environmentPattern = regexp.MustCompile(`^[a-z][a-z0-9-]{0,19}$`)
@@ -692,6 +692,38 @@ type KeyValueOperationObservation struct {
 	Verified      bool                       `json:"verified"`
 	Checks        KeyValueVerificationChecks `json:"checks"`
 	Keys          []DeterministicKeyStatus   `json:"keys,omitempty"`
+	// The fields below are the Store Transition phase evidence. They are empty
+	// for prepareKeyValue.
+	TransitionPhase string                      `json:"transitionPhase,omitempty"`
+	Synchronization string                      `json:"synchronization,omitempty"`
+	WriteFence      string                      `json:"writeFence,omitempty"`
+	Replication     *KeyValueReplicationOffsets `json:"replication,omitempty"`
+	Fence           *KeyValueFenceEvidence      `json:"fence,omitempty"`
+	Previous        *KeyValueGenerationStatus   `json:"previous,omitempty"`
+	RetainedUntil   string                      `json:"retainedUntil,omitempty"`
+	FailureCategory string                      `json:"failureCategory,omitempty"`
+	Reason          string                      `json:"reason,omitempty"`
+	RecoveryAction  string                      `json:"recoveryAction,omitempty"`
+}
+
+// KeyValueReplicationOffsets is the lossless evidence: the replication link is
+// up and the candidate's offset equals the active generation's
+// master_repl_offset, both read after the write fence.
+type KeyValueReplicationOffsets struct {
+	LinkUp          bool  `json:"linkUp"`
+	ActiveOffset    int64 `json:"activeOffset"`
+	CandidateOffset int64 `json:"candidateOffset"`
+}
+
+// KeyValueFenceEvidence proves the write fence: the application user lost write
+// access, its connections were killed, and a probe write was rejected and never
+// stored.
+type KeyValueFenceEvidence struct {
+	WriteRevoked  bool `json:"writeRevoked"`
+	ClientsKilled int  `json:"clientsKilled"`
+	ProbeRejected bool `json:"probeRejected"`
+	ProbeAbsent   bool `json:"probeAbsent"`
+	ElapsedMillis int  `json:"elapsedMillis"`
 }
 
 // HTTPKeyValueBindingStatus is the logical Key-Value Store binding observed on a

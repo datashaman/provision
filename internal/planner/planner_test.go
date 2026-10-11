@@ -294,3 +294,75 @@ func TestKeyValueUnsafeCandidateGenerationIsRejectedWithDistinctEvidence(t *test
 		t.Fatalf("safe candidate was rejected: %v", preview.Reasons)
 	}
 }
+
+func healthyActiveKeyValue(version string) *host.KeyValueGenerationStatus {
+	image, _ := hostkeyvalue.ImageFor(version)
+	return &host.KeyValueGenerationStatus{
+		ID: image.Generation(), LogicalID: "provision-lab-sessions", Role: "authoritative", Ready: true, Connectivity: true, Health: "healthy",
+		ImageReference: image.Reference(), ImageManifest: image.Manifest, AppendOnly: "yes", AppendFsync: "everysec",
+		ServiceUnit: "provision-lab-valkey.service", Container: "provision-lab-valkey", ListenAddress: "127.0.0.1", Port: 26379,
+	}
+}
+
+func TestKeyValueStoreTransitionPlansSixOrderedOperationsAndHoldsNoSecret(t *testing.T) {
+	compiled, observation := keyValueFixture(t, "9.1.2")
+	observation.KeyValue.Active = healthyActiveKeyValue("9.1.1")
+	first, err := Build(compiled, observation)
+	if err != nil || first.Plan == nil || !first.Executable {
+		t.Fatalf("qualified same-major Store Transition was not planned: %+v %v", first, err)
+	}
+	second, _ := Build(compiled, observation)
+	if first.Plan.ID != second.Plan.ID || first.Capability.Decision != "required-store-transition-supported" {
+		t.Fatalf("transition Plan is not deterministic or mislabeled: %s", first.Capability.Decision)
+	}
+	want := []OperationKind{PrepareKeyValueCandidate, SynchronizeKeyValueCandidate, FenceKeyValueWrites, SwitchKeyValueAuthority, VerifyKeyValueActive, RetainKeyValuePrevious}
+	for i, operation := range first.Plan.Operations {
+		if operation.Kind != want[i] || operation.Recovery != "retain-key-value" || len(operation.DependsOn) != min(i, 1) || (i > 0 && operation.DependsOn[0] != first.Plan.Operations[i-1].ID) {
+			t.Fatalf("operation %d is %s depending on %v", i, operation.Kind, operation.DependsOn)
+		}
+	}
+	kv := first.Plan.KeyValue
+	if kv.Previous == nil || kv.Previous.ID != healthyActiveKeyValue("9.1.1").ID || kv.Transition == nil || kv.Transition.StoreRollbackGuarantee != "forward-only" || kv.Transition.ForwardCutoverGuarantee != "lossless-after-bounded-write-fence" ||
+		kv.Transition.WriteFenceMaximum != "30s" || kv.Transition.CandidatePort != 26380 || kv.Transition.CandidateContainer != "provision-lab-valkey-candidate" || kv.ValkeyVersion != "9.1.2" {
+		t.Fatalf("transition contract is incomplete: %+v %+v", kv.Previous, kv.Transition)
+	}
+	encoded, _ := json.Marshal(first)
+	if strings.Contains(string(encoded), "valkey://") || strings.Contains(string(encoded), "password") {
+		t.Fatal("transition Plan contains a resolved credential")
+	}
+}
+
+func TestKeyValueStoreTransitionFailsClosedForUnqualifiedActiveGeneration(t *testing.T) {
+	for name, mutate := range map[string]func(*host.KeyValueGenerationStatus){
+		"unregistered active image": func(a *host.KeyValueGenerationStatus) { a.ImageReference = "docker.io/valkey/valkey:8" },
+		"unhealthy active":          func(a *host.KeyValueGenerationStatus) { a.Health = "drifted" },
+		"active without AOF":        func(a *host.KeyValueGenerationStatus) { a.AppendOnly = "no" },
+		"derived active":            func(a *host.KeyValueGenerationStatus) { a.Role = "derived" },
+	} {
+		t.Run(name, func(t *testing.T) {
+			compiled, observation := keyValueFixture(t, "9.1.2")
+			active := healthyActiveKeyValue("9.1.1")
+			mutate(active)
+			observation.KeyValue.Active = active
+			preview, _ := Build(compiled, observation)
+			if preview.Executable || preview.Plan != nil || len(preview.Reasons) == 0 {
+				t.Fatalf("unqualified active generation was transitioned: %+v", preview)
+			}
+		})
+	}
+	compiled, observation := keyValueFixture(t, "9.1.2")
+	observation.AllowedOperations = []string{"inspect", "prepareKeyValue"}
+	observation.KeyValue.Active = healthyActiveKeyValue("9.1.1")
+	if preview, _ := Build(compiled, observation); preview.Executable || preview.Plan != nil {
+		t.Fatal("executor without transition operations was accepted")
+	}
+}
+
+func TestKeyValueReplanOfExactActiveGenerationStaysASinglePrepare(t *testing.T) {
+	compiled, observation := keyValueFixture(t, "9.1.2")
+	observation.KeyValue.Active = healthyActiveKeyValue("9.1.2")
+	preview, _ := Build(compiled, observation)
+	if !preview.Executable || len(preview.Plan.Operations) != 1 || preview.Plan.KeyValue.Previous != nil || preview.Plan.KeyValue.Transition != nil {
+		t.Fatalf("re-plan of the active generation is not an idempotent prepare: %+v", preview.Plan)
+	}
+}

@@ -864,3 +864,111 @@ func TestKeyValueBindingEvidenceRequiresExactKeysAndLogicalIdentity(t *testing.T
 		t.Fatal("unplanned binding evidence accepted")
 	}
 }
+
+func keyValueTransitionVerifyFixture(kind planner.OperationKind) (operation.Envelope, host.KeyValueOperationObservation) {
+	envelope, observed := keyValueVerifyFixture()
+	input := envelope.Operation.Input.KeyValue
+	input.Previous = &host.KeyValueGenerationStatus{ID: "valkey-9-1-1-cc03bc07761a", ImageManifest: "sha256:old", ImageReference: "docker.io/valkey/valkey@sha256:old", ServiceUnit: input.ServiceUnit, Container: input.Container, DataPath: "/old", QuadletPath: input.QuadletPath, Port: input.Port}
+	input.Transition = planner.KeyValueCandidateTransition(input.ServiceUnit, input.Container, input.QuadletPath)
+	envelope.Operation.Kind = kind
+	offsets := &host.KeyValueReplicationOffsets{LinkUp: true, ActiveOffset: 900, CandidateOffset: 900}
+	observed.TransitionPhase = string(kind)
+	switch kind {
+	case planner.PrepareKeyValueCandidate:
+	case planner.SynchronizeKeyValueCandidate:
+		observed.Synchronization, observed.Replication = "replicaof-initial-sync", &host.KeyValueReplicationOffsets{LinkUp: true, CandidateOffset: 10}
+	case planner.FenceKeyValueWrites:
+		observed.WriteFence, observed.Synchronization, observed.Replication = input.Transition.WriteFence, "offset-equal-after-write-fence", offsets
+		observed.Fence = &host.KeyValueFenceEvidence{WriteRevoked: true, ClientsKilled: 2, ProbeRejected: true, ProbeAbsent: true, ElapsedMillis: 120}
+	case planner.SwitchKeyValueAuthority:
+		observed.Synchronization, observed.Replication = "authority-switched-after-write-fence", offsets
+	case planner.VerifyKeyValueActive:
+		observed.Synchronization = "verified-after-authority-switch"
+	case planner.RetainKeyValuePrevious:
+		previous := *input.Previous
+		observed.Synchronization, observed.Previous, observed.RetainedUntil = "retained-forward-only", &previous, "2026-12-01T00:00:00Z"
+	}
+	if kind.ObservesKeyValueCandidate() {
+		candidate := input.Candidate()
+		observed.KeyValue.ServiceUnit, observed.KeyValue.Container, observed.KeyValue.QuadletPath, observed.KeyValue.Port = candidate.ServiceUnit, candidate.Container, candidate.QuadletPath, candidate.Port
+		observed.Keys = nil
+	}
+	return envelope, observed
+}
+
+func TestVerifyKeyValueTransitionResultsRequirePhaseSpecificEvidence(t *testing.T) {
+	result := func(o host.KeyValueOperationObservation) operation.Result {
+		data, _ := json.Marshal(o)
+		return operation.Result{Outcome: operation.OutcomeSucceeded, Observation: data}
+	}
+	kinds := []planner.OperationKind{planner.PrepareKeyValueCandidate, planner.SynchronizeKeyValueCandidate, planner.FenceKeyValueWrites, planner.SwitchKeyValueAuthority, planner.VerifyKeyValueActive, planner.RetainKeyValuePrevious}
+	for _, kind := range kinds {
+		envelope, observed := keyValueTransitionVerifyFixture(kind)
+		if err := verifyKeyValueResult(envelope, result(observed)); err != nil {
+			t.Fatalf("%s: valid observation rejected: %v", kind, err)
+		}
+	}
+	mutations := map[planner.OperationKind]map[string]func(*host.KeyValueOperationObservation){
+		planner.SynchronizeKeyValueCandidate: {"link down": func(o *host.KeyValueOperationObservation) { o.Replication.LinkUp = false }},
+		planner.FenceKeyValueWrites: {
+			"candidate behind":        func(o *host.KeyValueOperationObservation) { o.Replication.CandidateOffset = 899 },
+			"link down":               func(o *host.KeyValueOperationObservation) { o.Replication.LinkUp = false },
+			"no offsets":              func(o *host.KeyValueOperationObservation) { o.Replication = nil },
+			"probe acknowledged":      func(o *host.KeyValueOperationObservation) { o.Fence.ProbeRejected = false },
+			"probe left a key":        func(o *host.KeyValueOperationObservation) { o.Fence.ProbeAbsent = false },
+			"fence over 30s":          func(o *host.KeyValueOperationObservation) { o.Fence.ElapsedMillis = 30001 },
+			"wrong fence mechanism":   func(o *host.KeyValueOperationObservation) { o.WriteFence = "client-pause" },
+			"candidate identity swap": func(o *host.KeyValueOperationObservation) { o.KeyValue.Container = "provision-lab-valkey" },
+		},
+		planner.SwitchKeyValueAuthority: {
+			"unequal offsets":  func(o *host.KeyValueOperationObservation) { o.Replication.ActiveOffset = 901 },
+			"missing offsets":  func(o *host.KeyValueOperationObservation) { o.Replication = nil },
+			"missing keys":     func(o *host.KeyValueOperationObservation) { o.Keys = nil },
+			"candidate listen": func(o *host.KeyValueOperationObservation) { o.KeyValue.Port = 26380 },
+		},
+		planner.VerifyKeyValueActive:   {"missing keys": func(o *host.KeyValueOperationObservation) { o.Keys = nil }},
+		planner.RetainKeyValuePrevious: {"no previous": func(o *host.KeyValueOperationObservation) { o.Previous = nil }, "no deadline": func(o *host.KeyValueOperationObservation) { o.RetainedUntil = "" }, "other previous": func(o *host.KeyValueOperationObservation) { o.Previous.ID = "other" }},
+	}
+	for kind, cases := range mutations {
+		for name, mutate := range cases {
+			t.Run(string(kind)+"/"+name, func(t *testing.T) {
+				envelope, observed := keyValueTransitionVerifyFixture(kind)
+				if observed.Replication != nil {
+					replication := *observed.Replication
+					observed.Replication = &replication
+				}
+				if observed.Fence != nil {
+					fence := *observed.Fence
+					observed.Fence = &fence
+				}
+				if observed.Previous != nil {
+					previous := *observed.Previous
+					observed.Previous = &previous
+				}
+				mutate(&observed)
+				if err := verifyKeyValueResult(envelope, result(observed)); err == nil {
+					t.Fatal("tampered transition observation accepted")
+				}
+			})
+		}
+	}
+}
+
+func TestVerifyKeyValueTransitionUncertainRequiresEvidenceAndPrepareStaysFailClosed(t *testing.T) {
+	envelope, observed := keyValueTransitionVerifyFixture(planner.SwitchKeyValueAuthority)
+	observed.Status, observed.FailureCategory, observed.Reason, observed.RecoveryAction = "uncertain", "ambiguous-data-bearing-state", "x", "inspect"
+	data, _ := json.Marshal(observed)
+	if err := verifyKeyValueResult(envelope, operation.Result{Outcome: operation.OutcomeUncertain, Observation: data}); err != nil {
+		t.Fatalf("uncertain switch with evidence rejected: %v", err)
+	}
+	observed.RecoveryAction = ""
+	data, _ = json.Marshal(observed)
+	if err := verifyKeyValueResult(envelope, operation.Result{Outcome: operation.OutcomeUncertain, Observation: data}); err == nil {
+		t.Fatal("uncertain switch without recovery evidence accepted")
+	}
+	first, firstObserved := keyValueVerifyFixture()
+	data, _ = json.Marshal(firstObserved)
+	if err := verifyKeyValueResult(first, operation.Result{Outcome: operation.OutcomeUncertain, Observation: data}); err == nil {
+		t.Fatal("uncertain prepareKeyValue accepted")
+	}
+}

@@ -40,8 +40,12 @@ type keyValueGenerationRecord struct {
 
 func validateKeyValueOperation(planned planner.Operation, record bootstrapRecord, paths executionPaths) error {
 	in := planned.Input
-	if planned.Kind != planner.PrepareKeyValue || len(planned.DependsOn) != 0 || in.KeyValue == nil || in.Artifact != nil || in.Generation != nil || in.Systemd != nil || in.Health != nil || in.Endpoint != nil || in.Previous != nil || in.Drain != nil || in.Retention != nil || in.Async != nil || in.Database != nil {
-		return errors.New("prepareKeyValue requires only its typed Key-Value Store input and no dependency")
+	wantDependencies := 0
+	if planned.Kind.IsKeyValueTransition() && planned.Kind != planner.PrepareKeyValueCandidate {
+		wantDependencies = 1
+	}
+	if !planned.Kind.IsKeyValue() || len(planned.DependsOn) != wantDependencies || in.KeyValue == nil || in.Artifact != nil || in.Generation != nil || in.Systemd != nil || in.Health != nil || in.Endpoint != nil || in.Previous != nil || in.Drain != nil || in.Retention != nil || in.Async != nil || in.Database != nil {
+		return errors.New("Key-Value Store operation requires only its typed Key-Value Store input and its planned dependency")
 	}
 	input := in.KeyValue
 	image, ok := hostkeyvalue.ImageByReference(input.ImageReference)
@@ -72,6 +76,36 @@ func validateKeyValueOperation(planned planner.Operation, record bootstrapRecord
 			return errors.New("Key-Value Store deterministic key is outside the planned namespace")
 		}
 	}
+	return validateKeyValueTransition(planned.Kind, *input, record, paths)
+}
+
+// validateKeyValueTransition pins a Store Transition to the bootstrapped
+// Environment: the candidate identity is derived, never caller-selected, and
+// the previous generation must be a registered, same-major, authoritative
+// generation under the Environment's owned path.
+func validateKeyValueTransition(kind planner.OperationKind, input planner.KeyValuePlan, record bootstrapRecord, paths executionPaths) error {
+	if !kind.IsKeyValueTransition() {
+		if input.Previous != nil || input.Transition != nil {
+			return errors.New("prepareKeyValue accepts no Store Transition input")
+		}
+		return nil
+	}
+	previous := input.Previous
+	if previous == nil || input.Transition == nil {
+		return errors.New("Key-Value Store transition operation requires a previous generation and the Store Transition contract")
+	}
+	if !reflect.DeepEqual(*input.Transition, *planner.KeyValueCandidateTransition(input.ServiceUnit, input.Container, input.QuadletPath)) {
+		return errors.New("Key-Value Store Store Transition contract or candidate identity does not match the approved shape")
+	}
+	image, _ := hostkeyvalue.ImageByReference(input.ImageReference)
+	previousImage, registered := hostkeyvalue.ImageByReference(previous.ImageReference)
+	if !registered || previousImage.Major() != image.Major() || previous.ID == input.GenerationID || previous.ID != previousImage.Generation() || previous.ImageManifest != previousImage.Manifest {
+		return errors.New("previous Key-Value Store generation is not a registered qualified image of the same Valkey major")
+	}
+	expectedData := filepath.Join(paths.environmentHome, "services", "valkey", "generations", previous.ID, "data")
+	if previous.LogicalID != input.LogicalID || previous.Role != "authoritative" || previous.ServiceUnit != input.ServiceUnit || previous.Container != input.Container || previous.Account != record.Account || previous.QuadletPath != input.QuadletPath || previous.Port != input.Port || previous.ListenAddress != input.ListenAddress || previous.DataPath != expectedData {
+		return errors.New("previous Key-Value Store generation does not match the bootstrapped Environment service identity")
+	}
 	return nil
 }
 
@@ -99,7 +133,15 @@ func keyValueURLCredentialPath(environment string) string {
 	return filepath.Join("/var/lib/provision/environments", environment, "credentials", "valkey-url")
 }
 
-func keyValueCredentialEntrypoint() string {
+// keyValueCredentialEntrypoint is the container entrypoint. A candidate (replica)
+// generation additionally authenticates its replication link to the active
+// generation with the same credential, passed as server options, so the
+// executor never handles the password for synchronization.
+func keyValueCredentialEntrypoint(replica bool) string {
+	launch := `exec docker-entrypoint.sh "$@"`
+	if replica {
+		launch = `exec docker-entrypoint.sh "$@" --masteruser "$user" --masterauth "$password"`
+	}
 	return `#!/usr/bin/env bash
 set -euo pipefail
 url="$(cat /run/provision-credential/valkey-credential)"
@@ -124,8 +166,7 @@ cat > /tmp/provision-health.sh <<HEALTH
 [ "\$(/tmp/provision-cli.sh ping 2>/dev/null)" = PONG ]
 HEALTH
 chmod 0700 /tmp/provision-cli.sh /tmp/provision-health.sh
-exec docker-entrypoint.sh "$@"
-`
+` + launch + "\n"
 }
 
 func renderKeyValueQuadlet(input planner.KeyValuePlan, entrypoint string) string {
@@ -162,13 +203,39 @@ func keyValueServiceRoot(input planner.KeyValuePlan) string {
 	return filepath.Dir(filepath.Dir(filepath.Dir(input.DataPath)))
 }
 
+// keyValueIsCandidate is true for the candidate retargeting of a Store Transition.
+func keyValueIsCandidate(input planner.KeyValuePlan) bool {
+	return strings.HasSuffix(input.ServiceUnit, "-candidate.service")
+}
+
 func keyValueRecordPath(input planner.KeyValuePlan) string {
+	if keyValueIsCandidate(input) {
+		return filepath.Join(filepath.Dir(input.DataPath), "candidate.json")
+	}
 	return filepath.Join(filepath.Dir(input.DataPath), "generation.json")
 }
 
-func observeKeyValueOperation(ctx context.Context, planned planner.Operation, record bootstrapRecord, paths executionPaths) (host.OperationObservation, error) {
+func keyValueEntrypointPath(input planner.KeyValuePlan) string {
+	if keyValueIsCandidate(input) {
+		return filepath.Join(keyValueServiceRoot(input), "credential-entrypoint-candidate")
+	}
+	return filepath.Join(keyValueServiceRoot(input), "credential-entrypoint")
+}
+
+// canonicalKeyValue is the plan identity a generation record stores. Transition
+// context is not part of a generation's identity, so re-planning an exactly
+// active generation stays idempotent after a Store Transition.
+func canonicalKeyValue(input planner.KeyValuePlan) planner.KeyValuePlan {
+	input.Previous, input.Transition = nil, nil
+	return input
+}
+
+func observeKeyValueOperation(ctx context.Context, planID string, planned planner.Operation, record bootstrapRecord, paths executionPaths) (host.OperationObservation, error) {
 	if err := validateKeyValueOperation(planned, record, paths); err != nil {
 		return host.OperationObservation{}, err
+	}
+	if planned.Kind.IsKeyValueTransition() {
+		return observeKeyValueTransitionOperation(ctx, planID, planned, record, paths)
 	}
 	observed, state := observeManagedKeyValue(ctx, *planned.Input.KeyValue, record, paths)
 	evidence, err := json.Marshal(observed)
@@ -227,8 +294,8 @@ func applyKeyValueOperation(ctx context.Context, planned planner.Operation, reco
 		return nil, err
 	}
 	credentialURL = ""
-	entrypointPath := filepath.Join(serviceRoot, "credential-entrypoint")
-	if err := installExactFile(entrypointPath, []byte(keyValueCredentialEntrypoint()), 0755, 0, 0); err != nil {
+	entrypointPath := keyValueEntrypointPath(input)
+	if err := installExactFile(entrypointPath, []byte(keyValueCredentialEntrypoint(false)), 0755, 0, 0); err != nil {
 		return nil, err
 	}
 	if err := installExactFile(input.QuadletPath, []byte(renderKeyValueQuadlet(input, entrypointPath)), 0644, 0, 0); err != nil {
@@ -256,7 +323,7 @@ func applyKeyValueOperation(ctx context.Context, planned planner.Operation, reco
 			return nil, errors.New("write deterministic workload key")
 		}
 	}
-	if err := writeJSONAtomic(keyValueRecordPath(input), keyValueGenerationRecord{SchemaVersion: keyValueGenerationSchema, KeyValue: input}, 0444); err != nil {
+	if err := writeJSONAtomic(keyValueRecordPath(input), keyValueGenerationRecord{SchemaVersion: keyValueGenerationSchema, KeyValue: canonicalKeyValue(input)}, 0444); err != nil {
 		return nil, errors.New("record Key-Value Store generation")
 	}
 	observed, state := observeKeyValueGeneration(ctx, input, record, paths, true)
@@ -268,7 +335,7 @@ func applyKeyValueOperation(ctx context.Context, planned planner.Operation, reco
 		return encoded, errors.New("prepared Key-Value Store failed exact verification")
 	}
 	// Only now is the generation verified; the record is replaced atomically.
-	if err := writeJSONAtomic(keyValueRecordPath(input), keyValueGenerationRecord{SchemaVersion: keyValueGenerationSchema, KeyValue: input, Verified: true}, 0444); err != nil {
+	if err := writeJSONAtomic(keyValueRecordPath(input), keyValueGenerationRecord{SchemaVersion: keyValueGenerationSchema, KeyValue: canonicalKeyValue(input), Verified: true}, 0444); err != nil {
 		return encoded, errors.New("mark Key-Value Store generation verified")
 	}
 	return encoded, nil
@@ -294,7 +361,14 @@ func waitForKeyValueService(ctx context.Context, record bootstrapRecord, input p
 // keyValueCLI is a real authenticated client round trip: the in-container
 // valkey-cli carries the credential, so the executor never holds it again.
 func keyValueCLI(ctx context.Context, record bootstrapRecord, input planner.KeyValuePlan, args ...string) ([]byte, error) {
-	return runAsEnvironment(ctx, record, "podman", append([]string{"exec", input.Container, "/tmp/provision-cli.sh"}, args...)...)
+	return keyValueExec(ctx, record, input.Container, args...)
+}
+
+// keyValueRun is the Environment command runner; tests replace it.
+var keyValueRun = runAsEnvironment
+
+func keyValueExec(ctx context.Context, record bootstrapRecord, container string, args ...string) ([]byte, error) {
+	return keyValueRun(ctx, record, "podman", append([]string{"exec", container, "/tmp/provision-cli.sh"}, args...)...)
 }
 
 func observeManagedKeyValue(ctx context.Context, input planner.KeyValuePlan, record bootstrapRecord, paths executionPaths) (host.KeyValueOperationObservation, string) {
@@ -323,14 +397,14 @@ func observeKeyValueGeneration(ctx context.Context, input planner.KeyValuePlan, 
 	var generation keyValueGenerationRecord
 	decoder := json.NewDecoder(bytes.NewReader(data))
 	decoder.DisallowUnknownFields()
-	if decoder.Decode(&generation) != nil || generation.SchemaVersion != keyValueGenerationSchema || !reflect.DeepEqual(generation.KeyValue, input) {
+	if decoder.Decode(&generation) != nil || generation.SchemaVersion != keyValueGenerationSchema || !reflect.DeepEqual(generation.KeyValue, canonicalKeyValue(input)) {
 		return fail("drifted", "Key-Value Store generation record differs from the approved generation")
 	}
 	if !generation.Verified && !finalVerification {
 		return observation, "pending"
 	}
-	serviceRoot := keyValueServiceRoot(input)
-	entrypointPath := filepath.Join(serviceRoot, "credential-entrypoint")
+	entrypointPath := keyValueEntrypointPath(input)
+	candidate := keyValueIsCandidate(input)
 	uid := accountUID(record.Account)
 	if !rootOwned(recordPath, 0444) || !rootOwned(input.QuadletPath, 0644) || !rootOwned(entrypointPath, 0755) || uid <= 0 {
 		return fail("unsafe-owned-resource", "Key-Value Store generation files have unsafe ownership or modes")
@@ -338,7 +412,7 @@ func observeKeyValueGeneration(ctx context.Context, input planner.KeyValuePlan, 
 	quadlet, quadletErr := os.ReadFile(input.QuadletPath)
 	entrypoint, entrypointErr := os.ReadFile(entrypointPath)
 	credentialPath := filepath.Join("/var/lib/provision/runtime", record.Environment, ".config", "credstore.encrypted", keyValueCredentialName)
-	if quadletErr != nil || string(quadlet) != renderKeyValueQuadlet(input, entrypointPath) || entrypointErr != nil || string(entrypoint) != keyValueCredentialEntrypoint() || !ownedBy(credentialPath, uid, 0600) || !rootOwned(keyValueURLCredentialPath(record.Environment), 0600) || !environmentDataOwned(input.DataPath, record.Account, uid, accountGID(record.Account)) {
+	if quadletErr != nil || string(quadlet) != renderKeyValueQuadlet(input, entrypointPath) || entrypointErr != nil || string(entrypoint) != keyValueCredentialEntrypoint(candidate) || !ownedBy(credentialPath, uid, 0600) || !rootOwned(keyValueURLCredentialPath(record.Environment), 0600) || !environmentDataOwned(input.DataPath, record.Account, uid, accountGID(record.Account)) {
 		return fail("drifted-owned-resource", "Key-Value Store runtime files or data ownership differ from the approved generation")
 	}
 	active, activeErr := runAsEnvironment(ctx, record, "systemctl", "--user", "is-active", input.ServiceUnit)
@@ -381,12 +455,19 @@ func observeKeyValueGeneration(ctx context.Context, input planner.KeyValuePlan, 
 	case strings.TrimSpace(string(ping)) != "PONG":
 		return fail("unobservable", "Valkey did not answer an authenticated PING")
 	}
-	for _, key := range input.Binding.Keys {
-		value, err := keyValueCLI(ctx, record, input, "GET", key)
-		if err != nil || strings.TrimSpace(string(value)) != input.Binding.DeterministicValue(key) {
-			return fail("drifted", "deterministic workload keys are not readable from the generation")
+	if candidate {
+		// A candidate replicates its keys from the active generation, so they
+		// are proven on the active generation after the authority switch.
+		replication := keyValueReplicationInfo(ctx, record, input.Container)
+		observation.KeyValue.Compatibility, observation.KeyValue.ReplicationLinkUp = "compatible", replication.linkUp
+	} else {
+		for _, key := range input.Binding.Keys {
+			value, err := keyValueCLI(ctx, record, input, "GET", key)
+			if err != nil || strings.TrimSpace(string(value)) != input.Binding.DeterministicValue(key) {
+				return fail("drifted", "deterministic workload keys are not readable from the generation")
+			}
+			observation.Keys = append(observation.Keys, host.DeterministicKeyStatus{Key: key, Value: input.Binding.DeterministicValue(key)})
 		}
-		observation.Keys = append(observation.Keys, host.DeterministicKeyStatus{Key: key, Value: input.Binding.DeterministicValue(key)})
 	}
 	observation.Status, observation.Verified = "verified", true
 	observation.KeyValue.Ready, observation.KeyValue.Connectivity, observation.KeyValue.Health = true, true, "healthy"
@@ -415,7 +496,6 @@ func configValue(output []byte) string {
 }
 
 func keyValueStatusIdentity(input planner.KeyValuePlan) host.KeyValueGenerationStatus {
-	serviceRoot := keyValueServiceRoot(input)
 	environment := strings.TrimPrefix(input.CredentialReference, "secret://")
 	if separator := strings.IndexByte(environment, '/'); separator >= 0 {
 		environment = environment[:separator]
@@ -426,7 +506,7 @@ func keyValueStatusIdentity(input planner.KeyValuePlan) host.KeyValueGenerationS
 		SupportedGuarantees: []string{"authoritative-store-data-role", "aof-everysec-persistence", "loopback-only-listener", "secret-reference-only-plan"},
 		OwnedResources: []string{
 			"systemd-unit:" + input.ServiceUnit, "container:" + input.Container, "data-path:" + input.DataPath, "quadlet:" + input.QuadletPath,
-			"generation-record:" + keyValueRecordPath(input), "credential-entrypoint:" + filepath.Join(serviceRoot, "credential-entrypoint"),
+			"generation-record:" + keyValueRecordPath(input), "credential-entrypoint:" + keyValueEntrypointPath(input),
 			"encrypted-credential:" + filepath.Join("/var/lib/provision/runtime", environment, ".config", "credstore.encrypted", keyValueCredentialName),
 			"encrypted-credential:" + keyValueURLCredentialPath(environment),
 		},
@@ -470,7 +550,21 @@ func inspectKeyValue(environment, account string, paths executionPaths) *host.Ke
 			status.Findings = append(status.Findings, "managed Key-Value Store generation is not an exact healthy observation")
 		}
 	default:
-		status.Findings = append(status.Findings, "multiple managed Key-Value Store generations are not supported by this slice")
+		status.Findings = append(status.Findings, "multiple active managed Key-Value Store generations are not supported")
+	}
+	candidates, _ := filepath.Glob(filepath.Join(paths.environmentHome, "services", "valkey", "generations", "*", "candidate.json"))
+	switch len(candidates) {
+	case 0:
+	case 1:
+		var generation keyValueGenerationRecord
+		if err := readExactJSON(candidates[0], &generation); err != nil || generation.SchemaVersion != keyValueGenerationSchema {
+			status.Findings = append(status.Findings, "candidate Key-Value Store generation record is invalid")
+			break
+		}
+		observed, _ := observeManagedKeyValue(context.Background(), generation.KeyValue, bootstrapRecord{Environment: environment, Account: account}, paths)
+		status.Candidate = &observed.KeyValue
+	default:
+		status.Findings = append(status.Findings, "multiple candidate Key-Value Store generations are not supported")
 	}
 	return status
 }

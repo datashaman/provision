@@ -419,7 +419,7 @@ func (b *sqliteBackend) BeginOperation(ctx context.Context, request BeginOperati
 		return OperationAttempt{}, errors.New("operation is not present in the approved Plan")
 	}
 	switch operation.Kind {
-	case planner.PrepareQueue, planner.PrepareDatabase, planner.PrepareDatabaseCandidate, planner.PrepareKeyValue:
+	case planner.PrepareQueue, planner.PrepareDatabase, planner.PrepareDatabaseCandidate, planner.PrepareKeyValue, planner.PrepareKeyValueCandidate:
 		if len(operation.DependsOn) != 0 {
 			return OperationAttempt{}, errors.New("preparation operation cannot have operation dependencies")
 		}
@@ -436,7 +436,8 @@ func (b *sqliteBackend) BeginOperation(ctx context.Context, request BeginOperati
 		planner.InstallWorkerGeneration, planner.StartWorkerCandidate, planner.VerifyWorkerCandidate, planner.FenceWorkerIntake, planner.DrainWorkerPrevious, planner.ActivateWorkerIntake, planner.VerifyWorkerActive, planner.RetainWorkerPrevious,
 		planner.InstallScheduleRuntime, planner.HandoffSchedule, planner.VerifySchedule,
 		planner.VerifyDatabaseRestore,
-		planner.SynchronizeDatabaseCandidate, planner.FenceDatabaseWrites, planner.SwitchDatabaseAuthority, planner.VerifyDatabaseActive, planner.RetainDatabasePrevious:
+		planner.SynchronizeDatabaseCandidate, planner.FenceDatabaseWrites, planner.SwitchDatabaseAuthority, planner.VerifyDatabaseActive, planner.RetainDatabasePrevious,
+		planner.SynchronizeKeyValueCandidate, planner.FenceKeyValueWrites, planner.SwitchKeyValueAuthority, planner.VerifyKeyValueActive, planner.RetainKeyValuePrevious:
 		if len(operation.DependsOn) == 0 {
 			return OperationAttempt{}, errors.New("candidate operation requires a successful dependency")
 		}

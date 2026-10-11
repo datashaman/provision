@@ -19,6 +19,9 @@ type Evaluation struct {
 	Guarantees      []string
 	SupportEvidence []string
 	Reasons         []string
+	// Transition is true when the declared generation differs from a healthy,
+	// qualified, same-major active generation, so the Plan is a Store Transition.
+	Transition bool
 }
 
 // Evaluate fails closed on an unregistered or unqualified Valkey version.
@@ -45,7 +48,12 @@ func Evaluate(compiled config.Compiled, observation host.BootstrapStatus) Evalua
 		evaluation.Reasons = append(evaluation.Reasons, fmt.Sprintf("Valkey %s has no packaging qualification evidence yet", image.Version))
 	}
 	if active := activeGeneration(observation); active != nil && ok && active.ID != image.Generation() {
-		evaluation.Reasons = append(evaluation.Reasons, "replacing the active Key-Value Store generation is a Store Transition, which is not qualified yet")
+		if reason := transitionReason(active, image); reason != "" {
+			evaluation.Reasons = append(evaluation.Reasons, reason)
+		} else {
+			evaluation.Transition = true
+			evaluation.Guarantees = append(evaluation.Guarantees, "separate-candidate-generation", "bounded-acl-write-fence", "replication-offset-equality-evidence", "lossless-forward-cutover-after-bounded-write-fence", "forward-only-store-rollback", "previous-generation-retention")
+		}
 	}
 	if candidate := candidateOf(observation); candidate != nil {
 		evaluation.Reasons = append(evaluation.Reasons, unsafeCandidateReasons(candidate, activeGeneration(observation))...)
@@ -54,6 +62,22 @@ func Evaluate(compiled config.Compiled, observation host.BootstrapStatus) Evalua
 		evaluation.SupportEvidence = []string{"valkey-" + image.Version + "-image-index-and-manifest-pinned", "packaging-qualification-" + image.Evidence}
 	}
 	return evaluation
+}
+
+// transitionReason is non-empty when the observed active generation cannot be
+// replaced by the declared image. An unregistered, unhealthy, non-AOF or
+// cross-major active generation fails closed.
+func transitionReason(active *host.KeyValueGenerationStatus, image Image) string {
+	activeImage, registered := ImageByReference(active.ImageReference)
+	switch {
+	case !registered:
+		return "replacing the active Key-Value Store generation is a Store Transition, which is not qualified for an active generation that is not a registered qualified image"
+	case activeImage.Major() != image.Major():
+		return "Key-Value Store Transition is qualified only within one Valkey major version"
+	case !active.Ready || !active.Connectivity || active.Health != "healthy" || active.Role != "authoritative" || active.AppendOnly != "yes" || active.AppendFsync != "everysec":
+		return "Key-Value Store Transition requires a healthy authoritative active generation with AOF everysec"
+	}
+	return ""
 }
 
 func activeGeneration(observation host.BootstrapStatus) *host.KeyValueGenerationStatus {
@@ -131,6 +155,52 @@ func Operation(plan *planmodel.KeyValuePlan) planmodel.Operation {
 	}
 }
 
+// TransitionOperations is the Store Transition: prepare a separate candidate,
+// synchronize it by replication, fence writes, switch authority, verify the new
+// active generation, and retain the previous one. Rollback is forward-only.
+func TransitionOperations(plan *planmodel.KeyValuePlan) []planmodel.Operation {
+	previous := plan.Previous.ID
+	steps := []struct {
+		kind          planmodel.OperationKind
+		preconditions []planmodel.TypedCondition
+		expected      planmodel.TypedCondition
+	}{
+		{planmodel.PrepareKeyValueCandidate,
+			[]planmodel.TypedCondition{{Kind: "key-value-secret-reference", Subject: plan.CredentialReference, Expected: "resolved-at-execution"}, {Kind: "active-key-value-generation", Subject: previous, Expected: "verified-compatible"}, {Kind: "valkey-qualification", Subject: plan.QualificationDigest, Expected: "matched"}},
+			planmodel.TypedCondition{Kind: "candidate-key-value-generation", Subject: plan.GenerationID, Expected: "prepared"}},
+		{planmodel.SynchronizeKeyValueCandidate,
+			[]planmodel.TypedCondition{{Kind: "candidate-key-value-generation", Subject: plan.GenerationID, Expected: "prepared"}, {Kind: "synchronization-method", Subject: plan.LogicalID, Expected: plan.Transition.Synchronization}},
+			planmodel.TypedCondition{Kind: "candidate-key-value-generation", Subject: plan.GenerationID, Expected: "synchronized"}},
+		{planmodel.FenceKeyValueWrites,
+			[]planmodel.TypedCondition{{Kind: "candidate-key-value-generation", Subject: plan.GenerationID, Expected: "synchronized"}, {Kind: "write-fence", Subject: plan.LogicalID, Expected: "bounded-" + plan.Transition.WriteFenceMaximum}},
+			planmodel.TypedCondition{Kind: "write-fence", Subject: plan.LogicalID, Expected: "offset-equal-after-fence"}},
+		{planmodel.SwitchKeyValueAuthority,
+			[]planmodel.TypedCondition{{Kind: "write-fence", Subject: plan.LogicalID, Expected: "offset-equal-after-fence"}, {Kind: "forward-cutover", Subject: plan.LogicalID, Expected: plan.Transition.ForwardCutoverGuarantee}},
+			planmodel.TypedCondition{Kind: "key-value-authority", Subject: plan.LogicalID, Expected: plan.GenerationID}},
+		{planmodel.VerifyKeyValueActive,
+			[]planmodel.TypedCondition{{Kind: "key-value-authority", Subject: plan.LogicalID, Expected: plan.GenerationID}, {Kind: "deterministic-keys", Subject: plan.Binding.Namespace, Expected: "present"}},
+			planmodel.TypedCondition{Kind: "key-value-generation", Subject: plan.LogicalID, Expected: "client-round-trip-verified-active"}},
+		{planmodel.RetainKeyValuePrevious,
+			[]planmodel.TypedCondition{{Kind: "previous-key-value-generation", Subject: previous, Expected: "exact-identity-retained"}, {Kind: "store-rollback-guarantee", Subject: plan.LogicalID, Expected: plan.Transition.StoreRollbackGuarantee}},
+			planmodel.TypedCondition{Kind: "previous-key-value-generation", Subject: previous, Expected: "retained-through-rollback-window"}},
+	}
+	operations := make([]planmodel.Operation, 0, len(steps))
+	for index, step := range steps {
+		dependsOn := []string{}
+		if index > 0 {
+			dependsOn = []string{fmt.Sprintf("op-%02d", index)}
+		}
+		operations = append(operations, planmodel.Operation{
+			ID: fmt.Sprintf("op-%02d", index+1), Kind: step.kind, DependsOn: dependsOn,
+			Input:                planmodel.OperationInput{KeyValue: plan},
+			Preconditions:        step.preconditions,
+			ExpectedObservations: []planmodel.TypedCondition{step.expected},
+			Recovery:             planmodel.RetainKeyValue,
+		})
+	}
+	return operations
+}
+
 // Plan derives the deterministic preview. The caller must have checked Evaluate.
 func Plan(compiled config.Compiled, observation host.BootstrapStatus) *planmodel.KeyValuePlan {
 	name, comp, implementation := component(compiled)
@@ -143,7 +213,7 @@ func Plan(compiled config.Compiled, observation host.BootstrapStatus) *planmodel
 	if observation.KeyValue != nil {
 		quadletPath = observation.KeyValue.Capabilities.QuadletPath
 	}
-	return &planmodel.KeyValuePlan{
+	plan := &planmodel.KeyValuePlan{
 		Component:               name,
 		LogicalID:               logicalID,
 		GenerationID:            image.Generation(),
@@ -173,6 +243,12 @@ func Plan(compiled config.Compiled, observation host.BootstrapStatus) *planmodel
 			ValuePrefix: "provision-deterministic-v1:",
 		},
 	}
+	if active := activeGeneration(observation); active != nil && active.ID != image.Generation() {
+		previous := *active
+		plan.Previous = &previous
+		plan.Transition = planmodel.KeyValueCandidateTransition(plan.ServiceUnit, plan.Container, quadletPath)
+	}
+	return plan
 }
 
 func component(compiled config.Compiled) (string, config.Component, config.Implementation) {

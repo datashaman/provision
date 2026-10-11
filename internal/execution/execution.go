@@ -310,9 +310,9 @@ func resolvedValuesForOperation(plan planner.Plan, operationID string, available
 			}
 			return map[string]string{reference: value}, nil
 		}
-		if planned.Kind == planner.PrepareKeyValue {
+		if planned.Kind.IsKeyValue() {
 			if planned.Input.KeyValue == nil || planned.Input.KeyValue.CredentialReference == "" {
-				return nil, errors.New("prepareKeyValue has no Key-Value Store credential Secret Reference")
+				return nil, errors.New("Key-Value Store operation has no credential Secret Reference")
 			}
 			reference := planned.Input.KeyValue.CredentialReference
 			value, ok := available[reference]

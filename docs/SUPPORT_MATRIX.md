@@ -80,6 +80,19 @@ Key-Value Store generation that differs from the plan fails closed as an
 unqualified Store Transition. Exclusions are unchanged from the row above.
 Evidence is under the git-ignored `work/issue-97-live/parity-evidence`.
 
+
+## Managed Valkey Host transition contract
+
+| Test seam | Qualified input | Operation contract | Result |
+| --- | --- | --- | --- |
+| Go planner, restricted-executor, and local result-verifier tests for issue #99 | Existing healthy authoritative managed Valkey generation (`9.1.1` or `9.1.2`, AOF `everysec`) with a registered same-major target image | `prepareKeyValueCandidate`, `synchronizeKeyValueCandidate`, `fenceKeyValueWrites`, `switchKeyValueAuthority`, `verifyKeyValueActive`, and `retainKeyValuePrevious` | Plan preview exposes forward cutover classified `lossless-after-bounded-write-fence` (ACL write revocation plus client kill, `30s` maximum, replication offset equality carried in signed results), keeps rollback `forward-only`, uses a separate candidate service/container/listener, rejects unregistered, unhealthy, non-AOF, non-authoritative, or cross-major active generations, rejects unsafe observed candidates, requires phase-specific signed results, and refuses to switch authority without the Plan's own fence record, a rejected probe write, and equal offsets over an up link. Stale executor attempts are rejected by the host fence before any Key-Value Store command. See [ADR 0077](adr/0077-qualify-forward-only-host-valkey-transition-contract.md). |
+
+This row qualifies the contract shape and executor guardrails only. It has no
+live disposable-Host transition evidence yet (that is #100–#102) and does not
+qualify crash durability, host-loss recovery, backup/restore, derived or
+ephemeral roles, multi-node Valkey, ElastiCache, external Valkey, cross-major
+upgrades, an HTTP-bound transition, or any rollback claim.
+
 ## Managed PostgreSQL Host packaging
 
 | Acceptance client | Host OS | Runtime identity | Service and topology | Result |

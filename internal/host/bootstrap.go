@@ -16,7 +16,7 @@ import (
 const ExecutorPath = "/usr/local/libexec/provision-host-executor"
 
 func AllowedOperations() []string {
-	return []string{"inspect", "stageArtifact", "installGeneration", "startCandidate", "verifyCandidate", "switchEndpoint", "verifyActive", "drainPrevious", "retainPrevious", "prepareQueue", "installTaskGeneration", "verifyTaskGeneration", "installWorkerGeneration", "startWorkerCandidate", "verifyWorkerCandidate", "fenceWorkerIntake", "drainWorkerPrevious", "activateWorkerIntake", "verifyWorkerActive", "installScheduleRuntime", "handoffSchedule", "verifySchedule", "retainWorkerPrevious", "prepareDatabase", "backupDatabase", "verifyDatabaseRestore", "prepareDatabaseCandidate", "synchronizeDatabaseCandidate", "fenceDatabaseWrites", "switchDatabaseAuthority", "verifyDatabaseActive", "retainDatabasePrevious"}
+	return []string{"inspect", "stageArtifact", "installGeneration", "startCandidate", "verifyCandidate", "switchEndpoint", "verifyActive", "drainPrevious", "retainPrevious", "prepareQueue", "installTaskGeneration", "verifyTaskGeneration", "installWorkerGeneration", "startWorkerCandidate", "verifyWorkerCandidate", "fenceWorkerIntake", "drainWorkerPrevious", "activateWorkerIntake", "verifyWorkerActive", "installScheduleRuntime", "handoffSchedule", "verifySchedule", "retainWorkerPrevious", "prepareDatabase", "backupDatabase", "verifyDatabaseRestore", "prepareDatabaseCandidate", "synchronizeDatabaseCandidate", "fenceDatabaseWrites", "switchDatabaseAuthority", "verifyDatabaseActive", "retainDatabasePrevious", "prepareKeyValue"}
 }
 
 var environmentPattern = regexp.MustCompile(`^[a-z][a-z0-9-]{0,19}$`)
@@ -45,6 +45,7 @@ type BootstrapStatus struct {
 	ListeningTCPPorts      []int                 `json:"listeningTcpPorts,omitempty"`
 	Deployment             DeploymentStatus      `json:"deployment,omitempty"`
 	Database               *DatabaseStatus       `json:"database,omitempty"`
+	KeyValue               *KeyValueStatus       `json:"keyValue,omitempty"`
 	Async                  *AsyncStatus          `json:"async,omitempty"`
 	AllowedOperations      []string              `json:"allowedOperations"`
 	Ready                  bool                  `json:"ready"`
@@ -483,6 +484,7 @@ type GenerationStatus struct {
 	Port             int                        `json:"port"`
 	RouteID          string                     `json:"routeId"`
 	DatabaseBinding  *HTTPDatabaseBindingStatus `json:"databaseBinding,omitempty"`
+	KeyValueBinding  *HTTPKeyValueBindingStatus `json:"keyValueBinding,omitempty"`
 	UnitActive       bool                       `json:"unitActive"`
 	UnitMatches      bool                       `json:"unitMatches"`
 	RouteObserved    bool                       `json:"routeObserved"`
@@ -597,4 +599,98 @@ func operationCapabilityMismatch(wanted, observed []string) string {
 		}
 	}
 	return ""
+}
+
+const (
+	KeyValueInspectionSchema = "provision.dev/host-key-value-inspection/v1alpha1"
+	KeyValueOperationSchema  = "provision.dev/host-key-value-operation/v1alpha1"
+)
+
+// KeyValueStatus is the first-class key-value capability block. It carries the
+// host's qualified Valkey packaging identity and the exact observed generation.
+type KeyValueStatus struct {
+	SchemaVersion       string                    `json:"schemaVersion"`
+	ObservationComplete bool                      `json:"observationComplete"`
+	Findings            []string                  `json:"findings"`
+	Capabilities        KeyValueCapabilities      `json:"capabilities"`
+	Active              *KeyValueGenerationStatus `json:"active,omitempty"`
+}
+
+type KeyValueCapabilities struct {
+	PodmanVersion               string `json:"podmanVersion"`
+	Quadlet                     bool   `json:"quadlet"`
+	RootlessEnvironmentAccount  bool   `json:"rootlessEnvironmentAccount"`
+	SystemdCredentials          bool   `json:"systemdCredentials"`
+	SubordinateIDs              bool   `json:"subordinateIds"`
+	LingeringUserManager        bool   `json:"lingeringUserManager"`
+	QuadletDefinitionRootOwned  bool   `json:"quadletDefinitionRootOwned"`
+	EncryptedCredentialObserved bool   `json:"encryptedCredentialObserved"`
+	Contract                    string `json:"contract"`
+	QuadletPath                 string `json:"quadletPath"`
+	ListenAddress               string `json:"listenAddress"`
+	Port                        int    `json:"port"`
+	AppendOnly                  string `json:"appendOnly"`
+	AppendFsync                 string `json:"appendFsync"`
+}
+
+// KeyValueGenerationStatus reports exactly what was observed: the running
+// Valkey version, packaging identity, persistence configuration, and listener.
+type KeyValueGenerationStatus struct {
+	ID                  string   `json:"id"`
+	LogicalID           string   `json:"logicalId"`
+	Role                string   `json:"role,omitempty"`
+	Ready               bool     `json:"ready"`
+	ValkeyVersion       string   `json:"valkeyVersion,omitempty"`
+	ImageReference      string   `json:"imageReference"`
+	ImageManifest       string   `json:"imageManifest"`
+	QualificationDigest string   `json:"qualificationDigest"`
+	ServiceUnit         string   `json:"serviceUnit"`
+	Container           string   `json:"container"`
+	Account             string   `json:"account"`
+	DataPath            string   `json:"dataPath"`
+	QuadletPath         string   `json:"quadletPath"`
+	ListenAddress       string   `json:"listenAddress"`
+	Port                int      `json:"port"`
+	AppendOnly          string   `json:"appendOnly,omitempty"`
+	AppendFsync         string   `json:"appendFsync,omitempty"`
+	Connectivity        bool     `json:"connectivity"`
+	Health              string   `json:"health,omitempty"`
+	Reason              string   `json:"reason,omitempty"`
+	RecoveryAction      string   `json:"recoveryAction,omitempty"`
+	SupportedGuarantees []string `json:"supportedGuarantees,omitempty"`
+	OwnedResources      []string `json:"ownedResources,omitempty"`
+}
+
+type KeyValueVerificationChecks struct {
+	ServiceHealth      bool `json:"serviceHealth"`
+	ClientRoundTrip    bool `json:"clientRoundTrip"`
+	GenerationIdentity bool `json:"generationIdentity"`
+	Persistence        bool `json:"persistence"`
+	CredentialBoundary bool `json:"credentialBoundary"`
+}
+
+type DeterministicKeyStatus struct {
+	Key   string `json:"key"`
+	Value string `json:"value"`
+}
+
+// KeyValueOperationObservation is the signed phase result for prepareKeyValue.
+// It never contains a credential or credential-bearing URL.
+type KeyValueOperationObservation struct {
+	SchemaVersion string                     `json:"schemaVersion"`
+	Status        string                     `json:"status"`
+	KeyValue      KeyValueGenerationStatus   `json:"keyValue"`
+	Verified      bool                       `json:"verified"`
+	Checks        KeyValueVerificationChecks `json:"checks"`
+	Keys          []DeterministicKeyStatus   `json:"keys,omitempty"`
+}
+
+// HTTPKeyValueBindingStatus is the logical Key-Value Store binding observed on a
+// running HTTP generation's systemd unit. It carries no credential value.
+type HTTPKeyValueBindingStatus struct {
+	Component           string `json:"component"`
+	LogicalID           string `json:"logicalId"`
+	GenerationID        string `json:"generationId"`
+	EnvironmentVariable string `json:"environmentVariable"`
+	BindingState        string `json:"bindingState"`
 }

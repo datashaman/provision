@@ -30,3 +30,15 @@ func TestResolvedQueueSecretIsSelectedOnlyForTheTypedOperation(t *testing.T) {
 		t.Fatalf("missing secret was accepted or disclosed: %v", err)
 	}
 }
+
+func TestResolvedKeyValueSecretIsSelectedOnlyForTheTypedOperation(t *testing.T) {
+	op := planner.Operation{ID: "op-01", Kind: planner.PrepareKeyValue, Input: planner.OperationInput{KeyValue: &planner.KeyValuePlan{CredentialReference: "secret://lab/valkey-url"}}}
+	plan := planner.Plan{Operations: []planner.Operation{op}}
+	selected, err := resolvedValuesForOperation(plan, "op-01", map[string]string{"secret://lab/valkey-url": "valkey://u:p@127.0.0.1:26379", "secret://lab/other": "no"})
+	if err != nil || len(selected) != 1 {
+		t.Fatalf("resolved selection = %#v, %v", selected, err)
+	}
+	if _, err := resolvedValuesForOperation(plan, "op-01", nil); err == nil || strings.Contains(err.Error(), "valkey://") {
+		t.Fatalf("missing secret accepted or disclosed: %v", err)
+	}
+}

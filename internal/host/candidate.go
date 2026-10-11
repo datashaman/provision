@@ -55,6 +55,7 @@ type HealthCheckObservation struct {
 	StatusCode      int                         `json:"statusCode,omitempty"`
 	Healthy         bool                        `json:"healthy"`
 	DatabaseBinding *DatabaseBindingObservation `json:"databaseBinding,omitempty"`
+	KeyValueBinding *KeyValueBindingObservation `json:"keyValueBinding,omitempty"`
 	Reason          string                      `json:"reason,omitempty"`
 }
 
@@ -64,6 +65,16 @@ type DatabaseBindingObservation struct {
 	Status       string                              `json:"status"`
 	Records      []DeterministicDatabaseRecordStatus `json:"records,omitempty"`
 	Reason       string                              `json:"reason,omitempty"`
+}
+
+// KeyValueBindingObservation is what the HTTP candidate reports after reading
+// its deterministic keys from the bound Key-Value Store.
+type KeyValueBindingObservation struct {
+	LogicalID    string                   `json:"logicalId"`
+	GenerationID string                   `json:"generationId"`
+	Status       string                   `json:"status"`
+	Keys         []DeterministicKeyStatus `json:"keys,omitempty"`
+	Reason       string                   `json:"reason,omitempty"`
 }
 
 type DeterministicDatabaseRecordStatus struct {

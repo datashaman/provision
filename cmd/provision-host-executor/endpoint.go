@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"time"
 
@@ -950,7 +951,8 @@ func generationReferenceEqual(left, right planner.GenerationReference) bool {
 		left.ArtifactDigest == right.ArtifactDigest &&
 		left.Account == right.Account &&
 		left.ReleaseDirectory == right.ReleaseDirectory &&
-		databaseBindingsEqual(left.DatabaseBindings, right.DatabaseBindings)
+		databaseBindingsEqual(left.DatabaseBindings, right.DatabaseBindings) &&
+		reflect.DeepEqual(left.KeyValueBindings, right.KeyValueBindings)
 }
 
 func databaseBindingsEqual(left, right []planner.DatabaseBindingInput) bool {

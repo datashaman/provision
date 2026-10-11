@@ -122,6 +122,8 @@ func verifyHostResult(envelope operation.Envelope, result operation.Result) erro
 	switch envelope.Operation.Kind {
 	case planner.PrepareQueue:
 		return verifyQueueResult(envelope, result)
+	case planner.PrepareKeyValue:
+		return verifyKeyValueResult(envelope, result)
 	case planner.PrepareDatabase, planner.BackupDatabase, planner.VerifyDatabaseRestore, planner.PrepareDatabaseCandidate, planner.SynchronizeDatabaseCandidate, planner.FenceDatabaseWrites, planner.SwitchDatabaseAuthority, planner.VerifyDatabaseActive, planner.RetainDatabasePrevious:
 		return verifyDatabaseResult(envelope, result)
 	case planner.StageArtifact:
@@ -523,6 +525,51 @@ func verifyQueueResult(envelope operation.Envelope, result operation.Result) err
 	return nil
 }
 
+func verifyKeyValueResult(envelope operation.Envelope, result operation.Result) error {
+	input := envelope.Operation.Input.KeyValue
+	if input == nil {
+		return errors.New("host Key-Value Store observation has no planned Key-Value Store")
+	}
+	var observed host.KeyValueOperationObservation
+	if err := decodeObservation(result.Observation, &observed); err != nil {
+		return errors.New("host Key-Value Store observation is invalid")
+	}
+	if observed.SchemaVersion != host.KeyValueOperationSchema {
+		return errors.New("host Key-Value Store observation has an unsupported schema version")
+	}
+	kv := observed.KeyValue
+	if kv.ID != input.GenerationID || kv.LogicalID != input.LogicalID || kv.ImageManifest != input.ImageManifest || kv.ImageReference != input.ImageReference || kv.QualificationDigest != input.QualificationDigest || kv.ServiceUnit != input.ServiceUnit || kv.Container != input.Container || kv.Account != input.Account || kv.DataPath != input.DataPath || kv.QuadletPath != input.QuadletPath || kv.ListenAddress != input.ListenAddress || kv.Port != input.Port {
+		return errors.New("host Key-Value Store observation does not match the Plan")
+	}
+	switch result.Outcome {
+	case operation.OutcomeSucceeded:
+		c := observed.Checks
+		if observed.Status != "verified" || !observed.Verified || !kv.Ready || !kv.Connectivity || kv.Health != "healthy" || kv.Role != input.DataRole || kv.ValkeyVersion != input.ValkeyVersion || kv.AppendOnly != input.AppendOnly || kv.AppendFsync != input.AppendFsync ||
+			!c.ServiceHealth || !c.ClientRoundTrip || !c.GenerationIdentity || !c.Persistence || !c.CredentialBoundary || len(kv.SupportedGuarantees) == 0 || len(kv.OwnedResources) == 0 || !keyValueKeysMatch(input.Binding, observed.Keys) {
+			return errors.New("host Key-Value Store success observation is invalid")
+		}
+	case operation.OutcomeFailed:
+		if observed.Status != "failed" || kv.Health != "failed" || kv.Reason == "" || kv.RecoveryAction == "" {
+			return errors.New("host Key-Value Store failure observation is invalid")
+		}
+	default:
+		return errors.New("host Key-Value Store uncertain observation is invalid")
+	}
+	return nil
+}
+
+func keyValueKeysMatch(binding planner.KeyValueBinding, observed []host.DeterministicKeyStatus) bool {
+	if len(binding.Keys) == 0 || len(observed) != len(binding.Keys) {
+		return false
+	}
+	for i, key := range binding.Keys {
+		if observed[i].Key != key || observed[i].Value != binding.DeterministicValue(key) {
+			return false
+		}
+	}
+	return true
+}
+
 func verifyArtifactResult(envelope operation.Envelope, result operation.Result) error {
 	var observed host.ArtifactObservation
 	decoder := json.NewDecoder(bytes.NewReader(result.Observation))
@@ -615,6 +662,9 @@ func verifyHealthResult(envelope operation.Envelope, result operation.Result) er
 			}
 			if check.Name == "candidateVerification" && !databaseBindingEvidenceMatches(input.DatabaseBindings, check.DatabaseBinding) {
 				return errors.New("host health Database binding evidence does not match the Plan")
+			}
+			if check.Name == "candidateVerification" && !keyValueBindingEvidenceMatches(input.KeyValueBindings, check.KeyValueBinding) {
+				return errors.New("host health Key-Value Store binding evidence does not match the Plan")
 			}
 		}
 	}
@@ -785,11 +835,23 @@ func exactHealthChecks(checks []host.HealthCheckObservation, input planner.Healt
 		if check.Name != expected[index].name || check.Path != expected[index].path || !check.Healthy || check.StatusCode < 200 || check.StatusCode >= 300 || check.Reason != "" {
 			return false
 		}
-		if check.Name == "candidateVerification" && !databaseBindingEvidenceMatches(input.DatabaseBindings, check.DatabaseBinding) {
+		if check.Name == "candidateVerification" && (!databaseBindingEvidenceMatches(input.DatabaseBindings, check.DatabaseBinding) || !keyValueBindingEvidenceMatches(input.KeyValueBindings, check.KeyValueBinding)) {
 			return false
 		}
 	}
 	return true
+}
+
+func keyValueBindingEvidenceMatches(planned []planner.KeyValueHTTPBinding, observed *host.KeyValueBindingObservation) bool {
+	if len(planned) == 0 {
+		return observed == nil
+	}
+	if len(planned) != 1 || observed == nil {
+		return false
+	}
+	binding := planned[0]
+	return observed.LogicalID == binding.LogicalID && observed.GenerationID == binding.GenerationID && observed.Status == "verified" &&
+		keyValueKeysMatch(planner.KeyValueBinding{Keys: binding.Keys, ValuePrefix: binding.ValuePrefix}, observed.Keys)
 }
 
 func databaseBindingEvidenceMatches(planned []planner.DatabaseBindingInput, observed *host.DatabaseBindingObservation) bool {

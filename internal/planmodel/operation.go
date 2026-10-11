@@ -47,6 +47,7 @@ const (
 	SwitchDatabaseAuthority      OperationKind = "switchDatabaseAuthority"
 	VerifyDatabaseActive         OperationKind = "verifyDatabaseActive"
 	RetainDatabasePrevious       OperationKind = "retainDatabasePrevious"
+	PrepareKeyValue              OperationKind = "prepareKeyValue"
 )
 
 type RecoveryMode string
@@ -68,6 +69,7 @@ const (
 	RestorePreviousScheduleFence RecoveryMode = "restore-previous-schedule-fence"
 	RetainBothWorkerGenerations  RecoveryMode = "retain-both-worker-generations"
 	RetainDatabase               RecoveryMode = "retain-database"
+	RetainKeyValue               RecoveryMode = "retain-key-value"
 )
 
 type Operation struct {
@@ -114,6 +116,7 @@ type OperationInput struct {
 	Retention  *RetentionInput         `json:"retention,omitempty"`
 	Async      *AsyncOperationInput    `json:"async,omitempty"`
 	Database   *DatabaseOperationInput `json:"database,omitempty"`
+	KeyValue   *KeyValuePlan           `json:"keyValue,omitempty"`
 }
 
 type AsyncOperationInput struct {
@@ -316,6 +319,9 @@ type GenerationReference struct {
 	Account          string                 `json:"account"`
 	ReleaseDirectory string                 `json:"releaseDirectory"`
 	DatabaseBindings []DatabaseBindingInput `json:"databaseBindings,omitempty"`
+	// KeyValueBindings bind the HTTP workload to a managed Key-Value Store by
+	// logical component reference. They carry the Secret Reference only.
+	KeyValueBindings []KeyValueHTTPBinding `json:"keyValueBindings,omitempty"`
 }
 
 type GenerationInput struct {
@@ -386,4 +392,35 @@ type KeyValuePlan struct {
 	AppendFsync             string                `json:"appendFsync"`
 	TransitionCleanupPolicy string                `json:"transitionCleanupPolicy"`
 	RollbackWindow          rollbackwindow.Window `json:"rollbackWindow"`
+	QuadletPath             string                `json:"quadletPath"`
+	// Binding is by logical component reference. Keys are deterministic so the
+	// active generation can be read back directly.
+	Binding KeyValueBinding `json:"binding"`
+}
+
+type KeyValueBinding struct {
+	Component   string   `json:"component"`
+	LogicalID   string   `json:"logicalId"`
+	Namespace   string   `json:"namespace"`
+	Keys        []string `json:"keys"`
+	ValuePrefix string   `json:"valuePrefix"`
+}
+
+// DeterministicValue is the value stored under a deterministic workload key.
+func (b KeyValueBinding) DeterministicValue(key string) string { return b.ValuePrefix + key }
+
+// KeyValueHTTPBinding is how an HTTP Generation binds a Key-Value Store: by
+// logical component and Store Generation, with a Secret Reference delivered as
+// an encrypted credential file and deterministic keys it must read back.
+type KeyValueHTTPBinding struct {
+	Component           string   `json:"component"`
+	LogicalID           string   `json:"logicalId"`
+	GenerationID        string   `json:"generationId"`
+	Reference           string   `json:"reference"`
+	Host                string   `json:"host"`
+	Port                int      `json:"port"`
+	EnvironmentVariable string   `json:"environmentVariable"`
+	Namespace           string   `json:"namespace"`
+	Keys                []string `json:"keys"`
+	ValuePrefix         string   `json:"valuePrefix"`
 }

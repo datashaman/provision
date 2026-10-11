@@ -67,7 +67,21 @@ func keyValueFixture(t *testing.T, version string) (config.Compiled, host.Bootst
 		implementation.Version = version
 		compiled.Environment.Implementations["sessions"] = implementation
 	}
-	return compiled, host.BootstrapStatus{Ready: true, Environment: "lab", Operator: "marlinf"}
+	return compiled, readyKeyValueHost()
+}
+
+func readyKeyValueHost() host.BootstrapStatus {
+	return host.BootstrapStatus{
+		Ready: true, Environment: "lab", Operator: "marlinf", OS: "ubuntu", OSVersion: "26.04", Architecture: "x86_64",
+		AllowedOperations: host.AllowedOperations(),
+		KeyValue: &host.KeyValueStatus{
+			SchemaVersion: host.KeyValueInspectionSchema, ObservationComplete: true, Findings: []string{},
+			Capabilities: host.KeyValueCapabilities{
+				Quadlet: true, RootlessEnvironmentAccount: true, SystemdCredentials: true, SubordinateIDs: true, LingeringUserManager: true,
+				QuadletPath: "/etc/containers/systemd/users/990/provision-lab-valkey.container", ListenAddress: "127.0.0.1", Port: 26379, AppendOnly: "yes", AppendFsync: "everysec",
+			},
+		},
+	}
 }
 
 func TestKeyValuePreviewIsDeterministicAndHoldsNoSecret(t *testing.T) {
@@ -77,7 +91,7 @@ func TestKeyValuePreviewIsDeterministicAndHoldsNoSecret(t *testing.T) {
 		t.Fatal(err)
 	}
 	second, _ := Build(compiled, observation)
-	if first.Plan == nil || first.Plan.ID != second.Plan.ID {
+	if first.Plan == nil || !first.Executable || first.Plan.ID != second.Plan.ID || len(first.Plan.Operations) != 1 || first.Plan.Operations[0].Kind != PrepareKeyValue {
 		t.Fatalf("preview is missing or not deterministic: %+v", first)
 	}
 	kv := first.Plan.KeyValue
@@ -99,5 +113,139 @@ func TestKeyValueUnregisteredVersionFailsGuarantees(t *testing.T) {
 	}
 	if preview.Executable || preview.Plan != nil || len(preview.Reasons) != 1 || !strings.Contains(preview.Reasons[0], "not a registered image") {
 		t.Fatalf("unregistered version was not rejected: %+v", preview)
+	}
+}
+
+func TestKeyValueWithoutCapabilityBlockIsNotExecutable(t *testing.T) {
+	compiled, observation := keyValueFixture(t, "")
+	observation.KeyValue = nil
+	preview, err := Build(compiled, observation)
+	if err != nil || preview.Executable || preview.Plan != nil || len(preview.Reasons) != 1 || !strings.Contains(preview.Reasons[0], "capability evidence") {
+		t.Fatalf("missing capability block was not rejected: %+v %v", preview, err)
+	}
+	compiled, observation = keyValueFixture(t, "")
+	observation.AllowedOperations = []string{"inspect"}
+	preview, _ = Build(compiled, observation)
+	if preview.Executable || preview.Plan != nil {
+		t.Fatalf("executor without prepareKeyValue was accepted: %+v", preview)
+	}
+}
+
+func TestKeyValuePlanBindsDeterministicKeysByLogicalReference(t *testing.T) {
+	compiled, observation := keyValueFixture(t, "")
+	preview, _ := Build(compiled, observation)
+	binding := preview.Plan.KeyValue.Binding
+	if binding.Component != "sessions" || binding.LogicalID != "provision-lab-sessions" || len(binding.Keys) != 2 || !strings.HasPrefix(binding.Keys[0], "provision-lab-sessions/provision-example-key-value-v1/") || preview.Plan.KeyValue.QuadletPath == "" {
+		t.Fatalf("binding is not by logical component reference: %+v", binding)
+	}
+}
+
+func keyValueHTTPFixture(t *testing.T) (config.Compiled, host.BootstrapStatus) {
+	t.Helper()
+	compiled, err := config.Load(filepath.Join("..", "..", "examples", "host-key-value-http", "root.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	observation := readyKeyValueHost()
+	observation.SchemaVersion = "provision.dev/host-inspection/v1alpha1"
+	observation.CaddyVersion, observation.CaddyActive, observation.CaddyConfigValid = "2.6.2", true, true
+	observation.CaddyAdminReachable, observation.CaddyConfigDurable = true, true
+	observation.GenerationStorageReady, observation.JournaldActive = true, true
+	observation.ExecutorDigest, observation.AuthorityKeyID, observation.SSHHostKeyFingerprint = "sha256:e", "key", "SHA256:host"
+	observation.SystemdVersion, observation.CgroupV2 = "systemd 259", true
+	return compiled, observation
+}
+
+func TestKeyValueBoundHTTPPlanBindsWorkloadByLogicalReference(t *testing.T) {
+	compiled, observation := keyValueHTTPFixture(t)
+	preview, err := Build(compiled, observation)
+	if err != nil || !preview.Executable || preview.Plan == nil {
+		t.Fatalf("Key-Value-bound HTTP preview = %+v, %v", preview, err)
+	}
+	plan := preview.Plan
+	if plan.Operations[0].Kind != PrepareKeyValue || plan.Operations[1].Kind != StageArtifact || len(plan.Operations[1].DependsOn) != 1 || plan.Operations[1].DependsOn[0] != "op-01" {
+		t.Fatalf("operation order is wrong: %+v", plan.Operations)
+	}
+	var bound int
+	for _, operation := range plan.Operations {
+		in := operation.Input
+		for _, bindings := range [][]KeyValueHTTPBinding{
+			func() []KeyValueHTTPBinding {
+				if in.Systemd != nil {
+					return in.Systemd.KeyValueBindings
+				}
+				return nil
+			}(),
+			func() []KeyValueHTTPBinding {
+				if in.Health != nil {
+					return in.Health.KeyValueBindings
+				}
+				return nil
+			}(),
+			func() []KeyValueHTTPBinding {
+				if in.Endpoint != nil {
+					return in.Endpoint.KeyValueBindings
+				}
+				return nil
+			}(),
+		} {
+			if len(bindings) == 1 {
+				bound++
+				b := bindings[0]
+				if b.Component != "sessions" || b.LogicalID != "provision-lab-sessions" || b.Reference != "secret://lab/valkey-url" || b.EnvironmentVariable != "PROVISION_KEYVALUE_URL_FILE" || len(b.Keys) == 0 {
+					t.Fatalf("binding is not by logical reference: %+v", b)
+				}
+			}
+		}
+	}
+	if bound < 3 {
+		t.Fatalf("binding reached only %d of the systemd, health, and endpoint inputs", bound)
+	}
+	encoded, _ := json.Marshal(preview)
+	if strings.Contains(string(encoded), "valkey://") {
+		t.Fatal("Plan contains a credential-bearing URL")
+	}
+	second, _ := Build(compiled, observation)
+	if second.Plan.ID != plan.ID {
+		t.Fatal("Key-Value-bound HTTP Plan is not deterministic")
+	}
+}
+
+func TestKeyValueBoundHTTPReplanOfExactActiveWorkloadIsIdempotent(t *testing.T) {
+	compiled, observation := keyValueHTTPFixture(t)
+	first, _ := Build(compiled, observation)
+	var stage, health *Operation
+	for i := range first.Plan.Operations {
+		switch first.Plan.Operations[i].Kind {
+		case StageArtifact:
+			stage = &first.Plan.Operations[i]
+		case SwitchEndpoint:
+			health = &first.Plan.Operations[i]
+		}
+	}
+	endpoint := health.Input.Endpoint
+	binding := endpoint.KeyValueBindings[0]
+	observation.Deployment.Active = &host.GenerationStatus{
+		ID: endpoint.ID, Revision: endpoint.Revision, ArtifactDigest: stage.Input.Artifact.Digest, SystemdUnit: endpoint.Unit, RouteID: endpoint.RouteID,
+		UnitActive: true, UnitMatches: true, RouteObserved: true, RouteMatches: true,
+		KeyValueBinding: &host.HTTPKeyValueBindingStatus{Component: binding.Component, LogicalID: binding.LogicalID, GenerationID: binding.GenerationID, EnvironmentVariable: binding.EnvironmentVariable, BindingState: "key-value-bound"},
+	}
+	replan, err := Build(compiled, observation)
+	if err != nil || !replan.Executable || len(replan.Plan.Operations) != 1 || replan.Plan.Operations[0].Kind != PrepareKeyValue {
+		t.Fatalf("exact active workload was not re-planned idempotently: %+v %v", replan, err)
+	}
+	observation.Deployment.Active.KeyValueBinding.BindingState = "incomplete"
+	replan, _ = Build(compiled, observation)
+	if replan.Plan != nil && len(replan.Plan.Operations) == 1 {
+		t.Fatal("an unbound active workload was treated as exact")
+	}
+}
+
+func TestKeyValueActiveGenerationDifferingFromPlanFailsClosed(t *testing.T) {
+	compiled, observation := keyValueFixture(t, "")
+	observation.KeyValue.Active = &host.KeyValueGenerationStatus{ID: "valkey-9-1-1-cc03bc07761a"}
+	preview, _ := Build(compiled, observation)
+	if preview.Executable || preview.Plan != nil || len(preview.Reasons) != 1 || !strings.Contains(preview.Reasons[0], "Store Transition") {
+		t.Fatalf("differing active generation was not rejected: %+v", preview)
 	}
 }

@@ -154,7 +154,9 @@ func runObserveOperation(args []string) error {
 		return err
 	}
 	var observed host.OperationObservation
-	if planned.Kind == planner.PrepareQueue {
+	if planned.Kind == planner.PrepareKeyValue {
+		observed, err = observeKeyValueOperation(context.Background(), planned, record, paths)
+	} else if planned.Kind == planner.PrepareQueue {
 		observed, err = observeQueueOperation(context.Background(), planned, record, paths)
 	} else if isDatabaseOperationKind(planned.Kind) {
 		observed, err = observeDatabaseOperation(context.Background(), *planID, planned, record, paths)
@@ -246,7 +248,14 @@ func executeAuthorized(ctx context.Context, envelope operation.Envelope, record 
 	if err != nil || digest != claim.OperationDigest {
 		return operation.Result{}, errors.New("authorized operation digest does not match its payload")
 	}
-	if envelope.Operation.Kind == planner.PrepareQueue {
+	if envelope.Operation.Kind == planner.PrepareKeyValue {
+		if err := validateKeyValueOperation(envelope.Operation, record, paths); err != nil {
+			return operation.Result{}, err
+		}
+		if _, err := validateKeyValueSensitiveValues(envelope.SensitiveValues, *envelope.Operation.Input.KeyValue); err != nil {
+			return operation.Result{}, err
+		}
+	} else if envelope.Operation.Kind == planner.PrepareQueue {
 		if err := validateQueueOperation(envelope.Operation, record, paths); err != nil {
 			return operation.Result{}, err
 		}
@@ -296,6 +305,8 @@ func executeAuthorized(ctx context.Context, envelope operation.Envelope, record 
 					}
 				}
 			}
+		} else if envelope.Operation.Kind == planner.PrepareKeyValue {
+			encoded, actionErr = applyKeyValueOperation(ctx, envelope.Operation, record, paths, envelope.SensitiveValues)
 		} else if envelope.Operation.Kind == planner.PrepareQueue {
 			encoded, actionErr = applyQueueOperation(ctx, envelope.Operation, record, paths, envelope.SensitiveValues)
 		} else if isDatabaseOperationKind(envelope.Operation.Kind) {
@@ -345,6 +356,20 @@ func executeAuthorized(ctx context.Context, envelope operation.Envelope, record 
 			encoded, encodeErr = json.Marshal(host.ArtifactObservation{
 				Status: host.ArtifactFailed, Path: path, Digest: artifact.Digest, Reason: actionErr.Error(),
 			})
+			if encodeErr != nil {
+				return operation.Result{}, encodeErr
+			}
+		} else if envelope.Operation.Kind == planner.PrepareKeyValue {
+			observed := host.KeyValueOperationObservation{SchemaVersion: host.KeyValueOperationSchema, KeyValue: keyValueStatusIdentity(*envelope.Operation.Input.KeyValue)}
+			if len(encoded) != 0 {
+				_ = json.Unmarshal(encoded, &observed)
+			}
+			observed.Status, observed.Verified = "failed", false
+			observed.KeyValue.Health = "failed"
+			observed.KeyValue.Reason = actionErr.Error()
+			observed.KeyValue.RecoveryAction = "observe the exact managed Key-Value Store generation before retrying"
+			var encodeErr error
+			encoded, encodeErr = json.Marshal(observed)
 			if encodeErr != nil {
 				return operation.Result{}, encodeErr
 			}

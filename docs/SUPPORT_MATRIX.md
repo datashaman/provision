@@ -54,6 +54,32 @@ other Valkey/image/Podman/OS versions. The credential proof covers systemd
 encrypted credential delivery scoped to the Environment user unit; it does not
 assert that the VM's backing media is encrypted.
 
+## Managed Valkey first generation and HTTP binding
+
+| Acceptance client | Host OS | Runtime identity | Service and topology | Result |
+| --- | --- | --- | --- | --- |
+| direct-local harness `sha256:25dc50db91b5de7f156cb4b6c98507e9b3a47b4607bd6bdecfccd9ebcb355958`; HTTP harness `sha256:a4bb04ab14b0be49b61e046f937315258ad0ab777594430ee3086be9a079372b`; controller `sha256:40a27b879ce058adef3cecc04bf47d0085ffc19f9150ff25dbb2140a8fbafaee`; fixture workload source `sha256:933bb6b62ae83b4dc066be70e5d44ff57f344257cb580d21bdb016e1a98b068b`; built on top of `1018b9f0b2cc67198681e65feac23edec8c2c470` | Ubuntu Server 26.04 VM (`provision-acceptance`, clean snapshot restored before each mode), direct-local Host Handler | Valkey `9.1.2` digest-pinned image, rootless Podman/Quadlet, AOF `appendonly yes` `appendfsync everysec`, loopback listener `127.0.0.1:26379` | one authoritative Key-Value Store generation; `prepareKeyValue` executed through the restricted executor, with `none`, `before` and `after` interruption/resume modes; plus a Key-Value-bound HTTP workload behind the stable Caddy Endpoint | passed: inspection reports exact version, packaging identity, persistence and listener; authenticated client round trip and deterministic key read-back before the generation is reported active; the workload binds by logical reference and proves the same keys through its candidate verification; the resolved credential appears in no Plan, journal, status or evidence |
+
+This row qualifies only the exact combination above (Valkey `9.1.2`; not `9.1.1`
+live-executed in this slice). It advertises no Store Transition, replication,
+write fence, or rollback guarantee, and excludes backup, restore, host-loss recovery, derived or
+ephemeral roles, multi-node Valkey, ElastiCache and external Valkey. Evidence is kept under the
+git-ignored `work/issue-97-live/evidence`.
+
+## Managed Valkey first generation: strict-SSH parity
+
+| Acceptance client | Host OS | Runtime identity | Service and topology | Result |
+| --- | --- | --- | --- | --- |
+| harness `sha256:3dbfe23f4be58aee2883138f15924fc0c16a80a008cb61b2b056555d179806a5`; controller `sha256:18e66f0708de23ada99b80cc7b09051c146fba4db535fce5ef8ac03bdb2111f6`; direct-local controller `sha256:e2dc5f6cfa18f225bbbb6dceb18c299bcc59c1d68898469bae498796c022c25a`; Provision controller binary built on macOS, executor `sha256:640de6d71e8e52859aa7532a1d237a0dc3d0239fbae2120f9a4b3010dfeccf59` | Ubuntu Server 26.04 VM `provision-acceptance` (Linux 7.0.0-34-generic), clean snapshot restored before every mode | Valkey `9.1.2` image `sha256:ac9c858b86dc81f3482d53a9d854547379a5f41e012500f839ab257c399063e0`, AOF `appendonly yes` `appendfsync everysec`, listener `127.0.0.1:26379`, Podman `5.7.0+ds2-3build1` | one authoritative Key-Value Store generation; Provision, approval state and signing key on the controller, Host Target reached only through strict SSH with a pinned host key | passed: modes `none`, `before`, `after`, `undecidable` on direct-local and strict SSH with identical accounting (2 deterministic keys read back, no resolved credential in evidence); `undecidable` leaves the unreadable-record resume unreplayed and recorded uncertain, then recovers |
+
+The `undecidable` mode makes the generation record unreadable after an
+interrupted, completed mutation; resume must observe, refuse to replay, and
+record an uncertain outcome. Re-planning an exactly active Key-Value-bound
+workload now emits only the idempotent store preparation, and an active
+Key-Value Store generation that differs from the plan fails closed as an
+unqualified Store Transition. Exclusions are unchanged from the row above.
+Evidence is under the git-ignored `work/issue-97-live/parity-evidence`.
+
 ## Managed PostgreSQL Host packaging
 
 | Acceptance client | Host OS | Runtime identity | Service and topology | Result |

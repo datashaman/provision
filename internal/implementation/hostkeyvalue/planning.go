@@ -36,6 +36,7 @@ func Evaluate(compiled config.Compiled, observation host.BootstrapStatus) Evalua
 	if !observation.Ready {
 		evaluation.Reasons = append(evaluation.Reasons, "restricted Host Target bootstrap is not ready")
 	}
+	evaluation.Reasons = append(evaluation.Reasons, capabilityReasons(observation)...)
 	image, ok := ImageFor(implementation.Version)
 	switch {
 	case !ok:
@@ -43,21 +44,67 @@ func Evaluate(compiled config.Compiled, observation host.BootstrapStatus) Evalua
 	case image.Evidence == "":
 		evaluation.Reasons = append(evaluation.Reasons, fmt.Sprintf("Valkey %s has no packaging qualification evidence yet", image.Version))
 	}
+	if active := activeGeneration(observation); active != nil && ok && active.ID != image.Generation() {
+		evaluation.Reasons = append(evaluation.Reasons, "replacing the active Key-Value Store generation is a Store Transition, which is not qualified yet")
+	}
 	if len(evaluation.Reasons) == 0 {
 		evaluation.SupportEvidence = []string{"valkey-" + image.Version + "-image-index-and-manifest-pinned", "packaging-qualification-" + image.Evidence}
 	}
 	return evaluation
 }
 
+func activeGeneration(observation host.BootstrapStatus) *host.KeyValueGenerationStatus {
+	if observation.KeyValue == nil {
+		return nil
+	}
+	return observation.KeyValue.Active
+}
+
+func capabilityReasons(observation host.BootstrapStatus) []string {
+	if observation.OS != "ubuntu" || observation.OSVersion != "26.04" || observation.Architecture != "x86_64" {
+		return []string{"managed Valkey packaging is qualified only on Ubuntu 26.04 x86_64"}
+	}
+	status := observation.KeyValue
+	if status == nil || status.SchemaVersion != host.KeyValueInspectionSchema || !status.ObservationComplete {
+		return []string{"host inspection does not provide Key-Value Store capability evidence"}
+	}
+	c := status.Capabilities
+	var reasons []string
+	if !c.Quadlet || !c.RootlessEnvironmentAccount || !c.SystemdCredentials || !c.SubordinateIDs || !c.LingeringUserManager {
+		reasons = append(reasons, "host lacks the rootless Podman/Quadlet and systemd credential capabilities managed Valkey needs")
+	}
+	if c.QuadletPath == "" || c.ListenAddress != listenHost || c.Port != listenPort || c.AppendOnly != "yes" || c.AppendFsync != "everysec" {
+		reasons = append(reasons, "host Key-Value Store capability does not report the qualified listener and AOF everysec persistence")
+	}
+	return append(reasons, status.Findings...)
+}
+
+// Operation is the single typed prepareKeyValue operation for a first generation.
+func Operation(plan *planmodel.KeyValuePlan) planmodel.Operation {
+	return planmodel.Operation{
+		ID: "op-01", Kind: planmodel.PrepareKeyValue, DependsOn: []string{},
+		Input:                planmodel.OperationInput{KeyValue: plan},
+		Preconditions:        []planmodel.TypedCondition{{Kind: "valkey-qualification", Subject: plan.QualificationDigest, Expected: "matched"}},
+		ExpectedObservations: []planmodel.TypedCondition{{Kind: "key-value-generation", Subject: plan.LogicalID, Expected: "client-round-trip-verified"}, {Kind: "deterministic-keys", Subject: plan.Binding.Namespace, Expected: "present"}},
+		Recovery:             planmodel.RetainKeyValue,
+	}
+}
+
 // Plan derives the deterministic preview. The caller must have checked Evaluate.
-func Plan(compiled config.Compiled) *planmodel.KeyValuePlan {
+func Plan(compiled config.Compiled, observation host.BootstrapStatus) *planmodel.KeyValuePlan {
 	name, comp, implementation := component(compiled)
 	image, _ := ImageFor(implementation.Version)
 	env := compiled.Environment.Name
 	service := "provision-" + env + "-valkey"
+	logicalID := "provision-" + env + "-" + name
+	namespace := logicalID + "/" + compiled.Revision.Name
+	quadletPath := ""
+	if observation.KeyValue != nil {
+		quadletPath = observation.KeyValue.Capabilities.QuadletPath
+	}
 	return &planmodel.KeyValuePlan{
 		Component:               name,
-		LogicalID:               "provision-" + env + "-" + name,
+		LogicalID:               logicalID,
 		GenerationID:            image.Generation(),
 		Implementation:          implementation.Kind,
 		DataRole:                comp.KeyValue.DataRole,
@@ -78,6 +125,12 @@ func Plan(compiled config.Compiled) *planmodel.KeyValuePlan {
 		AppendFsync:             "everysec",
 		TransitionCleanupPolicy: comp.KeyValue.TransitionCleanupPolicy,
 		RollbackWindow:          compiled.Environment.RollbackWindow,
+		QuadletPath:             quadletPath,
+		Binding: planmodel.KeyValueBinding{
+			Component: name, LogicalID: logicalID, Namespace: namespace,
+			Keys:        []string{namespace + "/key-0001", namespace + "/key-0002"},
+			ValuePrefix: "provision-deterministic-v1:",
+		},
 	}
 }
 

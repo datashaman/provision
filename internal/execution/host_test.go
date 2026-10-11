@@ -795,3 +795,72 @@ func TestVerifyDatabaseRestoreFailureDoesNotRequireCandidateIdentity(t *testing.
 		})
 	}
 }
+
+func keyValueVerifyFixture() (operation.Envelope, host.KeyValueOperationObservation) {
+	ns := "provision-lab-sessions/rev-1"
+	input := &planner.KeyValuePlan{
+		LogicalID: "provision-lab-sessions", GenerationID: "valkey-9-1-2-ac9c858b86dc", ImageManifest: "sha256:a", ImageReference: "docker.io/valkey/valkey@sha256:a", QualificationDigest: "sha256:q",
+		ServiceUnit: "u.service", Container: "c", Account: "provision-lab", DataPath: "/d", QuadletPath: "/q", ListenAddress: "127.0.0.1", Port: 26379,
+		DataRole: "authoritative", ValkeyVersion: "9.1.2", AppendOnly: "yes", AppendFsync: "everysec",
+		Binding: planner.KeyValueBinding{Keys: []string{ns + "/key-0001"}, ValuePrefix: "v:"},
+	}
+	envelope := operation.Envelope{Operation: planner.Operation{ID: "op-01", Kind: planner.PrepareKeyValue, Input: planner.OperationInput{KeyValue: input}}}
+	observed := host.KeyValueOperationObservation{
+		SchemaVersion: host.KeyValueOperationSchema, Status: "verified", Verified: true,
+		KeyValue: host.KeyValueGenerationStatus{ID: input.GenerationID, LogicalID: input.LogicalID, Role: "authoritative", Ready: true, Connectivity: true, Health: "healthy", ValkeyVersion: "9.1.2", ImageManifest: input.ImageManifest, ImageReference: input.ImageReference, QualificationDigest: input.QualificationDigest,
+			ServiceUnit: input.ServiceUnit, Container: input.Container, Account: input.Account, DataPath: input.DataPath, QuadletPath: input.QuadletPath, ListenAddress: input.ListenAddress, Port: input.Port, AppendOnly: "yes", AppendFsync: "everysec",
+			SupportedGuarantees: []string{"g"}, OwnedResources: []string{"r"}},
+		Checks: host.KeyValueVerificationChecks{ServiceHealth: true, ClientRoundTrip: true, GenerationIdentity: true, Persistence: true, CredentialBoundary: true},
+		Keys:   []host.DeterministicKeyStatus{{Key: ns + "/key-0001", Value: "v:" + ns + "/key-0001"}},
+	}
+	return envelope, observed
+}
+
+func TestVerifyKeyValueResultRequiresClientRoundTripAndExactKeys(t *testing.T) {
+	envelope, observed := keyValueVerifyFixture()
+	result := func(o host.KeyValueOperationObservation) operation.Result {
+		data, _ := json.Marshal(o)
+		return operation.Result{Outcome: operation.OutcomeSucceeded, Observation: data}
+	}
+	if err := verifyKeyValueResult(envelope, result(observed)); err != nil {
+		t.Fatalf("valid observation rejected: %v", err)
+	}
+	for name, mutate := range map[string]func(*host.KeyValueOperationObservation){
+		"no client round trip": func(o *host.KeyValueOperationObservation) { o.Checks.ClientRoundTrip = false },
+		"missing key":          func(o *host.KeyValueOperationObservation) { o.Keys = nil },
+		"wrong value":          func(o *host.KeyValueOperationObservation) { o.Keys[0].Value = "x" },
+		"wrong version":        func(o *host.KeyValueOperationObservation) { o.KeyValue.ValkeyVersion = "9.1.1" },
+		"weak persistence":     func(o *host.KeyValueOperationObservation) { o.KeyValue.AppendFsync = "always" },
+		"wrong listener":       func(o *host.KeyValueOperationObservation) { o.KeyValue.Port = 6379 },
+	} {
+		t.Run(name, func(t *testing.T) {
+			tampered := observed
+			tampered.Keys = append([]host.DeterministicKeyStatus(nil), observed.Keys...)
+			mutate(&tampered)
+			if err := verifyKeyValueResult(envelope, result(tampered)); err == nil {
+				t.Fatal("tampered observation accepted")
+			}
+		})
+	}
+}
+
+func TestKeyValueBindingEvidenceRequiresExactKeysAndLogicalIdentity(t *testing.T) {
+	binding := planner.KeyValueHTTPBinding{LogicalID: "l", GenerationID: "g", Keys: []string{"ns/key-0001"}, ValuePrefix: "v:"}
+	good := &host.KeyValueBindingObservation{LogicalID: "l", GenerationID: "g", Status: "verified", Keys: []host.DeterministicKeyStatus{{Key: "ns/key-0001", Value: "v:ns/key-0001"}}}
+	if !keyValueBindingEvidenceMatches([]planner.KeyValueHTTPBinding{binding}, good) || !keyValueBindingEvidenceMatches(nil, nil) {
+		t.Fatal("valid evidence rejected")
+	}
+	for name, observed := range map[string]*host.KeyValueBindingObservation{
+		"missing":    nil,
+		"unverified": {LogicalID: "l", GenerationID: "g", Status: "failed", Keys: good.Keys},
+		"wrong key":  {LogicalID: "l", GenerationID: "g", Status: "verified", Keys: []host.DeterministicKeyStatus{{Key: "x", Value: "v:x"}}},
+		"wrong gen":  {LogicalID: "l", GenerationID: "h", Status: "verified", Keys: good.Keys},
+	} {
+		if keyValueBindingEvidenceMatches([]planner.KeyValueHTTPBinding{binding}, observed) {
+			t.Fatalf("%s evidence accepted", name)
+		}
+	}
+	if keyValueBindingEvidenceMatches(nil, good) {
+		t.Fatal("unplanned binding evidence accepted")
+	}
+}

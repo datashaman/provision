@@ -1,6 +1,7 @@
 package main
 
 import (
+	"os"
 	"os/user"
 	"path/filepath"
 	"strconv"
@@ -149,5 +150,44 @@ func TestKeyValueUnitBindingDeliversCredentialByReferenceOnly(t *testing.T) {
 	}
 	if strings.Contains(unit, "valkey://") || keyValueUnitBinding(planner.SystemdInput{}) != "" {
 		t.Fatal("credential value rendered or empty binding not empty")
+	}
+}
+
+func TestKeyValueBindingRequiresVerifiedGeneration(t *testing.T) {
+	planned, record, paths := keyValueOperationFixture(t)
+	input := *planned.Input.KeyValue
+	binding := keyValueBindingFixture()
+	binding.GenerationID = input.GenerationID
+	binding.Namespace = input.Binding.Namespace
+	binding.Keys = input.Binding.Keys
+	binding.ValuePrefix = input.Binding.ValuePrefix
+	write := func(verified bool) {
+		if err := os.MkdirAll(filepath.Dir(keyValueRecordPath(input)), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		_ = os.Remove(keyValueRecordPath(input))
+		if err := writeJSONAtomic(keyValueRecordPath(input), keyValueGenerationRecord{SchemaVersion: keyValueGenerationSchema, KeyValue: input, Verified: verified}, 0444); err != nil {
+			t.Fatal(err)
+		}
+	}
+	bindings := []planner.KeyValueHTTPBinding{binding}
+	write(false)
+	if err := validateKeyValueBindings(bindings, record, paths); err == nil {
+		t.Fatal("binding to an unverified generation accepted")
+	}
+	write(true)
+	if err := validateKeyValueBindings(bindings, record, paths); err != nil {
+		t.Fatalf("binding to a verified generation rejected: %v", err)
+	}
+}
+
+func TestParseLoopbackListenerAcceptsOnlyOnePublishedAddress(t *testing.T) {
+	if a, p, ok := parseLoopbackListener("127.0.0.1:26379\n"); !ok || a != "127.0.0.1" || p != 26379 {
+		t.Fatalf("exact listener misparsed: %s %d %t", a, p, ok)
+	}
+	for _, bad := range []string{"", "0.0.0.0:26379\n127.0.0.1:26379\n", "127.0.0.1:x"} {
+		if a, p, ok := parseLoopbackListener(bad); ok && a == "127.0.0.1" && p == 26379 {
+			t.Fatalf("%q accepted", bad)
+		}
 	}
 }

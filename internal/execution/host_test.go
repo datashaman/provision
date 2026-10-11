@@ -806,7 +806,7 @@ func keyValueVerifyFixture() (operation.Envelope, host.KeyValueOperationObservat
 	}
 	envelope := operation.Envelope{Operation: planner.Operation{ID: "op-01", Kind: planner.PrepareKeyValue, Input: planner.OperationInput{KeyValue: input}}}
 	observed := host.KeyValueOperationObservation{
-		Status: "verified", Verified: true,
+		SchemaVersion: host.KeyValueOperationSchema, Status: "verified", Verified: true,
 		KeyValue: host.KeyValueGenerationStatus{ID: input.GenerationID, LogicalID: input.LogicalID, Role: "authoritative", Ready: true, Connectivity: true, Health: "healthy", ValkeyVersion: "9.1.2", ImageManifest: input.ImageManifest, ImageReference: input.ImageReference, QualificationDigest: input.QualificationDigest,
 			ServiceUnit: input.ServiceUnit, Container: input.Container, Account: input.Account, DataPath: input.DataPath, QuadletPath: input.QuadletPath, ListenAddress: input.ListenAddress, Port: input.Port, AppendOnly: "yes", AppendFsync: "everysec",
 			SupportedGuarantees: []string{"g"}, OwnedResources: []string{"r"}},

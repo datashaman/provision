@@ -601,6 +601,11 @@ func operationCapabilityMismatch(wanted, observed []string) string {
 	return ""
 }
 
+const (
+	KeyValueInspectionSchema = "provision.dev/host-key-value-inspection/v1alpha1"
+	KeyValueOperationSchema  = "provision.dev/host-key-value-operation/v1alpha1"
+)
+
 // KeyValueStatus is the first-class key-value capability block. It carries the
 // host's qualified Valkey packaging identity and the exact observed generation.
 type KeyValueStatus struct {
@@ -672,11 +677,12 @@ type DeterministicKeyStatus struct {
 // KeyValueOperationObservation is the signed phase result for prepareKeyValue.
 // It never contains a credential or credential-bearing URL.
 type KeyValueOperationObservation struct {
-	Status   string                     `json:"status"`
-	KeyValue KeyValueGenerationStatus   `json:"keyValue"`
-	Verified bool                       `json:"verified"`
-	Checks   KeyValueVerificationChecks `json:"checks"`
-	Keys     []DeterministicKeyStatus   `json:"keys,omitempty"`
+	SchemaVersion string                     `json:"schemaVersion"`
+	Status        string                     `json:"status"`
+	KeyValue      KeyValueGenerationStatus   `json:"keyValue"`
+	Verified      bool                       `json:"verified"`
+	Checks        KeyValueVerificationChecks `json:"checks"`
+	Keys          []DeterministicKeyStatus   `json:"keys,omitempty"`
 }
 
 // HTTPKeyValueBindingStatus is the logical Key-Value Store binding observed on a

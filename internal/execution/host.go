@@ -534,6 +534,9 @@ func verifyKeyValueResult(envelope operation.Envelope, result operation.Result) 
 	if err := decodeObservation(result.Observation, &observed); err != nil {
 		return errors.New("host Key-Value Store observation is invalid")
 	}
+	if observed.SchemaVersion != host.KeyValueOperationSchema {
+		return errors.New("host Key-Value Store observation has an unsupported schema version")
+	}
 	kv := observed.KeyValue
 	if kv.ID != input.GenerationID || kv.LogicalID != input.LogicalID || kv.ImageManifest != input.ImageManifest || kv.ImageReference != input.ImageReference || kv.QualificationDigest != input.QualificationDigest || kv.ServiceUnit != input.ServiceUnit || kv.Container != input.Container || kv.Account != input.Account || kv.DataPath != input.DataPath || kv.QuadletPath != input.QuadletPath || kv.ListenAddress != input.ListenAddress || kv.Port != input.Port {
 		return errors.New("host Key-Value Store observation does not match the Plan")

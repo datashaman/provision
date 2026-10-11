@@ -75,7 +75,7 @@ func readyKeyValueHost() host.BootstrapStatus {
 		Ready: true, Environment: "lab", Operator: "marlinf", OS: "ubuntu", OSVersion: "26.04", Architecture: "x86_64",
 		AllowedOperations: host.AllowedOperations(),
 		KeyValue: &host.KeyValueStatus{
-			SchemaVersion: "provision.dev/host-key-value-inspection/v1alpha1", ObservationComplete: true, Findings: []string{},
+			SchemaVersion: host.KeyValueInspectionSchema, ObservationComplete: true, Findings: []string{},
 			Capabilities: host.KeyValueCapabilities{
 				Quadlet: true, RootlessEnvironmentAccount: true, SystemdCredentials: true, SubordinateIDs: true, LingeringUserManager: true,
 				QuadletPath: "/etc/containers/systemd/users/990/provision-lab-valkey.container", ListenAddress: "127.0.0.1", Port: 26379, AppendOnly: "yes", AppendFsync: "everysec",

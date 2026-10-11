@@ -360,7 +360,7 @@ func executeAuthorized(ctx context.Context, envelope operation.Envelope, record 
 				return operation.Result{}, encodeErr
 			}
 		} else if envelope.Operation.Kind == planner.PrepareKeyValue {
-			observed := host.KeyValueOperationObservation{KeyValue: keyValueStatusIdentity(*envelope.Operation.Input.KeyValue)}
+			observed := host.KeyValueOperationObservation{SchemaVersion: host.KeyValueOperationSchema, KeyValue: keyValueStatusIdentity(*envelope.Operation.Input.KeyValue)}
 			if len(encoded) != 0 {
 				_ = json.Unmarshal(encoded, &observed)
 			}

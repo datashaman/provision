@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -32,6 +33,9 @@ var keyValueUserPart = regexp.MustCompile(`^[a-z][a-z0-9_-]{0,31}$`)
 type keyValueGenerationRecord struct {
 	SchemaVersion string               `json:"schemaVersion"`
 	KeyValue      planner.KeyValuePlan `json:"keyValue"`
+	// Verified is set only after the generation passed exact verification, so a
+	// half-prepared generation is never bindable or reported active.
+	Verified bool `json:"verified"`
 }
 
 func validateKeyValueOperation(planned planner.Operation, record bootstrapRecord, paths executionPaths) error {
@@ -252,17 +256,20 @@ func applyKeyValueOperation(ctx context.Context, planned planner.Operation, reco
 			return nil, errors.New("write deterministic workload key")
 		}
 	}
-	recorded := input
-	if err := writeJSONAtomic(keyValueRecordPath(input), keyValueGenerationRecord{SchemaVersion: keyValueGenerationSchema, KeyValue: recorded}, 0444); err != nil {
+	if err := writeJSONAtomic(keyValueRecordPath(input), keyValueGenerationRecord{SchemaVersion: keyValueGenerationSchema, KeyValue: input}, 0444); err != nil {
 		return nil, errors.New("record Key-Value Store generation")
 	}
-	observed, state := observeManagedKeyValue(ctx, input, record, paths)
+	observed, state := observeKeyValueGeneration(ctx, input, record, paths, true)
 	encoded, encodeErr := json.Marshal(observed)
 	if encodeErr != nil {
 		return nil, encodeErr
 	}
 	if state != "satisfied" {
 		return encoded, errors.New("prepared Key-Value Store failed exact verification")
+	}
+	// Only now is the generation verified; the record is replaced atomically.
+	if err := writeJSONAtomic(keyValueRecordPath(input), keyValueGenerationRecord{SchemaVersion: keyValueGenerationSchema, KeyValue: input, Verified: true}, 0444); err != nil {
+		return encoded, errors.New("mark Key-Value Store generation verified")
 	}
 	return encoded, nil
 }
@@ -291,8 +298,15 @@ func keyValueCLI(ctx context.Context, record bootstrapRecord, input planner.KeyV
 }
 
 func observeManagedKeyValue(ctx context.Context, input planner.KeyValuePlan, record bootstrapRecord, paths executionPaths) (host.KeyValueOperationObservation, string) {
+	return observeKeyValueGeneration(ctx, input, record, paths, false)
+}
+
+// observeKeyValueGeneration checks the exact generation. An unverified record
+// means preparation was interrupted before verification: it is "pending" (safe
+// to re-apply idempotently) unless the caller is the final verification itself.
+func observeKeyValueGeneration(ctx context.Context, input planner.KeyValuePlan, record bootstrapRecord, paths executionPaths, finalVerification bool) (host.KeyValueOperationObservation, string) {
 	status := keyValueStatusIdentity(input)
-	observation := host.KeyValueOperationObservation{Status: "pending", KeyValue: status}
+	observation := host.KeyValueOperationObservation{SchemaVersion: host.KeyValueOperationSchema, Status: "pending", KeyValue: status}
 	fail := func(health, reason string) (host.KeyValueOperationObservation, string) {
 		observation.Status = "failed"
 		observation.KeyValue.Health, observation.KeyValue.Reason = health, reason
@@ -311,6 +325,9 @@ func observeManagedKeyValue(ctx context.Context, input planner.KeyValuePlan, rec
 	decoder.DisallowUnknownFields()
 	if decoder.Decode(&generation) != nil || generation.SchemaVersion != keyValueGenerationSchema || !reflect.DeepEqual(generation.KeyValue, input) {
 		return fail("drifted", "Key-Value Store generation record differs from the approved generation")
+	}
+	if !generation.Verified && !finalVerification {
+		return observation, "pending"
 	}
 	serviceRoot := keyValueServiceRoot(input)
 	entrypointPath := filepath.Join(serviceRoot, "credential-entrypoint")
@@ -342,6 +359,10 @@ func observeManagedKeyValue(ctx context.Context, input planner.KeyValuePlan, rec
 		}
 	}
 	observation.KeyValue.ValkeyVersion = version
+	observation.KeyValue.ImageManifest = strings.TrimSpace(string(manifest))
+	if listenAddress, listenPort, ok := parseLoopbackListener(string(port)); ok {
+		observation.KeyValue.ListenAddress, observation.KeyValue.Port = listenAddress, listenPort
+	}
 	observation.KeyValue.AppendOnly = configValue(appendonly)
 	observation.KeyValue.AppendFsync = configValue(appendfsync)
 	switch {
@@ -355,7 +376,7 @@ func observeManagedKeyValue(ctx context.Context, input planner.KeyValuePlan, rec
 		return fail("drifted", "Valkey product version differs")
 	case observation.KeyValue.AppendOnly != input.AppendOnly || observation.KeyValue.AppendFsync != input.AppendFsync:
 		return fail("drifted", "Valkey persistence differs from AOF everysec")
-	case !strings.Contains(string(port), fmt.Sprintf("%s:%d", input.ListenAddress, input.Port)) || strings.Contains(string(port), "0.0.0.0"):
+	case observation.KeyValue.ListenAddress != input.ListenAddress || observation.KeyValue.Port != input.Port:
 		return fail("drifted", "Valkey listener differs from the approved loopback listener")
 	case strings.TrimSpace(string(ping)) != "PONG":
 		return fail("unobservable", "Valkey did not answer an authenticated PING")
@@ -371,6 +392,18 @@ func observeManagedKeyValue(ctx context.Context, input planner.KeyValuePlan, rec
 	observation.KeyValue.Ready, observation.KeyValue.Connectivity, observation.KeyValue.Health = true, true, "healthy"
 	observation.Checks = host.KeyValueVerificationChecks{ServiceHealth: true, ClientRoundTrip: true, GenerationIdentity: true, Persistence: true, CredentialBoundary: true}
 	return observation, "satisfied"
+}
+
+// parseLoopbackListener returns the single published listener, or false when
+// the container publishes anything other than exactly one address:port.
+func parseLoopbackListener(output string) (string, int, bool) {
+	lines := strings.Fields(output)
+	if len(lines) != 1 {
+		return "", 0, false
+	}
+	address, portText, ok := strings.Cut(lines[0], ":")
+	port, err := strconv.Atoi(portText)
+	return address, port, ok && err == nil
 }
 
 func configValue(output []byte) string {
@@ -410,7 +443,7 @@ func inspectKeyValue(environment, account string, paths executionPaths) *host.Ke
 	}
 	accountUIDValue := accountUID(account)
 	status := &host.KeyValueStatus{
-		SchemaVersion: "provision.dev/host-key-value-inspection/v1alpha1", ObservationComplete: true, Findings: []string{},
+		SchemaVersion: host.KeyValueInspectionSchema, ObservationComplete: true, Findings: []string{},
 		Capabilities: host.KeyValueCapabilities{
 			PodmanVersion: installedPodmanPackageVersion(), Quadlet: commandSucceeded("test", "-x", "/usr/lib/systemd/system-generators/podman-system-generator"),
 			RootlessEnvironmentAccount: hasAccount(account, "/var/lib/provision/runtime/"+environment), SystemdCredentials: commandSucceeded("systemd-creds", "--version"),
@@ -476,7 +509,7 @@ func validateKeyValueBindings(bindings []planner.KeyValueHTTPBinding, record boo
 		path := filepath.Join(paths.environmentHome, "services", "valkey", "generations", b.GenerationID, "generation.json")
 		if err := readExactJSON(path, &generation); err != nil || generation.SchemaVersion != keyValueGenerationSchema ||
 			generation.KeyValue.LogicalID != b.LogicalID || generation.KeyValue.GenerationID != b.GenerationID ||
-			generation.KeyValue.Account != record.Account || generation.KeyValue.CredentialReference != b.Reference || generation.KeyValue.Port != b.Port {
+			!generation.Verified || generation.KeyValue.Account != record.Account || generation.KeyValue.CredentialReference != b.Reference || generation.KeyValue.Port != b.Port {
 			return errors.New("Key-Value Store binding does not match a verified prepared Key-Value Store generation")
 		}
 	}

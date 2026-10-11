@@ -65,7 +65,7 @@ func capabilityReasons(observation host.BootstrapStatus) []string {
 		return []string{"managed Valkey packaging is qualified only on Ubuntu 26.04 x86_64"}
 	}
 	status := observation.KeyValue
-	if status == nil || status.SchemaVersion != "provision.dev/host-key-value-inspection/v1alpha1" || !status.ObservationComplete {
+	if status == nil || status.SchemaVersion != host.KeyValueInspectionSchema || !status.ObservationComplete {
 		return []string{"host inspection does not provide Key-Value Store capability evidence"}
 	}
 	c := status.Capabilities

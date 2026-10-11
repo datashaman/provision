@@ -56,8 +56,14 @@ run_mode() {
   scp "${scp_opts[@]}" "$build_dir/provision" "$build_dir/provision-host-executor" "$authority/host-authority.pub" "$authority/host-authority.key" "$secret" "$target_user@$target:$remote/"
   scp "${scp_opts[@]}" -r "$root/scripts" "$root/examples" "$target_user@$target:$remote/"
   ssh "${ssh_opts[@]}" "$target_user@$target" "chmod 0600 '$remote/host-authority.key' '$remote/$(basename "$secret")'"
-  ssh "${ssh_opts[@]}" "$target_user@$target" \
-    "sudo -n bash '$remote/scripts/bootstrap-host.sh' --apply --replace-executor --environment lab --operator '$target_user' --binary '$remote/provision-host-executor' --authority-public-key '$remote/host-authority.pub'"
+  # The package install can restart VM networking and drop this session; bootstrap is idempotent, so retry.
+  local attempt
+  for attempt in 1 2 3; do
+    ssh "${ssh_opts[@]}" "$target_user@$target" \
+      "sudo -n bash '$remote/scripts/bootstrap-host.sh' --apply --replace-executor --environment lab --operator '$target_user' --binary '$remote/provision-host-executor' --authority-public-key '$remote/host-authority.pub'" && break
+    [[ $attempt -lt 3 ]] || { echo "bootstrap failed after $attempt attempts" >&2; exit 1; }
+    until ssh "${ssh_opts[@]}" "$target_user@$target" true 2>/dev/null; do sleep 5; done
+  done
   ssh "${ssh_opts[@]}" "$target_user@$target" \
     "cd '$remote' && ./scripts/test-direct-local-valkey-transition-host.sh --provision ./provision --signing-key ./host-authority.key --secret-file ./$(basename "$secret") --work-dir '$remote_evidence/$mode' --provision-version '$source_version' --confirm-disposable-host provision-acceptance --fault-mode '$mode'"
   scp "${scp_opts[@]}" -r "$target_user@$target:$remote_evidence/$mode" "$local_evidence/$mode"

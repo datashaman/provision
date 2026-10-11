@@ -245,6 +245,7 @@ func inspect(environment, operator string) host.BootstrapStatus {
 	}
 	result.Database = inspectDatabase(environment, account)
 	result.Async = inspectAsync(environment, account)
+	result.KeyValue = inspectKeyValue(environment, account, systemExecutionPaths(environment))
 	result.Ready = len(result.Findings) == 0
 	return result
 }

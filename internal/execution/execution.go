@@ -310,6 +310,17 @@ func resolvedValuesForOperation(plan planner.Plan, operationID string, available
 			}
 			return map[string]string{reference: value}, nil
 		}
+		if planned.Kind == planner.PrepareKeyValue {
+			if planned.Input.KeyValue == nil || planned.Input.KeyValue.CredentialReference == "" {
+				return nil, errors.New("prepareKeyValue has no Key-Value Store credential Secret Reference")
+			}
+			reference := planned.Input.KeyValue.CredentialReference
+			value, ok := available[reference]
+			if !ok || value == "" {
+				return nil, fmt.Errorf("resolved value is required for Key-Value Store Secret Reference %s", reference)
+			}
+			return map[string]string{reference: value}, nil
+		}
 		if planned.Input.Database == nil {
 			return nil, nil
 		}

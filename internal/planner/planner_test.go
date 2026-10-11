@@ -67,7 +67,21 @@ func keyValueFixture(t *testing.T, version string) (config.Compiled, host.Bootst
 		implementation.Version = version
 		compiled.Environment.Implementations["sessions"] = implementation
 	}
-	return compiled, host.BootstrapStatus{Ready: true, Environment: "lab", Operator: "marlinf"}
+	return compiled, readyKeyValueHost()
+}
+
+func readyKeyValueHost() host.BootstrapStatus {
+	return host.BootstrapStatus{
+		Ready: true, Environment: "lab", Operator: "marlinf", OS: "ubuntu", OSVersion: "26.04", Architecture: "x86_64",
+		AllowedOperations: host.AllowedOperations(),
+		KeyValue: &host.KeyValueStatus{
+			SchemaVersion: "provision.dev/host-key-value-inspection/v1alpha1", ObservationComplete: true, Findings: []string{},
+			Capabilities: host.KeyValueCapabilities{
+				Quadlet: true, RootlessEnvironmentAccount: true, SystemdCredentials: true, SubordinateIDs: true, LingeringUserManager: true,
+				QuadletPath: "/etc/containers/systemd/users/990/provision-lab-valkey.container", ListenAddress: "127.0.0.1", Port: 26379, AppendOnly: "yes", AppendFsync: "everysec",
+			},
+		},
+	}
 }
 
 func TestKeyValuePreviewIsDeterministicAndHoldsNoSecret(t *testing.T) {
@@ -77,7 +91,7 @@ func TestKeyValuePreviewIsDeterministicAndHoldsNoSecret(t *testing.T) {
 		t.Fatal(err)
 	}
 	second, _ := Build(compiled, observation)
-	if first.Plan == nil || first.Plan.ID != second.Plan.ID {
+	if first.Plan == nil || !first.Executable || first.Plan.ID != second.Plan.ID || len(first.Plan.Operations) != 1 || first.Plan.Operations[0].Kind != PrepareKeyValue {
 		t.Fatalf("preview is missing or not deterministic: %+v", first)
 	}
 	kv := first.Plan.KeyValue
@@ -99,5 +113,29 @@ func TestKeyValueUnregisteredVersionFailsGuarantees(t *testing.T) {
 	}
 	if preview.Executable || preview.Plan != nil || len(preview.Reasons) != 1 || !strings.Contains(preview.Reasons[0], "not a registered image") {
 		t.Fatalf("unregistered version was not rejected: %+v", preview)
+	}
+}
+
+func TestKeyValueWithoutCapabilityBlockIsNotExecutable(t *testing.T) {
+	compiled, observation := keyValueFixture(t, "")
+	observation.KeyValue = nil
+	preview, err := Build(compiled, observation)
+	if err != nil || preview.Executable || preview.Plan != nil || len(preview.Reasons) != 1 || !strings.Contains(preview.Reasons[0], "capability evidence") {
+		t.Fatalf("missing capability block was not rejected: %+v %v", preview, err)
+	}
+	compiled, observation = keyValueFixture(t, "")
+	observation.AllowedOperations = []string{"inspect"}
+	preview, _ = Build(compiled, observation)
+	if preview.Executable || preview.Plan != nil {
+		t.Fatalf("executor without prepareKeyValue was accepted: %+v", preview)
+	}
+}
+
+func TestKeyValuePlanBindsDeterministicKeysByLogicalReference(t *testing.T) {
+	compiled, observation := keyValueFixture(t, "")
+	preview, _ := Build(compiled, observation)
+	binding := preview.Plan.KeyValue.Binding
+	if binding.Component != "sessions" || binding.LogicalID != "provision-lab-sessions" || len(binding.Keys) != 2 || !strings.HasPrefix(binding.Keys[0], "provision-lab-sessions/provision-example-key-value-v1/") || preview.Plan.KeyValue.QuadletPath == "" {
+		t.Fatalf("binding is not by logical component reference: %+v", binding)
 	}
 }

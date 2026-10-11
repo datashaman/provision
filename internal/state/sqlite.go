@@ -419,7 +419,7 @@ func (b *sqliteBackend) BeginOperation(ctx context.Context, request BeginOperati
 		return OperationAttempt{}, errors.New("operation is not present in the approved Plan")
 	}
 	switch operation.Kind {
-	case planner.PrepareQueue, planner.PrepareDatabase, planner.PrepareDatabaseCandidate:
+	case planner.PrepareQueue, planner.PrepareDatabase, planner.PrepareDatabaseCandidate, planner.PrepareKeyValue:
 		if len(operation.DependsOn) != 0 {
 			return OperationAttempt{}, errors.New("preparation operation cannot have operation dependencies")
 		}

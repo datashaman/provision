@@ -100,6 +100,7 @@ const (
 	VerifySchedule               = planmodel.VerifySchedule
 	RetainWorkerPrevious         = planmodel.RetainWorkerPrevious
 	PrepareDatabase              = planmodel.PrepareDatabase
+	PrepareKeyValue              = planmodel.PrepareKeyValue
 	BackupDatabase               = planmodel.BackupDatabase
 	VerifyDatabaseRestore        = planmodel.VerifyDatabaseRestore
 	PrepareDatabaseCandidate     = planmodel.PrepareDatabaseCandidate
@@ -156,6 +157,8 @@ type HealthInput = planmodel.HealthInput
 type EndpointInput = planmodel.EndpointInput
 type DrainInput = planmodel.DrainInput
 type RetentionInput = planmodel.RetentionInput
+type KeyValueBinding = planmodel.KeyValueBinding
+type KeyValuePlan = planmodel.KeyValuePlan
 
 // Build converts validated configuration and a restricted Host Target
 // inspection into canonical preview data. It never changes or persists state.
@@ -337,8 +340,8 @@ func buildDatabaseBoundHTTP(compiled config.Compiled, observation host.Bootstrap
 	return preview, nil
 }
 
-// buildKeyValue previews a managed Key-Value Store. No typed Valkey executor
-// operations exist yet, so a supported preview is never executable.
+// buildKeyValue previews a managed Key-Value Store: one typed prepareKeyValue
+// operation that creates and verifies the first authoritative generation.
 func buildKeyValue(compiled config.Compiled, observation host.BootstrapStatus) (Preview, error) {
 	target, err := compiled.PlanningTarget()
 	if err != nil {
@@ -360,8 +363,16 @@ func buildKeyValue(compiled config.Compiled, observation host.BootstrapStatus) (
 	if len(preview.Reasons) != 0 {
 		return preview, nil
 	}
-	keyValue := hostkeyvalue.Plan(compiled)
-	preview.Reasons = []string{"host executor has no typed Key-Value Store operations yet; preview only"}
+	keyValue := hostkeyvalue.Plan(compiled, observation)
+	preview.Reasons = nil
+	operation := hostkeyvalue.Operation(keyValue)
+	if !slices.Contains(observation.AllowedOperations, string(operation.Kind)) {
+		preview.Reasons = []string{fmt.Sprintf("host executor does not allow typed %s operations", operation.Kind)}
+		return preview, nil
+	}
+	preview.Executable = true
+	preview.Capability.Decision = "required-initial-generation-supported"
+	evidence.Decision = preview.Capability.Decision
 	preview.Plan = &Plan{
 		SchemaVersion:            SchemaVersion,
 		Application:              compiled.Application.Name,
@@ -373,7 +384,7 @@ func buildKeyValue(compiled config.Compiled, observation host.BootstrapStatus) (
 		Capability:               evidence,
 		SensitiveValueReferences: []string{keyValue.CredentialReference},
 		KeyValue:                 keyValue,
-		Operations:               []Operation{},
+		Operations:               []Operation{operation},
 	}
 	preview.Plan.ID, err = digest(preview.Plan)
 	if err != nil {

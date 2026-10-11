@@ -1,0 +1,17 @@
+schemaVersion: provision.dev/v1alpha1
+kind: Environment
+name: lab
+application: provision-example-key-value
+rollbackWindow: 30m0s
+targets:
+  current:
+    kind: host
+    address: base.local
+    user: marlinf
+implementations:
+  sessions:
+    kind: valkey-quadlet
+    target: current
+    lifecycle: managed
+    credential: secret://lab/valkey-url
+    rollout: required

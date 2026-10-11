@@ -360,3 +360,30 @@ type RetentionInput struct {
 	Policy         rollbackwindow.Rule   `json:"policy"`
 	RollbackWindow rollbackwindow.Window `json:"rollbackWindow"`
 }
+
+// KeyValuePlan is the previewed identity of one managed Key-Value Store
+// Generation. It holds the Secret Reference only, never a resolved credential.
+type KeyValuePlan struct {
+	Component               string                `json:"component"`
+	LogicalID               string                `json:"logicalId"`
+	GenerationID            string                `json:"generationId"`
+	Implementation          string                `json:"implementation"`
+	DataRole                string                `json:"dataRole"`
+	ValkeyVersion           string                `json:"valkeyVersion"`
+	ImageIndex              string                `json:"imageIndex"`
+	ImageManifest           string                `json:"imageManifest"`
+	ImageReference          string                `json:"imageReference"`
+	QualificationDigest     string                `json:"qualificationDigest"`
+	ServiceUnit             string                `json:"serviceUnit"`
+	Container               string                `json:"container"`
+	Account                 string                `json:"account"`
+	DataPath                string                `json:"dataPath"`
+	QuadletDefinition       string                `json:"quadletDefinition"`
+	ListenAddress           string                `json:"listenAddress"`
+	Port                    int                   `json:"port"`
+	CredentialReference     string                `json:"credentialReference"`
+	AppendOnly              string                `json:"appendOnly"`
+	AppendFsync             string                `json:"appendFsync"`
+	TransitionCleanupPolicy string                `json:"transitionCleanupPolicy"`
+	RollbackWindow          rollbackwindow.Window `json:"rollbackWindow"`
+}

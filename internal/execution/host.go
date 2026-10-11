@@ -611,13 +611,15 @@ func verifyKeyValueTransitionSuccess(input planner.KeyValuePlan, kind planner.Op
 			return errors.New("host Key-Value Store authority-switch success lacks exact transition and offset evidence")
 		}
 	case planner.VerifyKeyValueActive:
-		if observed.TransitionPhase != "verifyKeyValueActive" || observed.Synchronization != "verified-after-authority-switch" {
+		if observed.TransitionPhase != "verifyKeyValueActive" || observed.Synchronization != "verified-after-authority-switch" || !offsetsEqual {
 			return errors.New("host Key-Value Store active verification lacks exact transition evidence")
 		}
 	case planner.RetainKeyValuePrevious:
 		p := observed.Previous
 		want := input.Previous
 		if observed.TransitionPhase != "retainKeyValuePrevious" || observed.Synchronization != "retained-forward-only" || observed.RetainedUntil == "" || p == nil || want == nil ||
+			observed.StoreRollbackGuarantee != input.Transition.StoreRollbackGuarantee || observed.TransitionCleanupPolicy != input.TransitionCleanupPolicy ||
+			p.Role != want.Role || p.AppendOnly != want.AppendOnly || p.AppendFsync != want.AppendFsync ||
 			p.ID != want.ID || p.ImageManifest != want.ImageManifest || p.ImageReference != want.ImageReference || p.ServiceUnit != want.ServiceUnit || p.Container != want.Container || p.DataPath != want.DataPath || p.QuadletPath != want.QuadletPath || p.Port != want.Port {
 			return errors.New("host Key-Value Store retention success lacks exact previous-generation evidence")
 		}

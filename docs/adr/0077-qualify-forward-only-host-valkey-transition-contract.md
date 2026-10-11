@@ -78,6 +78,15 @@ fails writes immediately and does not expire.
 - The candidate reaches the active container by its address on the shared
   rootless Podman network, because host loopback is not reachable from a
   container.
+- A fence failure after the ACL revocation is `uncertain` and leaves the
+  application locked out of writes until an operator resumes or recovers; there
+  is no automatic un-fence.
+- A recorded fence is reused only while a probe write is still rejected. A
+  switch that completed every mutation but crashed before writing its evidence
+  marker resumes by recording the marker from the Plan's fence record.
+- The candidate's replication password is passed as server options, so it is
+  visible in the candidate process arguments to the Environment account and
+  root; a `masterauth` file is a later hardening.
 - Replacing the active generation under an HTTP-bound workload is not
   qualified; transition the Key-Value Store on its own.
 - Excluded: derived and ephemeral roles, multi-node Valkey, ElastiCache,

@@ -883,10 +883,11 @@ func keyValueTransitionVerifyFixture(kind planner.OperationKind) (operation.Enve
 	case planner.SwitchKeyValueAuthority:
 		observed.Synchronization, observed.Replication = "authority-switched-after-write-fence", offsets
 	case planner.VerifyKeyValueActive:
-		observed.Synchronization = "verified-after-authority-switch"
+		observed.Synchronization, observed.Replication = "verified-after-authority-switch", offsets
 	case planner.RetainKeyValuePrevious:
 		previous := *input.Previous
 		observed.Synchronization, observed.Previous, observed.RetainedUntil = "retained-forward-only", &previous, "2026-12-01T00:00:00Z"
+		observed.StoreRollbackGuarantee, observed.TransitionCleanupPolicy = input.Transition.StoreRollbackGuarantee, input.TransitionCleanupPolicy
 	}
 	if kind.ObservesKeyValueCandidate() {
 		candidate := input.Candidate()
@@ -926,8 +927,8 @@ func TestVerifyKeyValueTransitionResultsRequirePhaseSpecificEvidence(t *testing.
 			"missing keys":     func(o *host.KeyValueOperationObservation) { o.Keys = nil },
 			"candidate listen": func(o *host.KeyValueOperationObservation) { o.KeyValue.Port = 26380 },
 		},
-		planner.VerifyKeyValueActive:   {"missing keys": func(o *host.KeyValueOperationObservation) { o.Keys = nil }},
-		planner.RetainKeyValuePrevious: {"no previous": func(o *host.KeyValueOperationObservation) { o.Previous = nil }, "no deadline": func(o *host.KeyValueOperationObservation) { o.RetainedUntil = "" }, "other previous": func(o *host.KeyValueOperationObservation) { o.Previous.ID = "other" }},
+		planner.VerifyKeyValueActive:   {"missing keys": func(o *host.KeyValueOperationObservation) { o.Keys = nil }, "no offsets": func(o *host.KeyValueOperationObservation) { o.Replication = nil }},
+		planner.RetainKeyValuePrevious: {"rollback claimed": func(o *host.KeyValueOperationObservation) { o.StoreRollbackGuarantee = "zero-loss" }, "wrong policy": func(o *host.KeyValueOperationObservation) { o.TransitionCleanupPolicy = "destroy" }, "no previous": func(o *host.KeyValueOperationObservation) { o.Previous = nil }, "no deadline": func(o *host.KeyValueOperationObservation) { o.RetainedUntil = "" }, "other previous": func(o *host.KeyValueOperationObservation) { o.Previous.ID = "other" }},
 	}
 	for kind, cases := range mutations {
 		for name, mutate := range cases {

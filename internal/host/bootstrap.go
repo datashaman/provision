@@ -701,9 +701,13 @@ type KeyValueOperationObservation struct {
 	Fence           *KeyValueFenceEvidence      `json:"fence,omitempty"`
 	Previous        *KeyValueGenerationStatus   `json:"previous,omitempty"`
 	RetainedUntil   string                      `json:"retainedUntil,omitempty"`
-	FailureCategory string                      `json:"failureCategory,omitempty"`
-	Reason          string                      `json:"reason,omitempty"`
-	RecoveryAction  string                      `json:"recoveryAction,omitempty"`
+	// StoreRollbackGuarantee and TransitionCleanupPolicy echo the retained
+	// previous generation's policy; retention is never a rollback claim.
+	StoreRollbackGuarantee  string `json:"storeRollbackGuarantee,omitempty"`
+	TransitionCleanupPolicy string `json:"transitionCleanupPolicy,omitempty"`
+	FailureCategory         string `json:"failureCategory,omitempty"`
+	Reason                  string `json:"reason,omitempty"`
+	RecoveryAction          string `json:"recoveryAction,omitempty"`
 }
 
 // KeyValueReplicationOffsets is the lossless evidence: the replication link is

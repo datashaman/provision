@@ -209,6 +209,10 @@ func observeKeyValueTransitionOperation(ctx context.Context, planID string, plan
 		marker, ok := readKeyValueMarker(input, "fence.json", planID, keyValueFencePhase, digest)
 		switch {
 		case ok && state == "satisfied":
+			if rejected, absent := fenceProbe(ctx, record, input.Previous.Container, input.LogicalID+"/fence-probe"); !rejected || !absent {
+				state = "unknown"
+				break
+			}
 			observed.WriteFence, observed.Synchronization, observed.Replication, observed.Fence = marker.WriteFence, marker.Synchronization, marker.Replication, marker.Fence
 		case state == "satisfied":
 			state = "pending"
@@ -235,8 +239,12 @@ func observeKeyValueAfterSwitch(ctx context.Context, planID string, kind planner
 	}
 	if !switched {
 		// Not switched yet: pending only while the previous generation is
-		// still the running active one and no mutation has begun.
+		// still the running active one and no mutation has begun, or when the
+		// switch completed but its evidence marker was never written.
 		if state == "pending" && keyValuePreviousStillActive(ctx, record, input) {
+			return observed, "pending"
+		}
+		if switchedWithoutMarker(ctx, planID, input, record, paths) {
 			return observed, "pending"
 		}
 		return observed, "unknown"
@@ -260,8 +268,32 @@ func observeKeyValueAfterSwitch(ctx context.Context, planID string, kind planner
 		}
 		previous := *input.Previous
 		observed.Previous, observed.RetainedUntil = &previous, retained.RetainedUntil
+		observed.StoreRollbackGuarantee, observed.TransitionCleanupPolicy = input.Transition.StoreRollbackGuarantee, input.TransitionCleanupPolicy
 	}
 	return observed, "satisfied"
+}
+
+// switchedWithoutMarker recognizes a switch that finished every mutation (the
+// previous record is retired, the candidate resources are gone, the stable
+// generation is an exact healthy master) but crashed before recording its
+// authority-switch marker. The recorded fence proves the offsets.
+func switchedWithoutMarker(ctx context.Context, planID string, input planner.KeyValuePlan, record bootstrapRecord, paths executionPaths) bool {
+	previousRetired := filepath.Join(paths.environmentHome, "services", "valkey", "generations", input.Previous.ID, "generation.previous.json")
+	candidate := input.Candidate()
+	if _, err := os.Stat(previousRetired); err != nil {
+		return false
+	}
+	for _, path := range []string{keyValueRecordPath(candidate), candidate.QuadletPath} {
+		if _, err := os.Stat(path); err == nil {
+			return false
+		}
+	}
+	if fence, ok := readKeyValueMarker(input, "fence.json", planID, keyValueFencePhase, ""); !ok || fence.Replication == nil {
+		return false
+	}
+	_, state := observeKeyValueGeneration(ctx, input, record, paths, true)
+	role := keyValueReplicationInfo(ctx, record, input.Container)
+	return state == "satisfied" && role.ok && !role.isReplica()
 }
 
 // keyValuePreviousStillActive is true only while the stable Quadlet still
@@ -509,7 +541,9 @@ func applyKeyValueFence(ctx context.Context, input planner.KeyValuePlan, claim a
 	digest := claim.OperationDigest
 	if marker, ok := readKeyValueMarker(input, "fence.json", claim.PlanID, keyValueFencePhase, digest); ok {
 		recorded, state := keyValueTransitionBase(ctx, planner.FenceKeyValueWrites, keyValueFencePhase, input, record, paths)
-		if state == "satisfied" {
+		// The ACL revocation is in memory: an active-service restart reopens
+		// writes, so a recorded fence is only reused while it still holds.
+		if rejected, absent := fenceProbe(ctx, record, input.Previous.Container, input.LogicalID+"/fence-probe"); state == "satisfied" && rejected && absent {
 			recorded.WriteFence, recorded.Synchronization, recorded.Replication, recorded.Fence = marker.WriteFence, marker.Synchronization, marker.Replication, marker.Fence
 			return json.Marshal(recorded)
 		}
@@ -549,6 +583,22 @@ func applyKeyValueAuthoritySwitch(ctx context.Context, input planner.KeyValuePla
 	if observed, state := observeKeyValueAfterSwitch(ctx, claim.PlanID, planner.SwitchKeyValueAuthority, digest, input, record, paths); state == "satisfied" {
 		return json.Marshal(observed)
 	}
+	if switchedWithoutMarker(ctx, claim.PlanID, input, record, paths) {
+		fence, _ := readKeyValueMarker(input, "fence.json", claim.PlanID, keyValueFencePhase, "")
+		observed, _ := observeKeyValueGeneration(ctx, input, record, paths, true)
+		observed.TransitionPhase, observed.Synchronization, observed.Replication = keyValueSwitchPhase, "authority-switched-after-write-fence", fence.Replication
+		if err := writeJSONAtomic(keyValueRecordPath(input), keyValueGenerationRecord{SchemaVersion: keyValueGenerationSchema, KeyValue: canonicalKeyValue(input), Verified: true}, 0444); err != nil {
+			return keyValueUncertain(observed, "mark the authoritative generation verified: "+err.Error(), "inspect the authoritative Valkey generation and its records before resuming the authority switch")
+		}
+		marker := keyValueTransitionMarker{
+			Phase: keyValueSwitchPhase, PlanID: claim.PlanID, OperationID: claim.OperationID, OperationDigest: digest, LogicalID: input.LogicalID,
+			PreviousGeneration: input.Previous.ID, CandidateGeneration: input.GenerationID, Synchronization: observed.Synchronization, Replication: fence.Replication,
+		}
+		if err := writeKeyValueMarker(input, "authority-switch.json", marker); err != nil {
+			return keyValueUncertain(observed, "record authority-switch evidence: "+err.Error(), "inspect the authoritative Valkey generation and its records before resuming the authority switch")
+		}
+		return json.Marshal(observed)
+	}
 	failBase := func() host.KeyValueOperationObservation {
 		base, _ := observeKeyValueGeneration(ctx, input, record, paths, false)
 		base.TransitionPhase = keyValueSwitchPhase
@@ -576,17 +626,17 @@ func applyKeyValueAuthoritySwitch(ctx context.Context, input planner.KeyValuePla
 		base.TransitionPhase, base.Synchronization, base.Replication = keyValueSwitchPhase, "authority-switch-post-mutation", &offsets
 		return keyValueUncertain(base, reason, "inspect the previous and candidate Valkey services, the authoritative Quadlet, generation records and data paths before resuming or explicitly recovering the authority switch")
 	}
-	if out, err := keyValueRun(ctx, record, "systemctl", "--user", "stop", input.Previous.ServiceUnit); err != nil {
-		return uncertain("stop the previous active Key-Value Store service: " + safeOutput(out, err))
+	if _, err := keyValueRun(ctx, record, "systemctl", "--user", "stop", input.Previous.ServiceUnit); err != nil {
+		return uncertain("stop the previous active Key-Value Store service: " + errText(err))
 	}
 	if out, err := keyValueExec(ctx, record, candidate.Container, "REPLICAOF", "NO", "ONE"); err != nil || !strings.HasPrefix(strings.TrimSpace(string(out)), "OK") {
 		return uncertain("promote the candidate generation to master")
 	}
-	if replication := keyValueReplicationInfo(ctx, record, candidate.Container); !replication.ok || replication.isReplica() || replication.slaveOffset != offsets.CandidateOffset && replication.masterOffset != offsets.CandidateOffset {
+	if replication := keyValueReplicationInfo(ctx, record, candidate.Container); !replication.ok || replication.isReplica() || replication.masterOffset < offsets.ActiveOffset {
 		return uncertain("candidate promotion did not preserve the replication offset")
 	}
-	if out, err := keyValueRun(ctx, record, "systemctl", "--user", "stop", candidate.ServiceUnit); err != nil {
-		return uncertain("stop the promoted candidate service: " + safeOutput(out, err))
+	if _, err := keyValueRun(ctx, record, "systemctl", "--user", "stop", candidate.ServiceUnit); err != nil {
+		return uncertain("stop the promoted candidate service: " + errText(err))
 	}
 	if err := replaceManagedFile(input.QuadletPath, []byte(renderKeyValueQuadlet(input, keyValueEntrypointPath(input))), 0644, 0, 0); err != nil {
 		return uncertain("write the authoritative Key-Value Store Quadlet: " + err.Error())
@@ -598,8 +648,8 @@ func applyKeyValueAuthoritySwitch(ctx context.Context, input planner.KeyValuePla
 		{"reload Environment user units", []string{"systemctl", "--user", "daemon-reload"}},
 		{"start the authoritative Key-Value Store service", []string{"systemctl", "--user", "restart", input.ServiceUnit}},
 	} {
-		if out, err := keyValueRun(ctx, record, step.args[0], step.args[1:]...); err != nil {
-			return uncertain(step.message + ": " + safeOutput(out, err))
+		if _, err := keyValueRun(ctx, record, step.args[0], step.args[1:]...); err != nil {
+			return uncertain(step.message + ": " + errText(err))
 		}
 	}
 	if err := waitForKeyValueService(ctx, record, input); err != nil {
@@ -620,8 +670,8 @@ func applyKeyValueAuthoritySwitch(ctx context.Context, input planner.KeyValuePla
 			return uncertain("remove candidate transition resources: " + err.Error())
 		}
 	}
-	if out, err := keyValueRun(ctx, record, "systemctl", "--user", "daemon-reload"); err != nil {
-		return uncertain("reload Environment user units after candidate cleanup: " + safeOutput(out, err))
+	if _, err := keyValueRun(ctx, record, "systemctl", "--user", "daemon-reload"); err != nil {
+		return uncertain("reload Environment user units after candidate cleanup: " + errText(err))
 	}
 	observed, state := observeKeyValueGeneration(ctx, input, record, paths, true)
 	observed.TransitionPhase, observed.Synchronization, observed.Replication = keyValueSwitchPhase, "authority-switched-after-write-fence", &offsets
@@ -641,7 +691,8 @@ func applyKeyValueAuthoritySwitch(ctx context.Context, input planner.KeyValuePla
 	return json.Marshal(observed)
 }
 
-func safeOutput(_ []byte, err error) string {
+// errText never includes command output, which could carry credential-bearing text.
+func errText(err error) string {
 	if err != nil {
 		return err.Error()
 	}
@@ -739,5 +790,6 @@ func applyKeyValuePreviousRetention(ctx context.Context, input planner.KeyValueP
 	}
 	previous := *input.Previous
 	observed.Previous, observed.RetainedUntil = &previous, retained.RetainedUntil
+	observed.StoreRollbackGuarantee, observed.TransitionCleanupPolicy = input.Transition.StoreRollbackGuarantee, input.TransitionCleanupPolicy
 	return json.Marshal(observed)
 }

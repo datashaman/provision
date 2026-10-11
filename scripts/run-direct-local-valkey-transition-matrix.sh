@@ -11,8 +11,8 @@ secret="${PROVISION_ACCEPTANCE_VALKEY_SECRET:-$root/work/issue-100-live/valkey-u
 remote="/tmp/provision-issue100-direct-local"
 remote_evidence="/tmp/provision-issue100-evidence"
 local_evidence="${PROVISION_ISSUE100_EVIDENCE:-$root/work/issue-100-live/evidence}"
-ssh_opts=(-o BatchMode=yes -o StrictHostKeyChecking=yes -o ServerAliveInterval=15 -o ServerAliveCountMax=2 -o ConnectTimeout=15)
-scp_opts=(-q -o StrictHostKeyChecking=yes -o ServerAliveInterval=15 -o ServerAliveCountMax=2 -o ConnectTimeout=15)
+ssh_opts=(-o BatchMode=yes -o StrictHostKeyChecking=yes -o ServerAliveInterval=15 -o ServerAliveCountMax=20 -o ConnectTimeout=15)
+scp_opts=(-q -o StrictHostKeyChecking=yes -o ServerAliveInterval=15 -o ServerAliveCountMax=20 -o ConnectTimeout=15)
 
 printf 'Provision issue #100 direct-local Valkey acceptance on %s@%s (disposable VM; restores the clean snapshot before each mode and after success)\n' "$target_user" "$target"
 

@@ -1,0 +1,10 @@
+schemaVersion: provision.dev/v1alpha1
+kind: Application
+name: provision-example-key-value
+components:
+  sessions:
+    role: key-value-store
+    keyValue:
+      engine: valkey
+      dataRole: authoritative
+      transitionCleanupPolicy: retain-previous-generation

@@ -1,0 +1,5 @@
+schemaVersion: provision.dev/v1alpha1
+kind: Revision
+name: provision-example-key-value-v1
+application: provision-example-key-value
+artifacts: {}

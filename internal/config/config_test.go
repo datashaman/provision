@@ -484,3 +484,44 @@ func copyDatabaseBoundHTTPExample(t *testing.T) string {
 	}
 	return dir
 }
+
+func TestRejectsUnsafeKeyValueContracts(t *testing.T) {
+	tests := []struct{ name, file, old, new, want string }{
+		{"missing data role", "application.yaml", "      dataRole: authoritative\n", "", "explicit dataRole"},
+		{"derived", "application.yaml", "dataRole: authoritative", "dataRole: derived", "not supported by managed Valkey"},
+		{"ephemeral", "application.yaml", "dataRole: authoritative", "dataRole: ephemeral", "not supported by managed Valkey"},
+		{"destroy previous", "application.yaml", "retain-previous-generation", "destroy-previous-generation", "retention policy"},
+		{"resolved credential", "environment.yaml", "secret://lab/valkey-url", "redis://:super-secret@127.0.0.1:26379", "Secret Reference"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			dir := t.TempDir()
+			for _, name := range []string{"root.yaml", "application.yaml", "environment.yaml", "revision.yaml"} {
+				data, err := os.ReadFile(filepath.Join("..", "..", "examples", "host-key-value", name))
+				if err != nil {
+					t.Fatal(err)
+				}
+				if name == test.file {
+					changed := strings.Replace(string(data), test.old, test.new, 1)
+					if changed == string(data) {
+						t.Fatalf("substitution did not match %q", test.old)
+					}
+					data = []byte(changed)
+				}
+				if err := os.WriteFile(filepath.Join(dir, name), data, 0600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if _, err := Load(filepath.Join(dir, "root.yaml")); err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("error = %v; want %q", err, test.want)
+			}
+		})
+	}
+}
+
+func TestLoadKeyValueExample(t *testing.T) {
+	compiled, err := Load(filepath.Join("..", "..", "examples", "host-key-value", "root.yaml"))
+	if err != nil || !compiled.IsKeyValueOnly() {
+		t.Fatalf("Key-Value example did not compile: %v", err)
+	}
+}

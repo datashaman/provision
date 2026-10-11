@@ -43,6 +43,7 @@ type Component struct {
 	Requires []string         `yaml:"requires,omitempty" json:"requires,omitempty"`
 	Health   Health           `yaml:"health,omitempty" json:"health,omitempty,omitzero"`
 	Database DatabaseContract `yaml:"database,omitempty" json:"database,omitempty,omitzero"`
+	KeyValue KeyValueContract `yaml:"keyValue,omitempty" json:"keyValue,omitempty,omitzero"`
 	Queue    QueueContract    `yaml:"queue,omitempty" json:"queue,omitempty,omitzero"`
 	Worker   WorkerContract   `yaml:"worker,omitempty" json:"worker,omitempty,omitzero"`
 	Task     TaskContract     `yaml:"task,omitempty" json:"task,omitempty,omitzero"`
@@ -79,6 +80,14 @@ type DatabaseContract struct {
 	TransitionCleanupPolicy string                 `yaml:"transitionCleanupPolicy" json:"transitionCleanupPolicy"`
 	Backup                  DatabaseBackupPolicy   `yaml:"backup" json:"backup"`
 	Recovery                DatabaseRecoveryPolicy `yaml:"recovery" json:"recovery"`
+}
+
+// KeyValueContract declares a Key-Value Store. DataRole is never defaulted
+// (ADR 0068); managed Valkey accepts only authoritative.
+type KeyValueContract struct {
+	Engine                  string `yaml:"engine" json:"engine"`
+	DataRole                string `yaml:"dataRole" json:"dataRole"`
+	TransitionCleanupPolicy string `yaml:"transitionCleanupPolicy" json:"transitionCleanupPolicy"`
 }
 
 type DatabaseBackupPolicy struct {
@@ -285,6 +294,16 @@ func (c Compiled) IsDatabaseBoundHTTP() bool {
 		roles[component.Role] = true
 	}
 	return roles["database"] && roles["http"]
+}
+
+func (c Compiled) IsKeyValueOnly() bool {
+	if len(c.Application.Components) != 1 {
+		return false
+	}
+	for _, component := range c.Application.Components {
+		return component.Role == "key-value-store"
+	}
+	return false
 }
 
 func (c Compiled) IsQueueOnly() bool {
@@ -600,6 +619,9 @@ func (c Compiled) validate() error {
 }
 
 func (c Compiled) validateAsync() error {
+	if c.IsKeyValueOnly() {
+		return c.validateKeyValueOnly()
+	}
 	if c.IsDatabaseOnly() {
 		return c.validateDatabaseOnly()
 	}
@@ -883,6 +905,60 @@ func (c Compiled) validateDatabaseOnly() error {
 	}
 	if implementation.Kind != "postgresql-quadlet" || implementation.Lifecycle != "managed" || implementation.Rollout != "required" || !validSecretReference(implementation.Credential) {
 		return fmt.Errorf("Database %q requires a managed postgresql-quadlet implementation and Database credential Secret Reference", databaseName)
+	}
+	return nil
+}
+
+func (c Compiled) validateKeyValueOnly() error {
+	if len(c.Environment.Implementations) != 1 || len(c.Revision.Artifacts) != 0 {
+		return errors.New("Key-Value Store host tracer requires exactly one implementation and no Artifacts")
+	}
+	var name string
+	for n, component := range c.Application.Components {
+		name = n
+		if !validName(n) {
+			return fmt.Errorf("component %q must be a lowercase identifier", n)
+		}
+		if component.Health != (Health{}) || component.Database != (DatabaseContract{}) || component.Queue != (QueueContract{}) || component.Worker != (WorkerContract{}) || component.Task != (TaskContract{}) || component.Schedule != (ScheduleContract{}) {
+			return fmt.Errorf("Key-Value Store %q contains fields for another component type", n)
+		}
+		contract := component.KeyValue
+		if contract.Engine != "valkey" {
+			return fmt.Errorf("Key-Value Store %q requires the valkey engine", n)
+		}
+		switch contract.DataRole {
+		case "authoritative":
+		case "derived", "ephemeral":
+			return fmt.Errorf("Key-Value Store %q dataRole %q is not supported by managed Valkey; declare authoritative", n, contract.DataRole)
+		case "":
+			return fmt.Errorf("Key-Value Store %q requires an explicit dataRole (authoritative)", n)
+		default:
+			return fmt.Errorf("Key-Value Store %q has unknown dataRole %q; managed Valkey requires authoritative", n, contract.DataRole)
+		}
+		if contract.TransitionCleanupPolicy != "retain-previous-generation" {
+			return fmt.Errorf("Key-Value Store %q requires previous Store Generation retention policy", n)
+		}
+	}
+	implementation, ok := c.Environment.Implementations[name]
+	if !ok {
+		return fmt.Errorf("Key-Value Store %q has no implementation", name)
+	}
+	target, ok := c.Environment.Targets[implementation.Target]
+	if len(c.Environment.Targets) != 1 || !ok || target.Kind != "host" || !validName(implementation.Target) || !userPattern.MatchString(target.User) {
+		return errors.New("Key-Value Store host tracer requires exactly one valid Host Target and operator")
+	}
+	if target.Local {
+		if target.Address != "" {
+			return fmt.Errorf("local implementation target %q cannot declare an address", implementation.Target)
+		}
+	} else if !hostPattern.MatchString(target.Address) || strings.HasSuffix(target.Address, ".") {
+		return fmt.Errorf("implementation target %q must name an existing remote Host Target", implementation.Target)
+	}
+	if implementation.Endpoint != (Endpoint{}) || implementation.Worker != (WorkerImplementation{}) || implementation.Schedule != (ScheduleImplementation{}) {
+		return fmt.Errorf("Key-Value Store %q contains fields for another implementation type", name)
+	}
+	if implementation.Kind != "valkey-quadlet" || implementation.Lifecycle != "managed" || implementation.Rollout != "required" || !validSecretReference(implementation.Credential) {
+		return fmt.Errorf("Key-Value Store %q requires a managed valkey-quadlet implementation and credential Secret Reference", name)
 	}
 	return nil
 }

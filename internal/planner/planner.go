@@ -15,6 +15,7 @@ import (
 	"provision/internal/host"
 	hostasync "provision/internal/implementation/hostasync"
 	hostdatabase "provision/internal/implementation/hostdatabase"
+	hostkeyvalue "provision/internal/implementation/hostkeyvalue"
 	"provision/internal/planmodel"
 	"provision/internal/rollbackwindow"
 )
@@ -46,6 +47,7 @@ type Plan struct {
 	ApprovalRequirements     []ApprovalRequirement   `json:"approvalRequirements"`
 	SensitiveValueReferences []string                `json:"sensitiveValueReferences"`
 	Database                 *DatabaseOperationInput `json:"database,omitempty"`
+	KeyValue                 *planmodel.KeyValuePlan `json:"keyValue,omitempty"`
 	Operations               []Operation             `json:"operations"`
 }
 
@@ -158,6 +160,9 @@ type RetentionInput = planmodel.RetentionInput
 // Build converts validated configuration and a restricted Host Target
 // inspection into canonical preview data. It never changes or persists state.
 func Build(compiled config.Compiled, observation host.BootstrapStatus) (Preview, error) {
+	if compiled.IsKeyValueOnly() {
+		return buildKeyValue(compiled, observation)
+	}
 	if compiled.IsDatabaseOnly() {
 		return buildDatabase(compiled, observation)
 	}
@@ -329,6 +334,51 @@ func buildDatabaseBoundHTTP(compiled config.Compiled, observation host.Bootstrap
 		return Preview{}, err
 	}
 	preview.Plan = &plan
+	return preview, nil
+}
+
+// buildKeyValue previews a managed Key-Value Store. No typed Valkey executor
+// operations exist yet, so a supported preview is never executable.
+func buildKeyValue(compiled config.Compiled, observation host.BootstrapStatus) (Preview, error) {
+	target, err := compiled.PlanningTarget()
+	if err != nil {
+		return Preview{}, err
+	}
+	if observation.Environment != compiled.Environment.Name || observation.Operator != target.Target.User {
+		return Preview{}, errors.New("host observation does not identify the configured Environment and operator")
+	}
+	evaluation := hostkeyvalue.Evaluate(compiled, observation)
+	evidence := CapabilityEvidence{
+		Contract:        evaluation.Contract,
+		RequiredMode:    "required",
+		Guarantees:      evaluation.Guarantees,
+		SupportEvidence: evaluation.SupportEvidence,
+		Observed:        observation,
+		Decision:        "unsupported",
+	}
+	preview := Preview{SchemaVersion: PreviewSchemaVersion, Capability: evidence, Reasons: unique(evaluation.Reasons)}
+	if len(preview.Reasons) != 0 {
+		return preview, nil
+	}
+	keyValue := hostkeyvalue.Plan(compiled)
+	preview.Reasons = []string{"host executor has no typed Key-Value Store operations yet; preview only"}
+	preview.Plan = &Plan{
+		SchemaVersion:            SchemaVersion,
+		Application:              compiled.Application.Name,
+		Environment:              compiled.Environment.Name,
+		Revision:                 compiled.Revision.Name,
+		ConfigurationDigest:      compiled.Digest,
+		ArtifactDigests:          map[string]string{},
+		Target:                   Target{Name: target.Name, Kind: target.Target.Kind, Local: target.Target.Local, Address: target.Target.Address, User: target.Target.User},
+		Capability:               evidence,
+		SensitiveValueReferences: []string{keyValue.CredentialReference},
+		KeyValue:                 keyValue,
+		Operations:               []Operation{},
+	}
+	preview.Plan.ID, err = digest(preview.Plan)
+	if err != nil {
+		return Preview{}, err
+	}
 	return preview, nil
 }
 

@@ -2,3 +2,5 @@
 work/
 outputs/
 examples/host-http/dist/
+/cmd/provision-host-executor/provision-host-executor
+/cmd/provision/provision

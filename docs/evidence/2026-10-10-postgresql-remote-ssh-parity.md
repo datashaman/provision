@@ -69,6 +69,10 @@ SSH, Podman, systemd, or PostgreSQL versions.
   backup, restore verification, and retention marking. Initial provisioning runs
   uninterrupted. The wrapper is test-only, not a Provision capability.
 - Host keys other than the pinned ED25519 key were also present in `known_hosts`.
+- The topology (`databaseNodes: 1`, `hostFailureTolerance: 0`) is the declared single-node topology, not something the Host reports.
+- "Recovery observes the Host before acting" is shown by the journal shape (interrupted intent, resume provenance, no replay marker in `after`), not by an independent ordering assertion.
+- The compared per-run accounting, check logs, and raw transcripts live in the git-ignored `work/issue-76-live/evidence`; the committed JSON records the comparison results and identities, not the raw accounting.
+- The clean-snapshot restore is performed by the wrapper's final `reset-acceptance-vm.sh` call, which the wrapper must complete for exit status 0; it is not a separate recorded field.
 
 ## Decision input for parent #67
 

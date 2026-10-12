@@ -454,15 +454,16 @@ func parseKeyValueCount(out []byte) (int, error) {
 // equalOffsets waits, inside the fence bound, for the candidate to reach the
 // active generation's master_repl_offset over an up replication link.
 func equalOffsets(ctx context.Context, record bootstrapRecord, active, candidate string) (host.KeyValueReplicationOffsets, error) {
+	var a, c keyValueReplication
 	for {
-		a := keyValueReplicationInfo(ctx, record, active)
-		c := keyValueReplicationInfo(ctx, record, candidate)
+		a = keyValueReplicationInfo(ctx, record, active)
+		c = keyValueReplicationInfo(ctx, record, candidate)
 		if a.ok && c.ok && c.isReplica() && c.linkUp && !c.syncing && a.masterOffset > 0 && a.masterOffset == c.slaveOffset {
 			return host.KeyValueReplicationOffsets{LinkUp: true, ActiveOffset: a.masterOffset, CandidateOffset: c.slaveOffset}, nil
 		}
 		select {
 		case <-ctx.Done():
-			return host.KeyValueReplicationOffsets{}, errors.New("candidate replication offset did not equal the active master_repl_offset within the write-fence bound")
+			return host.KeyValueReplicationOffsets{}, fmt.Errorf("candidate replication offset did not equal the active master_repl_offset within the write-fence bound (last observed: active ok=%t master_repl_offset=%d; candidate ok=%t role=%s link_up=%t syncing=%t slave_repl_offset=%d)", a.ok, a.masterOffset, c.ok, c.role, c.linkUp, c.syncing, c.slaveOffset)
 		case <-time.After(100 * time.Millisecond):
 		}
 	}
@@ -515,7 +516,7 @@ func provenLosslessState(ctx context.Context, record bootstrapRecord, input plan
 	defer cancel()
 	offsets, err := equalOffsets(equalCtx, record, input.Previous.Container, input.Candidate().Container)
 	if err != nil {
-		return host.KeyValueReplicationOffsets{}, errors.New("authority switch requires the candidate offset to equal the active master_repl_offset over an up link")
+		return host.KeyValueReplicationOffsets{}, fmt.Errorf("authority switch requires the candidate offset to equal the active master_repl_offset over an up link: %w", err)
 	}
 	return offsets, nil
 }

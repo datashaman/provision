@@ -30,7 +30,12 @@ import (
 var errKeyValueFenceNotApplied = errors.New("revoke write commands from the application user on the active generation")
 
 // keyValueEqualBudget bounds the re-check made immediately before authority moves.
-var keyValueEqualBudget = 5 * time.Second
+// An idle active generation PINGs its replica every few seconds, which advances both
+// offsets by 14 bytes; a PING landing between the two (unsynchronised) INFO reads
+// shows a transient skew. A rootless `podman exec` takes ~1.5s, so one sample takes
+// ~3s and a few seconds only allows one or two tries. Writes stay fenced throughout,
+// so waiting for an aligned sample is safe; the bound is the fence's own.
+var keyValueEqualBudget = keyValueFenceBudget
 
 const (
 	keyValueTransitionSchema = "provision.dev/key-value-transition/v1alpha1"

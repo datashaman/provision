@@ -43,7 +43,7 @@ GOOS=linux GOARCH=amd64 go build -o "$build_dir/provision-host-executor" ./cmd/p
 source_version="$(git -C "$root" rev-parse HEAD)"
 git -C "$root" diff --quiet HEAD -- || source_version="$source_version-dirty-$(git -C "$root" diff --binary HEAD -- | shasum -a 256 | awk '{print $1}')"
 bash -n "$root/scripts/test-direct-local-valkey-transition-host.sh" "$root/scripts/run-remote-ssh-valkey-transition-matrix.sh"
-go test ./cmd/... ./internal/... >/dev/null
+[[ -n "${PROVISION_ACCEPTANCE_SKIP_GO_TEST:-}" ]] || go test ./cmd/... ./internal/... >/dev/null
 
 [[ ! -e "$local_evidence" ]] || mv "$local_evidence" "$local_evidence.old-$(date -u +%Y%m%dT%H%M%SZ)"
 mkdir -p "$local_evidence" "$ssh_evidence"
@@ -55,6 +55,9 @@ fi
 run_ssh_mode() {
   local mode="$1" attempt
   "$root/work/acceptance-host/reset-acceptance-vm.sh" --yes
+  # The restored snapshot is old, so apt's catch-up timers fire after boot and starve the 2-vCPU VM for minutes,
+  # long enough to expire a 30s execution lease mid-operation. Stop them for this boot.
+  ssh "${ssh_opts[@]}" "$target_user@$target" "sudo -n systemctl stop apt-daily.timer apt-daily-upgrade.timer apt-daily.service apt-daily-upgrade.service unattended-upgrades.service"
   ssh "${ssh_opts[@]}" "$target_user@$target" "rm -rf '$remote'; mkdir -p '$remote' && chmod 0700 '$remote'"
   scp "${scp_opts[@]}" "$root/scripts/bootstrap-host.sh" "$build_dir/provision-host-executor" "$authority/host-authority.pub" "$target_user@$target:$remote/"
   # The package install can restart VM networking and drop this session; bootstrap is idempotent, so retry.

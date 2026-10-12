@@ -55,6 +55,9 @@ fi
 run_ssh_mode() {
   local mode="$1" attempt
   "$root/work/acceptance-host/reset-acceptance-vm.sh" --yes
+  # The restored snapshot is old, so apt's catch-up timers fire after boot and starve the 2-vCPU VM for minutes,
+  # long enough to expire a 30s execution lease mid-operation. Stop them for this boot.
+  ssh "${ssh_opts[@]}" "$target_user@$target" "sudo -n systemctl stop apt-daily.timer apt-daily-upgrade.timer apt-daily.service apt-daily-upgrade.service unattended-upgrades.service"
   ssh "${ssh_opts[@]}" "$target_user@$target" "rm -rf '$remote'; mkdir -p '$remote' && chmod 0700 '$remote'"
   scp "${scp_opts[@]}" "$root/scripts/bootstrap-host.sh" "$build_dir/provision-host-executor" "$authority/host-authority.pub" "$target_user@$target:$remote/"
   # The package install can restart VM networking and drop this session; bootstrap is idempotent, so retry.

@@ -128,7 +128,8 @@ execute_with_interruption_and_resume() {
   kind="$(plan_kind "$work_dir/$name/plan.json" "$operation")"
   marker="$work_dir/$name/$operation-$mode-marker"
   lease=5s resume_delay=6
-  [[ "$mode" == after ]] && { lease=30s; resume_delay=31; }
+  # Operations take 10-35s on the 2-vCPU VM; the lease must outlast the longest so only the CLI, not the lease, dies.
+  [[ "$mode" == after ]] && { lease=60s; resume_delay=61; }
   set +e
   PATH="$fault_bin:$PATH" PROVISION_REAL_SSH="$real_ssh" PROVISION_FAULT_MODE="$mode" PROVISION_FAULT_MARKER="$marker" \
     "$provision" deployment execute --plan "$plan_id" --operation "$operation" --state "$state" --signing-key "$signing_key" \

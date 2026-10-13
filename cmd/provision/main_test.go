@@ -372,6 +372,13 @@ func TestProvisionSudoHelper(t *testing.T) {
 		writeReadyBootstrapInspection(t, operator, keyID)
 		os.Exit(0)
 	}
+	if len(args) >= 3 && args[0] == "-n" && args[2] == "observe-artifact" {
+		digest := args[len(args)-1]
+		_ = json.NewEncoder(os.Stdout).Encode(map[string]any{
+			"status": "absent", "path": "/var/lib/provision/artifacts/sha256/" + strings.TrimPrefix(digest, "sha256:"), "digest": digest, "size": 0,
+		})
+		os.Exit(0)
+	}
 	if len(args) >= 3 && args[0] == "-n" && args[2] == "execute" {
 		data, err := io.ReadAll(io.LimitReader(os.Stdin, 1<<20))
 		if err != nil {

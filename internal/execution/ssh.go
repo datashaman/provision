@@ -57,15 +57,19 @@ func (h SSHHostHandler) Observe(ctx context.Context, planID string, planned plan
 		"--operator", h.target.User,
 		"--digest", artifact.Digest,
 	)...)
+	return observeArtifactCommand(command, "remote")
+}
+
+func observeArtifactCommand(command *exec.Cmd, kind string) (HandlerObservation, error) {
 	output, err := command.CombinedOutput()
 	if err != nil {
-		return HandlerObservation{}, fmt.Errorf("observe remote Host Target: %w: %s", err, bytes.TrimSpace(output))
+		return HandlerObservation{}, fmt.Errorf("observe %s Host Target: %w: %s", kind, err, bytes.TrimSpace(output))
 	}
 	var observed host.ArtifactObservation
 	decoder := json.NewDecoder(bytes.NewReader(output))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&observed); err != nil {
-		return HandlerObservation{}, errors.New("remote Host Target returned invalid Artifact observation")
+		return HandlerObservation{}, fmt.Errorf("%s Host Target returned invalid Artifact observation", kind)
 	}
 	return artifactHandlerObservation(observed)
 }

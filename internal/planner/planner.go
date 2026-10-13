@@ -824,6 +824,8 @@ func databaseOperations(adapterPlan hostdatabase.PlanningOutput) []Operation {
 			},
 			Recovery: RetainDatabase,
 		}
+		backup.Preconditions = append(backup.Preconditions, backupTransportConditions(source.Backup)...)
+		restore.Preconditions = append(restore.Preconditions, backupTransportConditions(source.Backup)...)
 		return append(after, backup, restore)
 	}
 	if active := input.Observed.Active; active != nil && active.ID == input.GenerationID && active.Ready && active.Connectivity && active.ImageManifest == input.ImageManifest {
@@ -916,17 +918,32 @@ func databaseTransitionOperations(adapterPlan hostdatabase.PlanningOutput) []Ope
 		if index > 0 {
 			dependsOn = []string{fmt.Sprintf("op-%02d", index)}
 		}
+		conditions := preconditions[index]
+		if kind == BackupDatabase || kind == VerifyDatabaseRestore {
+			conditions = append(conditions, backupTransportConditions(input.Backup)...)
+		}
 		operations = append(operations, Operation{
 			ID:                   id,
 			Kind:                 kind,
 			DependsOn:            dependsOn,
 			Input:                OperationInput{Database: databaseInputForTransitionStep(kind, input, candidate)},
-			Preconditions:        preconditions[index],
+			Preconditions:        conditions,
 			ExpectedObservations: expected[index],
 			Recovery:             RetainDatabase,
 		})
 	}
 	return operations
+}
+
+// backupTransportConditions pins an ssh:// destination's host key and requires its private key Secret Reference; file:// adds none.
+func backupTransportConditions(backup config.DatabaseBackupPolicy) []TypedCondition {
+	if backup.CredentialReference == "" {
+		return nil
+	}
+	return []TypedCondition{
+		{Kind: "backup-host-key", Subject: backup.Destination, Expected: backup.HostKey},
+		{Kind: "backup-secret-reference", Subject: backup.CredentialReference, Expected: "resolved-at-execution"},
+	}
 }
 
 func databaseInputForTransitionStep(kind OperationKind, stable, candidate *DatabaseOperationInput) *DatabaseOperationInput {

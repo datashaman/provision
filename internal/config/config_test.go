@@ -233,6 +233,8 @@ func TestRejectsUnsafeDatabasePolicies(t *testing.T) {
 		{"backup retention misses rollback", "environment.yaml", "rollbackWindow: 30m0s", "rollbackWindow: 200h0m0s", "backup retention must cover the rollbackWindow"},
 		{"backup destination with userinfo", "application.yaml", "destination: file:///var/lib/provision/backups/lab/postgresql", "destination: ssh://backup-user:super-secret@backup.local/provision/lab/postgresql", "bounded backup policy"},
 		{"backup destination with query", "application.yaml", "destination: file:///var/lib/provision/backups/lab/postgresql", "destination: file:///var/lib/provision/backups/lab/postgresql?token=super-secret", "bounded backup policy"},
+		{"ssh backup without transport fields", "application.yaml", "destination: file:///var/lib/provision/backups/lab/postgresql", "destination: ssh://backup.local/provision/lab/postgresql", "sshUser, a SHA256"},
+		{"file backup with transport fields", "application.yaml", "destination: file:///var/lib/provision/backups/lab/postgresql", "destination: file:///var/lib/provision/backups/lab/postgresql\n        sshUser: backup", "only allowed for ssh://"},
 		{"in-place restore", "application.yaml", "restoreVerification: isolated-generation", "restoreVerification: in-place", "restore-verified recovery policy"},
 		{"host loss requires off host", "application.yaml", "hostLoss: not-declared", "hostLoss: off-host-backup-required", "off-host backup destination"},
 		{"resolved credential", "environment.yaml", "secret://lab/postgresql-url", "postgres://user:super-secret@127.0.0.1/app", "Database credential Secret Reference"},
@@ -408,7 +410,7 @@ func TestDatabaseHostLossRecoveryAcceptsBoundedOffHostBackupDestination(t *testi
 	if err != nil {
 		t.Fatal(err)
 	}
-	changed := strings.Replace(string(data), "destination: file:///var/lib/provision/backups/lab/postgresql", "destination: ssh://backup.local/provision/lab/postgresql", 1)
+	changed := strings.Replace(string(data), "destination: file:///var/lib/provision/backups/lab/postgresql", "destination: ssh://backup.local/provision/lab/postgresql\n        sshUser: backup\n        hostKey: SHA256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\n        credentialReference: secret://lab/backup-ssh-key", 1)
 	changed = strings.Replace(changed, "hostLoss: not-declared", "hostLoss: off-host-backup-required", 1)
 	if changed == string(data) {
 		t.Fatal("test substitution did not match")

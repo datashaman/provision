@@ -332,7 +332,15 @@ func resolvedValuesForOperation(plan planner.Plan, operationID string, available
 		if !ok || value == "" {
 			return nil, fmt.Errorf("resolved value is required for Database Secret Reference %s", reference)
 		}
-		return map[string]string{reference: value}, nil
+		values := map[string]string{reference: value}
+		if backup := planned.Input.Database.Backup; backup.CredentialReference != "" && (planned.Kind == planner.BackupDatabase || planned.Kind == planner.VerifyDatabaseRestore) {
+			key, ok := available[backup.CredentialReference]
+			if !ok || key == "" {
+				return nil, fmt.Errorf("resolved value is required for backup Secret Reference %s", backup.CredentialReference)
+			}
+			values[backup.CredentialReference] = key
+		}
+		return values, nil
 	}
 	return nil, errors.New("operation is not present in the Plan")
 }

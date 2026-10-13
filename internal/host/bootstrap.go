@@ -156,11 +156,18 @@ type DatabaseBackupObservation struct {
 	AchievedRecoveryPoint string `json:"achievedRecoveryPoint"`
 	Format                string `json:"format"`
 	OutsideGeneration     bool   `json:"outsideGeneration"`
+	// Set only for off-host-ssh destinations.
+	ArtifactDigest     string `json:"artifactDigest,omitempty"`
+	DestinationHost    string `json:"destinationHost,omitempty"`
+	HostKeyFingerprint string `json:"hostKeyFingerprint,omitempty"`
 }
 
 type DatabaseRestoreObservation struct {
 	SchemaVersion       string                   `json:"schemaVersion"`
 	BackupID            string                   `json:"backupId"`
+	ArtifactDigest      string                   `json:"artifactDigest,omitempty"`
+	DestinationHost     string                   `json:"destinationHost,omitempty"`
+	HostKeyFingerprint  string                   `json:"hostKeyFingerprint,omitempty"`
 	CandidateGeneration DatabaseGenerationStatus `json:"candidateGeneration"`
 	Isolated            bool                     `json:"isolated"`
 	Verified            bool                     `json:"verified"`

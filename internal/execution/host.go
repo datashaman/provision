@@ -7,7 +7,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/url"
 	"os/exec"
+	"regexp"
 	"strings"
 	"time"
 
@@ -15,6 +17,16 @@ import (
 	"provision/internal/operation"
 	"provision/internal/planner"
 )
+
+func destinationHost(destination string) string {
+	parsed, err := url.Parse(destination)
+	if err != nil {
+		return ""
+	}
+	return parsed.Host
+}
+
+var sha256Digest = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
 
 func artifactHandlerObservation(observed host.ArtifactObservation) (HandlerObservation, error) {
 	evidence, err := json.Marshal(observed)
@@ -223,9 +235,15 @@ func verifyDatabaseTransitionSuccess(planned planner.Operation, observed host.Da
 		if observed.TransitionPhase != "backupDatabase" || observed.Backup == nil || observed.Backup.SchemaVersion != "provision.dev/database-backup/v1alpha1" || observed.Backup.SourceGeneration != expectedDatabaseBackupSourceGeneration(input) || observed.Backup.DestinationReference != input.Backup.Destination || !observed.Backup.OutsideGeneration || !databaseRecoveryPointFresh(observed.Backup.AchievedRecoveryPoint, input.Recovery.PointObjective) {
 			return errors.New("host Database backup success lacks exact backup evidence")
 		}
+		if observed.Backup.DestinationClass == "off-host-ssh" && (!sha256Digest.MatchString(observed.Backup.ArtifactDigest) || observed.Backup.DestinationHost != destinationHost(input.Backup.Destination) || observed.Backup.HostKeyFingerprint == "" || observed.Backup.HostKeyFingerprint != input.Backup.HostKey) {
+			return errors.New("host Database off-host backup success lacks artifact digest or the pinned destination host identity")
+		}
 	case planner.VerifyDatabaseRestore:
 		if observed.TransitionPhase != "verifyDatabaseRestore" || observed.Restore == nil || observed.Restore.SchemaVersion != "provision.dev/database-restore-verification/v1alpha1" || observed.Restore.BackupID == "" || !observed.Restore.Isolated || !observed.Restore.Verified || !databaseGenerationStatusMetadataMatches(observed.Restore.CandidateGeneration, observed.Database) || !databaseRestoreCandidateObservationMatches(observed.Restore.CandidateGeneration, input) {
 			return errors.New("host Database restore success lacks isolated restore evidence")
+		}
+		if input.Backup.CredentialReference != "" && (!sha256Digest.MatchString(observed.Restore.ArtifactDigest) || observed.Restore.DestinationHost != destinationHost(input.Backup.Destination) || observed.Restore.HostKeyFingerprint != input.Backup.HostKey) {
+			return errors.New("host Database off-host restore success lacks artifact digest or destination host identity")
 		}
 		if input.Observed.Active != nil && len(input.Binding.DeterministicRecordIDs) > 0 && !databaseBindingRecordsMatch(input.Binding, observed.Records) {
 			return errors.New("host Database restore verification lacks deterministic workload record evidence")

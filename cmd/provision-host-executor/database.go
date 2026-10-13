@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"provision/internal/authority"
+	"provision/internal/config"
 	"provision/internal/host"
 	"provision/internal/planner"
 	"provision/internal/rollbackwindow"
@@ -445,6 +446,9 @@ func validateDatabaseOperation(planned planner.Operation, record bootstrapRecord
 	}
 	if input.Backup.Mode != "required" || input.Backup.Destination == "" || input.Recovery.RestoreVerification != "isolated-generation" || input.Recovery.HostLoss != "not-declared" && input.Recovery.HostLoss != "off-host-backup-required" {
 		return errors.New("Database safety policy does not require backups and isolated restore verification")
+	}
+	if err := config.ValidateBackupTransport(input.Backup); err != nil {
+		return err
 	}
 	if input.Recovery.HostLoss == "off-host-backup-required" && databaseBackupDestinationClass(input.Backup.Destination) != "off-host-ssh" {
 		return errors.New("Database host-loss recovery requires an off-host backup destination")
@@ -908,24 +912,7 @@ func readDatabaseRetentionEvidence(path, planID, operationID, operationDigest st
 }
 
 func databaseBackupDestinationClass(destination string) string {
-	parsed, err := url.Parse(destination)
-	if err != nil || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" || parsed.Path == "" {
-		return ""
-	}
-	switch parsed.Scheme {
-	case "file":
-		if parsed.Host != "" || !strings.HasPrefix(destination, "file:///") {
-			return ""
-		}
-		return "host-filesystem"
-	case "ssh":
-		if parsed.Hostname() == "" {
-			return ""
-		}
-		return "off-host-ssh"
-	default:
-		return ""
-	}
+	return config.DatabaseBackupDestinationClass(destination)
 }
 
 func databaseBackupRoot(input planner.DatabaseOperationInput) (string, error) {
@@ -999,6 +986,14 @@ func readDatabaseBackupEvidence(input planner.DatabaseOperationInput, planID, op
 	if err != nil {
 		return host.DatabaseBackupObservation{}, false
 	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return host.DatabaseBackupObservation{}, false
+	}
+	return parseDatabaseBackupEvidence(data, input, planID, operationID, operationDigest)
+}
+
+func parseDatabaseBackupEvidence(data []byte, input planner.DatabaseOperationInput, planID, operationID, operationDigest string) (host.DatabaseBackupObservation, bool) {
 	var record struct {
 		SchemaVersion   string                         `json:"schemaVersion"`
 		PlanID          string                         `json:"planId"`
@@ -1007,8 +1002,7 @@ func readDatabaseBackupEvidence(input planner.DatabaseOperationInput, planID, op
 		LogicalID       string                         `json:"logicalId"`
 		Backup          host.DatabaseBackupObservation `json:"backup"`
 	}
-	data, err := os.ReadFile(path)
-	if err != nil || json.Unmarshal(data, &record) != nil {
+	if json.Unmarshal(data, &record) != nil {
 		return host.DatabaseBackupObservation{}, false
 	}
 	if record.SchemaVersion != databaseBackupSchema || record.PlanID != planID || record.OperationID != operationID || record.OperationDigest != operationDigest || record.LogicalID != input.LogicalID || record.Backup.SourceGeneration != expectedDatabaseBackupSourceGeneration(input) || !record.Backup.OutsideGeneration {
@@ -1263,24 +1257,29 @@ func applyDatabaseBackup(ctx context.Context, input planner.DatabaseOperationInp
 		return encoded, errors.New("Database backup requires an exact active managed generation")
 	}
 	if backup, ok := readDatabaseBackupEvidence(input, claim.PlanID, claim.OperationID, claim.OperationDigest); ok {
-		observed.Backup = &backup
-		observed.Status = "verified"
-		observed.Verified = true
-		source.Ready = true
-		source.Connectivity = true
-		source.Health = "healthy"
-		if len(source.SupportedGuarantees) == 0 {
-			source.SupportedGuarantees = databaseSupportedGuarantees()
+		return verifiedDatabaseBackupObservation(observed, source, input, backup)
+	}
+	if databaseBackupDestinationClass(input.Backup.Destination) == "off-host-ssh" {
+		if len(sensitiveValues) != 2 {
+			return nil, errors.New("off-host Database backup requires exactly the Database and backup Secret References")
 		}
-		if len(source.OwnedResources) == 0 {
-			source.OwnedResources = databaseOwnedResources(postgresqlPackagingRecord{
-				LogicalID: source.LogicalID, GenerationID: source.ID, ServiceUnit: source.ServiceUnit, Container: source.Container, Account: source.Account,
-				DataPath: source.DataPath, QuadletPath: source.QuadletPath, Database: source.Database, CredentialReference: input.CredentialReference,
-			})
+		exportDump := func(ctx context.Context) ([]byte, error) {
+			containerURL, err := containerPostgreSQLURL(secret)
+			if err != nil {
+				return nil, err
+			}
+			dump, err := runAsEnvironment(ctx, record, "podman", "exec", source.Container, "pg_dump", containerURL, "-Fc", "--no-owner", "--no-privileges")
+			if err != nil {
+				return nil, errors.New("export PostgreSQL custom-format backup from active generation")
+			}
+			return dump, nil
 		}
-		observed.Database = source
-		encoded, err := json.Marshal(observed)
-		return encoded, err
+		backup, err := applyOffHostDatabaseBackup(ctx, input, claim, source, sensitiveValues[input.Backup.CredentialReference], exportDump)
+		if err != nil {
+			encoded, _ := json.Marshal(observed)
+			return encoded, err
+		}
+		return verifiedDatabaseBackupObservation(observed, source, input, backup)
 	}
 	root, err := databaseBackupRoot(input)
 	if err != nil {
@@ -1337,6 +1336,10 @@ func applyDatabaseBackup(ctx context.Context, input planner.DatabaseOperationInp
 	if err := writeJSONAtomic(evidencePath, recordData, 0440); err != nil {
 		return nil, errors.New("record PostgreSQL backup evidence")
 	}
+	return verifiedDatabaseBackupObservation(observed, source, input, backup)
+}
+
+func verifiedDatabaseBackupObservation(observed host.DatabaseOperationObservation, source host.DatabaseGenerationStatus, input planner.DatabaseOperationInput, backup host.DatabaseBackupObservation) (json.RawMessage, error) {
 	observed.Backup = &backup
 	observed.Status = "verified"
 	observed.Verified = true
@@ -1353,11 +1356,7 @@ func applyDatabaseBackup(ctx context.Context, input planner.DatabaseOperationInp
 		})
 	}
 	observed.Database = source
-	encoded, encodeErr := json.Marshal(observed)
-	if encodeErr != nil {
-		return nil, encodeErr
-	}
-	return encoded, nil
+	return json.Marshal(observed)
 }
 
 func databaseOperationInputForObservedStatus(input planner.DatabaseOperationInput, status host.DatabaseGenerationStatus) planner.DatabaseOperationInput {
@@ -1398,21 +1397,40 @@ func applyDatabaseRestoreVerification(ctx context.Context, planned planner.Opera
 		encoded, _ := json.Marshal(observed)
 		return encoded, errors.New("Database restore verification requires exactly one backup dependency")
 	}
-	backupRoot, err := databaseBackupRoot(input)
-	if err != nil {
-		encoded, _ := json.Marshal(observed)
-		return encoded, err
-	}
 	backupID := stableFilePart(claim.PlanID) + "-" + planned.DependsOn[0]
-	backupPath := filepath.Join(backupRoot, input.LogicalID, backupID+".dump")
-	if _, err := os.Stat(backupPath); err != nil {
-		encoded, _ := json.Marshal(observed)
-		return encoded, errors.New("Database restore verification requires backup evidence")
-	}
+	var backupPath string
+	var fetched *fetchedOffHostBackup
 	candidate := databaseRestoreCandidateOperationInput(input)
 	uid, gid := accountUID(record.Account), accountGID(record.Account)
 	if uid <= 0 || gid <= 0 {
 		return nil, errors.New("Environment account identity is unavailable")
+	}
+	if databaseBackupDestinationClass(input.Backup.Destination) == "off-host-ssh" {
+		if len(sensitiveValues) != 2 {
+			return nil, errors.New("off-host Database restore verification requires exactly the Database and backup Secret References")
+		}
+		scratchParent := filepath.Dir(filepath.Dir(candidate.DataPath))
+		if err := ensureDirectory(scratchParent, 0755, 0, 0); err != nil {
+			return nil, err
+		}
+		fetched, err = fetchOffHostBackup(ctx, input, claim, planned.DependsOn[0], sensitiveValues[input.Backup.CredentialReference], scratchParent, uid, gid)
+		if err != nil {
+			encoded, _ := json.Marshal(observed)
+			return encoded, err
+		}
+		defer fetched.cleanup()
+		backupPath = fetched.path
+	} else {
+		backupRoot, err := databaseBackupRoot(input)
+		if err != nil {
+			encoded, _ := json.Marshal(observed)
+			return encoded, err
+		}
+		backupPath = filepath.Join(backupRoot, input.LogicalID, backupID+".dump")
+		if _, err := os.Stat(backupPath); err != nil {
+			encoded, _ := json.Marshal(observed)
+			return encoded, errors.New("Database restore verification requires backup evidence")
+		}
 	}
 	serviceRoot := filepath.Dir(filepath.Dir(filepath.Dir(input.DataPath)))
 	for _, directory := range []string{filepath.Dir(filepath.Dir(candidate.DataPath)), filepath.Dir(candidate.DataPath)} {
@@ -1481,6 +1499,9 @@ func applyDatabaseRestoreVerification(ctx context.Context, planned planner.Opera
 		CandidateGeneration: verified.Database,
 		Isolated:            true,
 		Verified:            true,
+	}
+	if fetched != nil {
+		restore.ArtifactDigest, restore.DestinationHost, restore.HostKeyFingerprint = fetched.digest, fetched.host, fetched.fingerprint
 	}
 	recordData := map[string]any{
 		"schemaVersion": databaseRestoreSchema,
@@ -2105,6 +2126,9 @@ func observeManagedDatabase(ctx context.Context, input planner.DatabaseOperation
 }
 
 func databaseFailureCategory(reason string) string {
+	if category, _, ok := strings.Cut(reason, ": "); ok && strings.HasPrefix(category, "backup-destination-") {
+		return category
+	}
 	switch {
 	case strings.Contains(reason, "Secret Reference"), strings.Contains(reason, "credential"):
 		return "credential"

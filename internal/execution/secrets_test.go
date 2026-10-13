@@ -3,7 +3,10 @@ package execution
 import (
 	"strings"
 	"testing"
+	"time"
 
+	"provision/internal/config"
+	"provision/internal/host"
 	"provision/internal/planner"
 )
 
@@ -40,5 +43,51 @@ func TestResolvedKeyValueSecretIsSelectedOnlyForTheTypedOperation(t *testing.T) 
 	}
 	if _, err := resolvedValuesForOperation(plan, "op-01", nil); err == nil || strings.Contains(err.Error(), "valkey://") {
 		t.Fatalf("missing secret accepted or disclosed: %v", err)
+	}
+}
+
+func TestOffHostBackupKeyReachesOnlyBackupAndRestoreOperations(t *testing.T) {
+	database := &planner.DatabaseOperationInput{CredentialReference: "secret://lab/postgresql-url", Backup: config.DatabaseBackupPolicy{CredentialReference: "secret://lab/backup-ssh-key"}}
+	plan := planner.Plan{Operations: []planner.Operation{
+		{ID: "op-01", Kind: planner.PrepareDatabase, Input: planner.OperationInput{Database: database}},
+		{ID: "op-02", Kind: planner.BackupDatabase, Input: planner.OperationInput{Database: database}},
+		{ID: "op-03", Kind: planner.VerifyDatabaseRestore, Input: planner.OperationInput{Database: database}},
+	}}
+	available := map[string]string{"secret://lab/postgresql-url": "db", "secret://lab/backup-ssh-key": "key"}
+	for id, want := range map[string]int{"op-01": 1, "op-02": 2, "op-03": 2} {
+		selected, err := resolvedValuesForOperation(plan, id, available)
+		if err != nil || len(selected) != want {
+			t.Fatalf("%s selected %v, %v; want %d values", id, selected, err, want)
+		}
+	}
+	if _, err := resolvedValuesForOperation(plan, "op-02", map[string]string{"secret://lab/postgresql-url": "db"}); err == nil {
+		t.Fatal("backup without its resolved key was accepted")
+	}
+}
+
+func TestOffHostBackupSuccessRequiresDigestAndPinnedHostIdentity(t *testing.T) {
+	pin := "SHA256:" + strings.Repeat("A", 43)
+	input := &planner.DatabaseOperationInput{Backup: config.DatabaseBackupPolicy{Destination: "ssh://backup.example/b", HostKey: pin, CredentialReference: "secret://lab/k"}, Recovery: config.DatabaseRecoveryPolicy{PointObjective: "1h0m0s"}}
+	planned := planner.Operation{Kind: planner.BackupDatabase, Input: planner.OperationInput{Database: input}}
+	observed := host.DatabaseOperationObservation{TransitionPhase: "backupDatabase", Backup: &host.DatabaseBackupObservation{
+		SchemaVersion: "provision.dev/database-backup/v1alpha1", DestinationClass: "off-host-ssh", DestinationReference: input.Backup.Destination, OutsideGeneration: true,
+		AchievedRecoveryPoint: time.Now().UTC().Format(time.RFC3339Nano), ArtifactDigest: "sha256:" + strings.Repeat("a", 64), DestinationHost: "backup.example", HostKeyFingerprint: pin,
+	}}
+	if err := verifyDatabaseTransitionSuccess(planned, observed); err != nil {
+		t.Fatalf("complete off-host evidence rejected: %v", err)
+	}
+	for name, mutate := range map[string]func(*host.DatabaseBackupObservation){
+		"no digest":      func(b *host.DatabaseBackupObservation) { b.ArtifactDigest = "" },
+		"no host":        func(b *host.DatabaseBackupObservation) { b.DestinationHost = "" },
+		"other host key": func(b *host.DatabaseBackupObservation) { b.HostKeyFingerprint = "SHA256:" + strings.Repeat("B", 43) },
+		"no host key":    func(b *host.DatabaseBackupObservation) { b.HostKeyFingerprint = "" },
+	} {
+		tampered := observed
+		backup := *observed.Backup
+		mutate(&backup)
+		tampered.Backup = &backup
+		if verifyDatabaseTransitionSuccess(planned, tampered) == nil {
+			t.Fatalf("%s accepted", name)
+		}
 	}
 }

@@ -8,7 +8,7 @@ The product model is agreed. The following technical-architecture questions rema
 - What is the smallest safe, repeatable way to prepare a supplied host? Ansible is an unproven candidate, not a dependency or committed implementation. Compare it against direct typed host operations on a disposable target; adopt it only if it demonstrably improves the workflow without weakening Plan authorization, idempotence, recovery, or auditability. It may be discarded entirely.
 - Whether mise is supported as an optional exact-version native-host runtime, in addition to developer and isolated-build tooling, and how its versions enter Plan evidence?
 - Detailed host router behavior for HTTP and WebSocket draining, rollback, reconnect signalling, and deadline enforcement?
-- Detailed store cutover algorithms for PostgreSQL, Valkey, filesystem objects, RDS, ElastiCache, and S3, including failure injection?
+- Detailed store cutover algorithms for filesystem objects, RDS, ElastiCache, and S3, including failure injection? (PostgreSQL and host-local Valkey are answered for the authoritative role; see ADR 0074 and ADR 0077.)
 - Queue migration protocol details for RabbitMQ and SQS, including producer fencing, transfer verification, and proof of any declared ordering guarantee?
 - Whether any Lambda-oriented WebSocket implementation can pin connections to handler generations and satisfy required blue-green?
 - Detailed AWS capability checks and unsupported combinations, including regional service features and quotas?

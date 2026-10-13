@@ -175,6 +175,7 @@ PY
   }
   check_untouched candidate-failed
   ! execute transition "${ops[3]}" || fail "authority switch ran although the candidate never synchronized"
+  assert_contains "$work_dir/transition/${ops[3]}.err" "operation dependency ${ops[2]} has no recorded outcome"
   check_untouched candidate-failed-after-switch-attempt
   echo "candidate-failure boundary proved"
 else
@@ -196,6 +197,6 @@ else
   echo "forward-only boundary proved: the retained generation lacks the acknowledged post-cutover write"
 fi
 password="$(sed -E 's#^valkey://[^:]+:([^@]+)@.*#\1#' "$secret_file" | tr -d '\n')"
-[[ -n "$password" ]]
+[[ -n "$password" ]] || fail "could not derive the secret to scan for"
 if grep -R --binary-files=without-match -F "$password" "$work_dir" >/dev/null 2>&1; then fail "resolved Valkey secret appeared in evidence"; fi
 echo "evidence: $work_dir"

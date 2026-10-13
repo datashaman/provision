@@ -366,3 +366,13 @@ func TestKeyValueReplanOfExactActiveGenerationStaysASinglePrepare(t *testing.T) 
 		t.Fatalf("re-plan of the active generation is not an idempotent prepare: %+v", preview.Plan)
 	}
 }
+
+func TestBackupTransportConditionsPinHostKeyOnlyForOffHostDestinations(t *testing.T) {
+	if got := backupTransportConditions(config.DatabaseBackupPolicy{Destination: "file:///var/backups"}); got != nil {
+		t.Fatalf("file:// destination gained transport conditions: %v", got)
+	}
+	got := backupTransportConditions(config.DatabaseBackupPolicy{Destination: "ssh://b/x", HostKey: "SHA256:pin", CredentialReference: "secret://lab/k"})
+	if len(got) != 2 || got[0].Expected != "SHA256:pin" || got[1].Subject != "secret://lab/k" {
+		t.Fatalf("conditions = %v", got)
+	}
+}

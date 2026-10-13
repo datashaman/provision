@@ -126,7 +126,7 @@ func Evaluate(compiled config.Compiled, observation host.BootstrapStatus, target
 		reasons = append(reasons, "SSH host key identity is not observed")
 	}
 	if !HostBackupDestinationExecutable(component.Database.Backup.Destination) {
-		reasons = append(reasons, "host renderer cannot execute off-host Database backup destinations yet")
+		reasons = append(reasons, "host renderer cannot execute this Database backup destination")
 	}
 	database := observation.Database
 	if database == nil {
@@ -248,11 +248,15 @@ func Plan(compiled config.Compiled, observation host.BootstrapStatus) PlanningOu
 		Consequences: databaseConsequences(compiled, component, capability, observation.Database.Deployment),
 		Observed:     observation.Database.Deployment,
 	}
-	return PlanningOutput{SensitiveValueReferences: []string{implementation.Credential}, Database: input, Candidate: databaseCandidateInput(input)}
+	references := []string{implementation.Credential}
+	if input.Backup.CredentialReference != "" {
+		references = append(references, input.Backup.CredentialReference)
+	}
+	return PlanningOutput{SensitiveValueReferences: references, Database: input, Candidate: databaseCandidateInput(input)}
 }
 
 func HostBackupDestinationExecutable(destination string) bool {
-	return strings.HasPrefix(destination, "file:///")
+	return strings.HasPrefix(destination, "file:///") || strings.HasPrefix(destination, "ssh://")
 }
 
 func databaseRestoreCandidateInput(capability host.DatabaseCapabilities) planmodel.DatabaseRestoreCandidateInput {

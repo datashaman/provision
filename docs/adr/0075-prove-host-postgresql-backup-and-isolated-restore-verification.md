@@ -22,8 +22,9 @@ Qualify a narrow Host PostgreSQL backup and restore-verification contract:
   host-loss recovery is `not-declared`;
 - declaring `hostLoss: off-host-backup-required` with a same-host `file://`
   destination fails validation;
-- `ssh://` destinations are recognized as off-host contract shape, but the
-  Host renderer does not execute that transfer yet;
+- `ssh://` destinations are recognized as off-host contract shape; execution
+  is specified in [ADR 0078](0078-execute-off-host-ssh-database-backup.md)
+  (unqualified until its live proof passes);
 - initial and already-authoritative Database Plans run `backupDatabase` and
   `verifyDatabaseRestore` against the active generation;
 - Store Transition Plans run `backupDatabase` and `verifyDatabaseRestore`
@@ -46,5 +47,5 @@ Destructive in-place restore remains unavailable.
 - Plans for otherwise unchanged Databases may still contain backup and restore
   verification operations. That is intentional maintenance work, not an
   application rollout.
-- Later work must add executable `ssh://` transfer evidence or provider-native
-  backup support before claiming Host-loss recovery.
+- Executable `ssh://` transfer evidence is added by ADR 0078; Host-loss
+  recovery is not claimed until its live proof passes.

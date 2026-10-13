@@ -10,6 +10,7 @@ import (
 	"io"
 	"net/url"
 	"os"
+	"path"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -95,6 +96,10 @@ type DatabaseBackupPolicy struct {
 	Frequency   string `yaml:"frequency" json:"frequency"`
 	Retention   string `yaml:"retention" json:"retention"`
 	Destination string `yaml:"destination" json:"destination"`
+	// SSHUser, HostKey (a SHA256:... fingerprint pin) and CredentialReference (private key Secret Reference) are required for ssh:// destinations and forbidden for file://.
+	SSHUser             string `yaml:"sshUser,omitempty" json:"sshUser,omitempty"`
+	HostKey             string `yaml:"hostKey,omitempty" json:"hostKey,omitempty"`
+	CredentialReference string `yaml:"credentialReference,omitempty" json:"credentialReference,omitempty"`
 }
 
 type DatabaseRecoveryPolicy struct {
@@ -1139,13 +1144,16 @@ func validateDatabaseContract(name string, component Component, rollbackWindow r
 	if contract.TransitionCleanupPolicy != "retain-previous-generation" {
 		return fmt.Errorf("Database %q requires previous Store Generation retention policy", name)
 	}
-	if contract.Backup.Mode != "required" || validateCanonicalDuration(contract.Backup.Frequency, time.Minute, 24*time.Hour) != nil || validateCanonicalDuration(contract.Backup.Retention, time.Hour, 24*30*time.Hour) != nil || databaseBackupDestinationClass(contract.Backup.Destination) == "" {
+	if contract.Backup.Mode != "required" || validateCanonicalDuration(contract.Backup.Frequency, time.Minute, 24*time.Hour) != nil || validateCanonicalDuration(contract.Backup.Retention, time.Hour, 24*30*time.Hour) != nil || DatabaseBackupDestinationClass(contract.Backup.Destination) == "" {
 		return fmt.Errorf("Database %q requires a bounded backup policy", name)
+	}
+	if err := ValidateBackupTransport(contract.Backup); err != nil {
+		return fmt.Errorf("Database %q %w", name, err)
 	}
 	if validateCanonicalDuration(contract.Recovery.PointObjective, time.Minute, 24*time.Hour) != nil || validateCanonicalDuration(contract.Recovery.TimeObjective, time.Minute, 24*time.Hour) != nil || contract.Recovery.RestoreVerification != "isolated-generation" || contract.Recovery.HostLoss != "not-declared" && contract.Recovery.HostLoss != "off-host-backup-required" {
 		return fmt.Errorf("Database %q requires an explicit restore-verified recovery policy", name)
 	}
-	if contract.Recovery.HostLoss == "off-host-backup-required" && databaseBackupDestinationClass(contract.Backup.Destination) != "off-host-ssh" {
+	if contract.Recovery.HostLoss == "off-host-backup-required" && DatabaseBackupDestinationClass(contract.Backup.Destination) != "off-host-ssh" {
 		return fmt.Errorf("Database %q declares host-loss recovery and requires an off-host backup destination", name)
 	}
 	backupFrequency, _ := time.ParseDuration(contract.Backup.Frequency)
@@ -1161,7 +1169,29 @@ func validateDatabaseContract(name string, component Component, rollbackWindow r
 	return nil
 }
 
-func databaseBackupDestinationClass(destination string) string {
+var (
+	backupSSHUser    = regexp.MustCompile(`^[a-z_][a-z0-9_-]{0,31}$`)
+	backupHostKeyPin = regexp.MustCompile(`^SHA256:[A-Za-z0-9+/]{43}$`)
+	backupSSHPath    = regexp.MustCompile(`^/[A-Za-z0-9._/-]+$`)
+	backupSSHHost    = regexp.MustCompile(`^[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?$`)
+)
+
+// ValidateBackupTransport enforces the ssh:// transport fields: all three required, none allowed for file://.
+func ValidateBackupTransport(backup DatabaseBackupPolicy) error {
+	declared := backup.SSHUser != "" || backup.HostKey != "" || backup.CredentialReference != ""
+	if DatabaseBackupDestinationClass(backup.Destination) != "off-host-ssh" {
+		if declared {
+			return errors.New("backup sshUser, hostKey and credentialReference are only allowed for ssh:// destinations")
+		}
+		return nil
+	}
+	if !backupSSHUser.MatchString(backup.SSHUser) || !backupHostKeyPin.MatchString(backup.HostKey) || !strings.HasPrefix(backup.CredentialReference, "secret://") {
+		return errors.New("ssh:// backup requires sshUser, a SHA256:... hostKey pin and a secret:// credentialReference")
+	}
+	return nil
+}
+
+func DatabaseBackupDestinationClass(destination string) string {
 	parsed, err := url.Parse(destination)
 	if err != nil || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" || parsed.Path == "" {
 		return ""
@@ -1173,7 +1203,7 @@ func databaseBackupDestinationClass(destination string) string {
 		}
 		return "host-filesystem"
 	case "ssh":
-		if parsed.Hostname() == "" {
+		if !backupSSHHost.MatchString(parsed.Hostname()) || !backupSSHPath.MatchString(parsed.Path) || path.Clean(parsed.Path) != parsed.Path {
 			return ""
 		}
 		return "off-host-ssh"

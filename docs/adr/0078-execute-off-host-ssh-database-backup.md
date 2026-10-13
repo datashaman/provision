@@ -50,9 +50,12 @@ destination:
 - Host-loss declarations are executable, but the recovery point of an adopted
   upload is the dump's mtime, which trails the true backup start by the upload
   duration.
-- The live acceptance-VM proof (direct-local and strict-SSH, second host as
-  destination) is tracked separately; until it passes the support row is
-  **unqualified**.
+- The live acceptance-VM proof (#94) passed for success, destination unreachable
+  and host-key mismatch over direct-local and strict SSH against a second Incus
+  VM on the same Incus host; the support row is qualified for only that
+  combination. It also found that the executor rejected the second resolved
+  Secret Reference (the backup key) on `backupDatabase` and
+  `verifyDatabaseRestore`; the validator now accepts exactly the declared pair.
 - Adopting a final-name upload and the restore digest check trust the destination's own digest; there is no independent anchor beyond the pinned host identity.
 - The dump is buffered in memory during upload; very large Databases need streaming first.
 - Host-key rotation requires a new pin in config and therefore a new Plan.

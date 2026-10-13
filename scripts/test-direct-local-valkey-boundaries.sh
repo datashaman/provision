@@ -43,7 +43,8 @@ sudo -n true
 
 mkdir -m 0700 "$work_dir"
 work_dir="$(cd "$work_dir" && pwd)"
-abs() { echo "$(cd "$(dirname "$1")" && pwd)/$(basename "$1")"; }
+# shellcheck source=lib/matrix-helpers.sh
+source "$script_dir/lib/matrix-helpers.sh"
 provision="$(abs "$provision")"; signing_key="$(abs "$signing_key")"; secret_file="$(abs "$secret_file")"
 state="$work_dir/state.db"
 secret_reference="secret://lab/valkey-url"
@@ -53,28 +54,12 @@ config_dir="$work_dir/config"
 mkdir -m 0700 "$config_dir"
 
 fail() { echo "Valkey boundaries ($scenario): $*" >&2; exit 1; }
-# shellcheck source=lib/matrix-helpers.sh
-source "$script_dir/lib/matrix-helpers.sh"
-
-preview_and_approve() {
-  local name="$1" directory="$work_dir/$1"
-  mkdir -m 0700 "$directory"
-  "$provision" config validate --file "$config_dir/root.yaml" >"$directory/validation.json"
-  "$provision" plan preview --file "$config_dir/root.yaml" --state "$state" >"$directory/plan.json"
-  plan_id="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["id"])' "$directory/plan.json")"
-  [[ "$plan_id" =~ ^sha256:[0-9a-f]{64}$ ]] || fail "invalid Plan identity for $name"
-  "$provision" plan approve --file "$config_dir/root.yaml" --plan "$plan_id" --actor "$operator" --state "$state" --expires-after 2h >"$directory/approval.json"
-  json_assert "$directory/approval.json" eligible true
-}
 
 execute() {
   "$provision" deployment execute --plan "$plan_id" --operation "$2" --state "$state" --signing-key "$signing_key" \
     --secret-file "$secret_reference=$secret_file" --lease-duration 2m >"$work_dir/$1/$2.json" 2>"$work_dir/$1/$2.err"
 }
 execute_success() { execute "$1" "$2" || fail "$2 did not succeed: $(cat "$work_dir/$1/$2.err")"; json_assert "$work_dir/$1/$2.json" outcome '"succeeded"'; }
-write_status() { "$provision" deployment status --plan "$plan_id" --state "$state" >"$work_dir/$1/$2-status.json"; }
-plan_generation() { python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["keyValue"]["generationId"])' "$1"; }
-
 env_run() (
   local uid
   uid="$(id -u provision-lab)"
@@ -99,22 +84,6 @@ assert_keys() {
     count=$((count + 1))
   done < <(python3 -c 'import json,sys; print("\n".join(json.load(open(sys.argv[1]))["keyValue"]["binding"]["keys"]))' "$plan")
   [[ $count -gt 0 ]] || fail "$label plan declares no deterministic keys"
-}
-
-set_environment_version() {
-  python3 - "$config_dir/environment.yaml" "$1" <<'PY'
-from pathlib import Path
-import sys
-path, version = Path(sys.argv[1]), sys.argv[2]
-out = []
-for line in path.read_text(encoding="utf-8").splitlines():
-    if line.strip().startswith("version:"):
-        continue
-    out.append(line)
-    if line.strip() == "credential: secret://lab/valkey-url":
-        out.append(line[: len(line) - len(line.lstrip())] + f'version: "{version}"')
-path.write_text("\n".join(out) + "\n", encoding="utf-8")
-PY
 }
 
 cp "$repo_root/examples/host-key-value/"{application,revision,root}.yaml "$config_dir/"

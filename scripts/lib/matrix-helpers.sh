@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
-# Assertion helpers for the Valkey direct-local failure matrix. Callers define fail().
+# Shared helpers for the Valkey direct-local scripts. Callers define fail(), provision, state, work_dir,
+# config_dir, operator, signing_key and plan_id before use.
+# shellcheck disable=SC2154 # those variables are supplied by the sourcing script
 assert_contains() { grep -Fq "$2" "$1" || fail "$1 does not contain: $2"; }
 
 json_assert() {
@@ -67,6 +69,39 @@ if not [e for e in events if e["kind"] == "intent" and e.get("observation", {}).
 last = events[-1]
 if last["kind"] != "outcome" or last.get("outcome") != outcome:
     raise SystemExit(f"{path}: resumed {op} latest = {last!r}, expected {outcome}")
+PY
+}
+
+abs() { echo "$(cd "$(dirname "$1")" && pwd)/$(basename "$1")"; }
+
+preview_and_approve() {
+  local name="$1" directory="$work_dir/$1"
+  mkdir -m 0700 "$directory"
+  "$provision" config validate --file "$config_dir/root.yaml" >"$directory/validation.json"
+  "$provision" plan preview --file "$config_dir/root.yaml" --state "$state" >"$directory/plan.json"
+  plan_id="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["id"])' "$directory/plan.json")"
+  [[ "$plan_id" =~ ^sha256:[0-9a-f]{64}$ ]] || fail "invalid Plan identity for $name"
+  "$provision" plan approve --file "$config_dir/root.yaml" --plan "$plan_id" --actor "$operator" --state "$state" --expires-after 2h >"$directory/approval.json"
+  json_assert "$directory/approval.json" eligible true
+}
+
+
+write_status() { "$provision" deployment status --plan "$plan_id" --state "$state" >"$work_dir/$1/$2-status.json"; }
+plan_generation() { python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["keyValue"]["generationId"])' "$1"; }
+
+set_environment_version() {
+  python3 - "$config_dir/environment.yaml" "$1" <<'PY'
+from pathlib import Path
+import sys
+path, version = Path(sys.argv[1]), sys.argv[2]
+out = []
+for line in path.read_text(encoding="utf-8").splitlines():
+    if line.strip().startswith("version:"):
+        continue
+    out.append(line)
+    if line.strip() == "credential: secret://lab/valkey-url":
+        out.append(line[: len(line) - len(line.lstrip())] + f'version: "{version}"')
+path.write_text("\n".join(out) + "\n", encoding="utf-8")
 PY
 }
 

@@ -27,16 +27,15 @@ func (h LocalHostHandler) Observe(ctx context.Context, planID string, planned pl
 	if err != nil {
 		return HandlerObservation{}, err
 	}
-	select {
-	case <-ctx.Done():
-		return HandlerObservation{}, ctx.Err()
-	default:
-	}
-	observed, err := host.ObserveArtifactCache(host.ArtifactCacheRoot, artifact.Digest)
-	if err != nil {
+	if _, err := host.ArtifactCachePath(host.ArtifactCacheRoot, artifact.Digest); err != nil {
 		return HandlerObservation{}, err
 	}
-	return artifactHandlerObservation(observed)
+	command := exec.CommandContext(ctx, "sudo", "-n", host.ExecutorPath, "observe-artifact",
+		"--environment", h.environment,
+		"--operator", h.target.User,
+		"--digest", artifact.Digest,
+	)
+	return observeArtifactCommand(command, "local")
 }
 
 func (LocalHostHandler) ApplyOrResume(ctx context.Context, envelope operation.Envelope) (operation.Result, error) {

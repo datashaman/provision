@@ -43,7 +43,7 @@ source_version="$(git -C "$root" rev-parse HEAD)"
 git -C "$root" diff --quiet HEAD -- || source_version="$source_version-dirty-$(git -C "$root" diff --binary HEAD -- | shasum -a 256 | awk '{print $1}')"
 
 bash -n "$root/scripts/test-direct-local-valkey-transition-host.sh" "$root/scripts/run-direct-local-valkey-transition-matrix.sh"
-[[ -n "${PROVISION_ACCEPTANCE_SKIP_GO_TEST:-}" ]] || go test ./cmd/... ./internal/... >/dev/null
+go test ./cmd/... ./internal/... >/dev/null
 
 [[ ! -e "$local_evidence" ]] || mv "$local_evidence" "$local_evidence.old-$(date -u +%Y%m%dT%H%M%SZ)"
 mkdir -p "$local_evidence"

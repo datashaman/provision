@@ -1,0 +1,91 @@
+{
+  "destination": {
+    "host": "192.168.101.149",
+    "image": "ubuntu resolute 20261012 (Incus VM on base.local)",
+    "instance": "provision-backup-dest",
+    "path": "/srv/provision-backups",
+    "pinnedHostKey": "SHA256:4aNfhV4L/iOg0a0Ci+PuTjPJNYd0Hqs9lqhbyH8chsY",
+    "user": "pgbackup"
+  },
+  "hostTarget": {
+    "architecture": "x86_64",
+    "instance": "provision-acceptance",
+    "os": "ubuntu 26.04",
+    "systemd": "259.5-0ubuntu3.4"
+  },
+  "issue": 94,
+  "provisionSourceVersion": "133e9679a1114cac2cfcb38424ce969ae9a7a817-dirty-ef3917bb2f42653bc93715bac531eb570d058fcebb1f3a51a9d8b9b7ac2ab115",
+  "runs": [
+    {
+      "artifactDigest": "sha256:99fd45f99a28439163dd7ecd0e0d41eb35ba4a403bf45a2eee088ab6f5221814",
+      "backupId": "730933e6c43560bc-op-02",
+      "destinationHost": "192.168.101.149",
+      "destinationObservedSha256": "sha256:99fd45f99a28439163dd7ecd0e0d41eb35ba4a403bf45a2eee088ab6f5221814",
+      "pinnedHostKey": "SHA256:4aNfhV4L/iOg0a0Ci+PuTjPJNYd0Hqs9lqhbyH8chsY",
+      "provisionBinarySha256": "sha256:ffbc3a75f4da557b5547960f0004552c5abfdc00e6beb0a89ab94971ac1ea9e7",
+      "provisionSourceVersion": "133e9679a1114cac2cfcb38424ce969ae9a7a817-dirty-ef3917bb2f42653bc93715bac531eb570d058fcebb1f3a51a9d8b9b7ac2ab115",
+      "result": "passed",
+      "scenario": "success",
+      "schemaVersion": "provision.dev/offhost-ssh-postgresql-observation/v1alpha1",
+      "transport": "direct-local"
+    },
+    {
+      "destinationHost": "192.168.101.149",
+      "failureCategory": "backup-destination-unreachable",
+      "outcome": "failed",
+      "pinnedHostKey": "SHA256:4aNfhV4L/iOg0a0Ci+PuTjPJNYd0Hqs9lqhbyH8chsY",
+      "provisionSourceVersion": "133e9679a1114cac2cfcb38424ce969ae9a7a817-dirty-ef3917bb2f42653bc93715bac531eb570d058fcebb1f3a51a9d8b9b7ac2ab115",
+      "result": "passed",
+      "scenario": "unreachable",
+      "schemaVersion": "provision.dev/offhost-ssh-postgresql-observation/v1alpha1",
+      "transport": "direct-local"
+    },
+    {
+      "destinationHost": "192.168.101.149",
+      "failureCategory": "backup-destination-host-key-mismatch",
+      "outcome": "failed",
+      "pinnedHostKey": "SHA256:4aNfhV4L/iOg0a0Ci+PuTjPJNYd0Hqs9lqhbyH8chsY",
+      "provisionSourceVersion": "133e9679a1114cac2cfcb38424ce969ae9a7a817-dirty-ef3917bb2f42653bc93715bac531eb570d058fcebb1f3a51a9d8b9b7ac2ab115",
+      "result": "passed",
+      "scenario": "host-key-mismatch",
+      "schemaVersion": "provision.dev/offhost-ssh-postgresql-observation/v1alpha1",
+      "transport": "direct-local"
+    },
+    {
+      "artifactDigest": "sha256:e9bd00a44815a4433b0e11ebfff167db806bf79cf26d8a5b2b102499e301a801",
+      "backupId": "c99acd181f997f02-op-02",
+      "destinationHost": "192.168.101.149",
+      "destinationObservedSha256": "sha256:e9bd00a44815a4433b0e11ebfff167db806bf79cf26d8a5b2b102499e301a801",
+      "pinnedHostKey": "SHA256:4aNfhV4L/iOg0a0Ci+PuTjPJNYd0Hqs9lqhbyH8chsY",
+      "provisionBinarySha256": "sha256:4943d2ee163d0fdfddfd81c98a7cf65c3d7e7b4f10d476f8bc2df98292e20132",
+      "provisionSourceVersion": "133e9679a1114cac2cfcb38424ce969ae9a7a817-dirty-ef3917bb2f42653bc93715bac531eb570d058fcebb1f3a51a9d8b9b7ac2ab115",
+      "result": "passed",
+      "scenario": "success",
+      "schemaVersion": "provision.dev/offhost-ssh-postgresql-observation/v1alpha1",
+      "transport": "strict-ssh"
+    },
+    {
+      "destinationHost": "192.168.101.149",
+      "failureCategory": "backup-destination-unreachable",
+      "outcome": "failed",
+      "pinnedHostKey": "SHA256:4aNfhV4L/iOg0a0Ci+PuTjPJNYd0Hqs9lqhbyH8chsY",
+      "provisionSourceVersion": "133e9679a1114cac2cfcb38424ce969ae9a7a817-dirty-ef3917bb2f42653bc93715bac531eb570d058fcebb1f3a51a9d8b9b7ac2ab115",
+      "result": "passed",
+      "scenario": "unreachable",
+      "schemaVersion": "provision.dev/offhost-ssh-postgresql-observation/v1alpha1",
+      "transport": "strict-ssh"
+    },
+    {
+      "destinationHost": "192.168.101.149",
+      "failureCategory": "backup-destination-host-key-mismatch",
+      "outcome": "failed",
+      "pinnedHostKey": "SHA256:4aNfhV4L/iOg0a0Ci+PuTjPJNYd0Hqs9lqhbyH8chsY",
+      "provisionSourceVersion": "133e9679a1114cac2cfcb38424ce969ae9a7a817-dirty-ef3917bb2f42653bc93715bac531eb570d058fcebb1f3a51a9d8b9b7ac2ab115",
+      "result": "passed",
+      "scenario": "host-key-mismatch",
+      "schemaVersion": "provision.dev/offhost-ssh-postgresql-observation/v1alpha1",
+      "transport": "strict-ssh"
+    }
+  ],
+  "schemaVersion": "provision.dev/offhost-ssh-postgresql-evidence/v1alpha1"
+}

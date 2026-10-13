@@ -284,6 +284,20 @@ func TestDatabaseSecretBoundaryAndQuadletDoNotExposeResolvedValue(t *testing.T) 
 	if _, _, err := validateDatabaseSensitiveValues(map[string]string{input.CredentialReference: "postgresql://app:LongRandomPassword_1234@127.0.0.1:5432/app"}, input); err == nil || strings.Contains(err.Error(), "LongRandomPassword") {
 		t.Fatalf("mismatched Database port accepted or disclosed: %v", err)
 	}
+	// The backup transport key is accepted only when the Plan declares it, and nothing else is.
+	two := map[string]string{input.CredentialReference: secret, "secret://lab/backup-ssh-key": "key"}
+	if _, _, err := validateDatabaseSensitiveValues(two, input); err == nil {
+		t.Fatal("undeclared second Secret Reference accepted")
+	}
+	input.Backup.CredentialReference = "secret://lab/backup-ssh-key"
+	if _, _, err := validateDatabaseSensitiveValues(two, input); err != nil {
+		t.Fatalf("declared backup key rejected: %v", err)
+	}
+	two["secret://lab/other"] = "x"
+	if _, _, err := validateDatabaseSensitiveValues(two, input); err == nil {
+		t.Fatal("third Secret Reference accepted")
+	}
+	input.Backup.CredentialReference = ""
 	quadlet := renderDatabaseQuadlet(input, filepath.Join(filepath.Dir(filepath.Dir(filepath.Dir(input.DataPath))), "credential-entrypoint"), username)
 	if strings.Contains(quadlet, password) || !strings.Contains(quadlet, input.ImageReference) || !strings.Contains(quadlet, "LoadCredentialEncrypted=postgresql-url") || !strings.Contains(quadlet, "PublishPort=127.0.0.1:25432:5432") {
 		t.Fatalf("Quadlet omitted pinned identity or exposed a secret:\n%s", quadlet)

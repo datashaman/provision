@@ -530,8 +530,18 @@ func databaseNamePattern(value string) bool {
 }
 
 func validateDatabaseSensitiveValues(envelope map[string]string, input planner.DatabaseOperationInput) (string, string, error) {
-	if len(envelope) != 1 {
-		return "", "", errors.New("prepareDatabase requires exactly one resolved Secret Reference")
+	// An off-host backup or restore operation also resolves the backup transport key (ADR 0078).
+	allowed := map[string]bool{input.CredentialReference: true}
+	if input.Backup.CredentialReference != "" {
+		allowed[input.Backup.CredentialReference] = true
+	}
+	if len(envelope) == 0 || len(envelope) > len(allowed) {
+		return "", "", errors.New("Database operation received an unexpected number of resolved Secret References")
+	}
+	for reference := range envelope {
+		if !allowed[reference] {
+			return "", "", errors.New("Database operation received a resolved Secret Reference it does not declare")
+		}
 	}
 	value, ok := envelope[input.CredentialReference]
 	if !ok || value == "" {

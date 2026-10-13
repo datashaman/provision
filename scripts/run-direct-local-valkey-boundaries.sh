@@ -16,16 +16,9 @@ scp_opts=(-q -o StrictHostKeyChecking=yes -o ServerAliveInterval=15 -o ServerAli
 
 printf 'Provision issue #102 direct-local Valkey acceptance on %s@%s (disposable VM; restores the clean snapshot before each scenario and after success)\n' "$target_user" "$target"
 
-cleanup_needed=false
-cleanup() {
-  local status=$?
-  if [[ "$cleanup_needed" == true && "$status" -ne 0 ]]; then
-    mkdir -p "$local_evidence.failed"
-    scp "${scp_opts[@]}" -r "$target_user@$target:$remote_evidence" "$local_evidence.failed/remote" >/dev/null 2>&1 || true
-    [[ -n "${PROVISION_ACCEPTANCE_KEEP_VM:-}" ]] || "$root/work/acceptance-host/reset-acceptance-vm.sh" --yes >/dev/null 2>&1 || true
-  fi
-  exit "$status"
-}
+# shellcheck source=lib/valkey-vm.sh
+source "$root/scripts/lib/valkey-vm.sh"
+
 trap cleanup EXIT
 
 [[ -f "$authority/host-authority.pub" && -f "$authority/host-authority.key" ]] || { echo "missing authority files; set PROVISION_ACCEPTANCE_AUTHORITY" >&2; exit 2; }
@@ -50,23 +43,7 @@ mkdir -p "$local_evidence"
 
 run_mode() {
   local mode="$1"
-  cleanup_needed=true
-  "$root/work/acceptance-host/reset-acceptance-vm.sh" --yes
-  # The restored snapshot is old, so apt's catch-up timers fire after boot and starve the 2-vCPU VM for minutes,
-  # long enough to expire a 30s execution lease mid-operation. Stop them for this boot.
-  ssh "${ssh_opts[@]}" "$target_user@$target" "sudo -n systemctl stop apt-daily.timer apt-daily-upgrade.timer apt-daily.service apt-daily-upgrade.service unattended-upgrades.service"
-  ssh "${ssh_opts[@]}" "$target_user@$target" "rm -rf '$remote' '$remote_evidence'; mkdir -p '$remote' '$remote_evidence' && chmod 0700 '$remote'"
-  scp "${scp_opts[@]}" "$build_dir/provision" "$build_dir/provision-host-executor" "$authority/host-authority.pub" "$authority/host-authority.key" "$secret" "$target_user@$target:$remote/"
-  scp "${scp_opts[@]}" -r "$root/scripts" "$root/examples" "$target_user@$target:$remote/"
-  ssh "${ssh_opts[@]}" "$target_user@$target" "chmod 0600 '$remote/host-authority.key' '$remote/$(basename "$secret")'"
-  # The package install can restart VM networking and drop this session; bootstrap is idempotent, so retry.
-  local attempt
-  for attempt in 1 2 3; do
-    ssh "${ssh_opts[@]}" "$target_user@$target" \
-      "sudo -n bash '$remote/scripts/bootstrap-host.sh' --apply --replace-executor --environment lab --operator '$target_user' --binary '$remote/provision-host-executor' --authority-public-key '$remote/host-authority.pub'" && break
-    [[ $attempt -lt 3 ]] || { echo "bootstrap failed after $attempt attempts" >&2; exit 1; }
-    until ssh "${ssh_opts[@]}" "$target_user@$target" true 2>/dev/null; do sleep 5; done
-  done
+  vm_prepare
   ssh "${ssh_opts[@]}" "$target_user@$target" \
     "cd '$remote' && ./scripts/test-direct-local-valkey-boundaries.sh --provision ./provision --signing-key ./host-authority.key --secret-file ./$(basename "$secret") --work-dir '$remote_evidence/$mode' --provision-version '$source_version' --confirm-disposable-host provision-acceptance --scenario '$mode'"
   scp "${scp_opts[@]}" -r "$target_user@$target:$remote_evidence/$mode" "$local_evidence/$mode"

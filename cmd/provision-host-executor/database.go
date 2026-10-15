@@ -15,6 +15,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"provision/internal/authority"
@@ -609,6 +610,21 @@ func runDatabasePostgreSQL(ctx context.Context, record bootstrapRecord, containe
 	return databaseCommandOutput(command)
 }
 
+func runDatabaseBackupCommand(command *exec.Cmd, destination io.Writer) error {
+	command.Stdout = destination
+	// Kill the runuser/podman process group so descendants cannot hold the stdout copier open.
+	command.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	command.Cancel = func() error {
+		err := syscall.Kill(-command.Process.Pid, syscall.SIGKILL)
+		if errors.Is(err, syscall.ESRCH) {
+			return os.ErrProcessDone
+		}
+		return err
+	}
+	command.WaitDelay = 5 * time.Second
+	return command.Run()
+}
+
 func observeDatabaseOperation(ctx context.Context, planID string, planned planner.Operation, record bootstrapRecord, paths executionPaths) (host.OperationObservation, error) {
 	if err := validateDatabaseOperation(planned, record, paths); err != nil {
 		return host.OperationObservation{}, err
@@ -658,6 +674,17 @@ func observeDatabaseBackupOperation(ctx context.Context, planID string, planned 
 		observed.Reason = ""
 		observed.RecoveryAction = ""
 		state = "satisfied"
+		if backup.ArtifactDigest != "" {
+			digest, err := databaseBackupFileDigest(backup.Path)
+			if err != nil || digest != backup.ArtifactDigest {
+				observed.Status = "unknown"
+				observed.Verified = false
+				observed.FailureCategory = "observation"
+				observed.Reason = "recorded Database backup artifact no longer matches its digest"
+				observed.RecoveryAction = "inspect the backup destination and restore the recorded artifact before resuming"
+				state = "unknown"
+			}
+		}
 	} else {
 		observed.Status = "pending"
 		observed.Verified = false
@@ -1289,8 +1316,7 @@ func applyDatabaseBackup(ctx context.Context, input planner.DatabaseOperationInp
 		if err != nil {
 			return err
 		}
-		command.Stdout = destination
-		if err := command.Run(); err != nil {
+		if err := runDatabaseBackupCommand(command, destination); err != nil {
 			return errors.New("export PostgreSQL custom-format backup from active generation")
 		}
 		return nil

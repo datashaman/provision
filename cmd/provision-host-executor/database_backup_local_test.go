@@ -2,12 +2,15 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"testing"
+	"time"
 
 	"provision/internal/authority"
 	"provision/internal/config"
@@ -124,5 +127,55 @@ func TestLocalBackupRecoversAfterEvidenceWriteFailureAndRefusesTampering(t *test
 	}
 	if _, err := applyLocalDatabaseBackup(context.Background(), input, claim, source, dir, os.Getuid(), os.Getgid(), noExport); err == nil {
 		t.Fatal("tampered dump accepted")
+	}
+}
+
+func TestLocalBackupObservationRefusesChangedArtifact(t *testing.T) {
+	input, claim, source, dir := localBackupFixture(t)
+	planned := planner.Operation{ID: claim.OperationID, Kind: planner.BackupDatabase, Input: planner.OperationInput{Database: &input}}
+	var err error
+	claim.OperationDigest, err = planner.OperationDigest(planned)
+	if err != nil {
+		t.Fatal(err)
+	}
+	backup, err := applyLocalDatabaseBackup(context.Background(), input, claim, source, dir, os.Getuid(), os.Getgid(), func(_ context.Context, destination io.Writer) error {
+		_, err := io.WriteString(destination, "dump")
+		return err
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, changed := range []bool{false, true} {
+		if changed {
+			if err := os.Remove(backup.Path); err != nil {
+				t.Fatal(err)
+			}
+		}
+		observation, err := observeDatabaseBackupOperation(context.Background(), claim.PlanID, planned, bootstrapRecord{}, executionPaths{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		var evidence host.DatabaseOperationObservation
+		if err := json.Unmarshal(observation.Evidence, &evidence); err != nil {
+			t.Fatal(err)
+		}
+		if changed {
+			if observation.State != "unknown" || evidence.Verified || evidence.Reason == "" || evidence.RecoveryAction == "" {
+				t.Fatalf("missing dump: state=%s verified=%v reason=%q recovery=%q", observation.State, evidence.Verified, evidence.Reason, evidence.RecoveryAction)
+			}
+		} else if observation.State != "satisfied" || !evidence.Verified {
+			t.Fatalf("intact dump: state=%s verified=%v", observation.State, evidence.Verified)
+		}
+	}
+}
+
+func TestDatabaseBackupCommandCancellationClosesDescendantStdout(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	command := exec.CommandContext(ctx, "sh", "-c", "sleep 30 & wait")
+	started := time.Now()
+	err := runDatabaseBackupCommand(command, io.Discard)
+	if err == nil || ctx.Err() == nil || time.Since(started) > 3*time.Second {
+		t.Fatalf("backup process tree did not stop promptly: error=%v context=%v elapsed=%s", err, ctx.Err(), time.Since(started))
 	}
 }

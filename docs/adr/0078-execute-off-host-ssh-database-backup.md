@@ -29,7 +29,7 @@ destination:
   `<id>.dump.partial`, hashing bytes as they pass. Compare the remote `sha256sum`
   with the local digest, then rename to `<id>.dump`. An export failure never
   commits the partial dump; an early SSH exit closes the pipe and cancels the
-  export. Linux destinations only.
+  export process group, with bounded stdout draining. Linux destinations only.
 - **Local backups.** `file://` also streams `pg_dump` stdout to a partial file,
   computes and checks its digest before rename, then writes and reads back
   evidence. Retry checks recorded digests, adopts a final file without evidence

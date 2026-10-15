@@ -2,6 +2,20 @@
 
 This matrix records combinations exercised end to end. It is evidence of the stated guarantees for the exact combination, not a claim that every nearby OS or dependency version is supported.
 
+## Independently approved agent Artifact staging
+
+| Source and proof | Controller and authority | Remote Host and operation | Result |
+| --- | --- | --- | --- |
+| Reviewed source `529ee57e176f46695271e4303c95ac9230b35838`, merged through [PR #131](https://github.com/datashaman/provision/pull/131); [live proof and binary identities](evidence/2026-10-15-mediated-stage-artifact.md) | Ubuntu 26.04.1 `amd64`; isolated `requestbot`/`requestother` accounts, separate trusted `authority` account; filesystem inbox, private SQLite state and credentials | Separate Ubuntu 26.04 `amd64` VM over strict SSH; native HTTP `stageArtifact` only | All 15 case groups and 117 command exit assertions passed: requester confinement, exact request/Plan/operation approval, denied bypass, matching cached digest and receipts, expiry, deduplication, and fenced recovery including two requests sharing one Plan. |
+
+Both VMs shared physical hardware and a LAN. The root test supervisor exercised
+the human approval entry point under the trusted account; the proof does not
+establish physical human presence or protect a compromised trusted operator or
+administrator. It does not qualify local mediated Hosts, other OS combinations,
+other operations, installation/activation, executable safety, hosted authority,
+or automated approval. Broader single-operator rows below have a separate trust
+boundary. See the [first-release checklist](first-release-checklist.md).
+
 ## Direct-local HTTP host Deployment
 
 | Provision build | Host OS | Architecture | systemd | Caddy | Result |

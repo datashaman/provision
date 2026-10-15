@@ -36,7 +36,7 @@ the State Backend, signing key, and Host credentials; the requester cannot
 control that account or its processes. No resident service or new network API
 is required. The first operation is the existing `stageArtifact`: download the
 approved Artifact, verify its digest, and populate the Host cache. This proves
-the authority boundary without deciding the first-release scope in issue #126.
+the authority boundary; [ADR 0080](0080-scope-first-release-to-mediated-artifact-staging.md) separately selects it as the first useful release.
 
 Trusted policy grants each requester explicit Application and Environment
 scope and allowed operation kinds. Host selection comes exclusively from
@@ -94,5 +94,5 @@ establish this separation when both are available to the agent. The `request` co
 [implementation contract](../agent-request-mediation.md) for its acceptance
 requirements. Scoped proof is tracked by
 [implementation issue #130](https://github.com/datashaman/provision/issues/130).
-The release-scope decision in issue #126 remains
-separate.
+The separate release-scope decision for issue #126 is recorded in
+[ADR 0080](0080-scope-first-release-to-mediated-artifact-staging.md).

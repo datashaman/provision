@@ -21,8 +21,8 @@ Product constraints are not implementation defaults. If an architecture cannot s
 - Recorded operational state is distinct from declared intent.
 - Operations are resumable and auditable but are not presented as distributed transactions.
 - Implementations expose explicit capability contracts and cannot silently degrade required guarantees.
-- The first release targets current or remote Linux systemd hosts and AWS.
-- The seven required deployment scenarios must execute and be verified end to end.
+- The first release proves independently approved native HTTP `stageArtifact` against the qualified remote Linux Host combination, as selected in [ADR 0080](adr/0080-scope-first-release-to-mediated-artifact-staging.md).
+- The seven full deployment scenarios and complete Component coverage are deferred; their guarantees still require end-to-end verification before support is claimed.
 
 ## Decisions
 
@@ -56,7 +56,7 @@ The local engine, CLI, and future runner are implemented in Go. Go supports the 
 
 Each environment has an append-only execution journal and immutable state snapshots for efficient reads. A deep State Backend module hides persistence and exposes a small interface for loading the current snapshot, conditionally appending journal entries, acquiring or renewing a fenced lease, storing immutable Plans and evidence, and compare-and-swapping the active snapshot.
 
-The initial architecture includes two adapters because this seam has real variation: SQLite for personal or local environments and a DynamoDB-and-S3 adapter for shared AWS environments.
+The architecture defines two adapters because this seam has real variation: SQLite for personal or local environments and a DynamoDB-and-S3 adapter for shared AWS environments. Only SQLite is required for the first release; the shared AWS adapter is deferred under ADR 0080.
 
 ### Fenced execution leases
 
@@ -112,7 +112,7 @@ One Provision installation or administrative domain uses one DynamoDB table and 
 
 ### Verification through module interfaces
 
-Tests exercise the same deep-module interfaces used by production callers. The Configuration Compiler has golden tests for resolution, diagnostics, and provenance. The Planner has golden and property tests for deterministic Plans. The Executor has state-machine tests with failures injected before and after every side effect. Every State Backend passes a shared contract suite against SQLite and real DynamoDB and S3; implementation adapters pass contract tests against disposable real targets; and the seven required scenarios have end-to-end coverage. Fakes satisfy the same interfaces and do not bypass them.
+Tests exercise the same deep-module interfaces used by production callers. The Configuration Compiler has golden tests for resolution, diagnostics, and provenance. The Planner has golden and property tests for deterministic Plans. The Executor has state-machine tests with failures injected before and after every side effect. Each supported State Backend passes the shared contract suite against its real storage: SQLite for the first release, and real DynamoDB and S3 before claiming the deferred shared AWS backend. Implementation adapters pass contract tests against disposable real targets. The first-release gate is the [isolated-account mediated staging exercise](first-release-checklist.md); the seven broader deployment scenarios need end-to-end coverage before their support is claimed. Fakes satisfy the same interfaces and do not bypass them.
 
 ### Deterministic provider simulation
 
@@ -124,7 +124,7 @@ The initial curated implementations are compiled into the Go binary and discover
 
 ### First release without a coordinator
 
-The first release includes the local engine and CLI, local SQLite state, shared AWS state, and one-shot runners. It does not include the optional coordinator. The agreed interfaces preserve a future place for shared authentication, dispatch, collaboration, and user interfaces, but none of those protocols are designed before the seven required deployment scenarios work end to end.
+The first release includes the local engine and CLI, local SQLite state, a per-requester filesystem inbox, independently authenticated human approval, and on-demand typed execution against the qualified remote Host. Shared AWS state, the optional coordinator, hosted authority, and automated approval are deferred under ADR 0080. The agreed interfaces preserve a future place for shared authentication, dispatch, collaboration, and user interfaces; designing those protocols is not part of the first-release gate.
 
 ### Canonical typed-operation envelope
 

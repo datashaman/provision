@@ -39,6 +39,8 @@ type HandlerObservation struct {
 }
 
 type Engine struct {
+	// Authorize rechecks current requester grants and the narrow approval before signing and dispatch.
+	Authorize       func(context.Context, string, string, time.Time) error
 	Backend         state.Backend
 	Signer          authority.Signer
 	Handler         Handler
@@ -48,6 +50,7 @@ type Engine struct {
 }
 
 type Request struct {
+	RequestID     string
 	PlanID        string
 	OperationID   string
 	Holder        string
@@ -55,6 +58,7 @@ type Request struct {
 }
 
 type ResumeRequest struct {
+	RequestID     string
 	PlanID        string
 	Holder        string
 	LeaseDuration time.Duration
@@ -89,7 +93,7 @@ func (e Engine) Resume(ctx context.Context, request ResumeRequest) (operation.Re
 		return operation.Result{}, err
 	}
 	return e.execute(ctx, Request{
-		PlanID: request.PlanID, OperationID: operationID, Holder: request.Holder, LeaseDuration: request.LeaseDuration,
+		RequestID: request.RequestID, PlanID: request.PlanID, OperationID: operationID, Holder: request.Holder, LeaseDuration: request.LeaseDuration,
 	}, interruptedAttemptID)
 }
 
@@ -140,7 +144,16 @@ func (e Engine) execute(ctx context.Context, request Request, resumeOfAttemptID 
 		return operation.Result{}, errors.New("signing key does not match the authority observed in the Plan")
 	}
 	now := e.Now().UTC()
+	if request.RequestID != "" {
+		if e.Authorize == nil {
+			return operation.Result{}, errors.New("mediated execution requires current requester authorization")
+		}
+		if err := e.Authorize(ctx, request.RequestID, request.OperationID, now); err != nil {
+			return operation.Result{}, err
+		}
+	}
 	attempt, err := e.Backend.BeginOperation(ctx, state.BeginOperationRequest{
+		RequestID: request.RequestID, SigningKeyID: e.Signer.ID(),
 		PlanID: request.PlanID, OperationID: request.OperationID, Holder: request.Holder,
 		ResumeOfAttemptID: resumeOfAttemptID, StartedAt: now, LeaseDuration: request.LeaseDuration,
 	})
@@ -153,6 +166,12 @@ func (e Engine) execute(ctx context.Context, request Request, resumeOfAttemptID 
 	operationDigest, err := planner.OperationDigest(attempt.Operation)
 	if err != nil {
 		return operation.Result{}, e.recordUncertain(ctx, attempt, err, HandlerObservation{State: ObservationUnknown})
+	}
+	now = e.Now().UTC()
+	if request.RequestID != "" {
+		if err := e.Authorize(ctx, request.RequestID, request.OperationID, now); err != nil {
+			return operation.Result{}, e.recordUncertain(ctx, attempt, err, HandlerObservation{State: ObservationUnknown})
+		}
 	}
 	proof, err := e.Signer.Sign(authority.Claim{
 		PlanID:      attempt.Plan.ID,
@@ -172,7 +191,7 @@ func (e Engine) execute(ctx context.Context, request Request, resumeOfAttemptID 
 		AttemptID:       attempt.AttemptID,
 		FencingToken:    attempt.FencingToken,
 		IssuedAt:        now,
-		ExpiresAt:       attempt.LeaseExpiresAt,
+		ExpiresAt:       attempt.AuthorizationExpiresAt,
 	})
 	if err != nil {
 		return operation.Result{}, e.recordUncertain(ctx, attempt, err, HandlerObservation{State: ObservationUnknown})
@@ -202,6 +221,15 @@ func (e Engine) execute(ctx context.Context, request Request, resumeOfAttemptID 
 			return operation.Result{}, err
 		}
 		return result, resultOutcomeError(attempt.Operation, result)
+	}
+	if request.RequestID != "" {
+		now := e.Now().UTC()
+		if !attempt.AuthorizationExpiresAt.After(now) {
+			return operation.Result{}, e.recordUncertain(ctx, attempt, errors.New("mediated authorization expired before dispatch"), before)
+		}
+		if err := e.Authorize(ctx, request.RequestID, request.OperationID, now); err != nil {
+			return operation.Result{}, e.recordUncertain(ctx, attempt, err, before)
+		}
 	}
 	result, executeErr := e.executeWithLeaseRenewal(ctx, request, attempt, envelope)
 	if executeErr != nil {

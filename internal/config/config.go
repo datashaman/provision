@@ -457,17 +457,36 @@ func Load(rootPath string) (Compiled, error) {
 	if err := result.validate(); err != nil {
 		return Compiled{}, err
 	}
+	result.Digest, err = result.contentDigest()
+	return result, err
+}
+
+// VerifyIdentity validates a captured compiled configuration without reopening mutable YAML paths.
+func (c Compiled) VerifyIdentity() error {
+	if err := c.validate(); err != nil {
+		return err
+	}
+	digest, err := c.contentDigest()
+	if err != nil {
+		return err
+	}
+	if c.Digest != digest {
+		return errors.New("captured configuration identity does not match its contents")
+	}
+	return nil
+}
+
+func (c Compiled) contentDigest() (string, error) {
 	canonical, err := json.Marshal(struct {
 		Application Application `json:"application"`
 		Environment Environment `json:"environment"`
 		Revision    Revision    `json:"revision"`
-	}{result.Application, result.Environment, result.Revision})
+	}{c.Application, c.Environment, c.Revision})
 	if err != nil {
-		return Compiled{}, err
+		return "", err
 	}
 	sum := sha256.Sum256(canonical)
-	result.Digest = "sha256:" + hex.EncodeToString(sum[:])
-	return result, nil
+	return "sha256:" + hex.EncodeToString(sum[:]), nil
 }
 
 func readDocument(path string, out any) error {

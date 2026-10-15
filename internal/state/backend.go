@@ -42,6 +42,8 @@ type PlanSnapshot struct {
 }
 
 type BeginOperationRequest struct {
+	RequestID         string
+	SigningKeyID      string
 	PlanID            string
 	OperationID       string
 	Holder            string
@@ -51,14 +53,16 @@ type BeginOperationRequest struct {
 }
 
 type OperationAttempt struct {
-	AttemptID         string            `json:"attemptId"`
-	ResumeOfAttemptID string            `json:"resumeOfAttemptId,omitempty"`
-	Holder            string            `json:"holder"`
-	FencingToken      int64             `json:"fencingToken"`
-	StartedAt         time.Time         `json:"startedAt"`
-	LeaseExpiresAt    time.Time         `json:"leaseExpiresAt"`
-	Plan              planner.Plan      `json:"plan"`
-	Operation         planner.Operation `json:"operation"`
+	RequestID              string            `json:"requestId,omitempty"`
+	AuthorizationExpiresAt time.Time         `json:"authorizationExpiresAt"`
+	AttemptID              string            `json:"attemptId"`
+	ResumeOfAttemptID      string            `json:"resumeOfAttemptId,omitempty"`
+	Holder                 string            `json:"holder"`
+	FencingToken           int64             `json:"fencingToken"`
+	StartedAt              time.Time         `json:"startedAt"`
+	LeaseExpiresAt         time.Time         `json:"leaseExpiresAt"`
+	Plan                   planner.Plan      `json:"plan"`
+	Operation              planner.Operation `json:"operation"`
 }
 
 type RenewExecutionLeaseRequest struct {

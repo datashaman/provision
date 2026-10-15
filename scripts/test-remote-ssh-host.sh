@@ -3,6 +3,11 @@
 # Linux Host Target. Provision and its State Backend remain on the controller.
 set -euo pipefail
 
+if [[ "${1:-}" == --mediated ]]; then
+  shift
+  exec python3 "$(dirname "${BASH_SOURCE[0]}")/test-mediated-stage-host.py" "$@"
+fi
+
 usage() {
   echo "usage: $0 --provision BINARY --signing-key FILE --work-dir EMPTY_PATH --provision-version VERSION --target ADDRESS --target-user USER --confirm-disposable-host HOSTNAME" >&2
   exit 2

@@ -21,7 +21,8 @@ import (
 )
 
 const (
-	SchemaVersion         = "provision.dev/state/sqlite/v1alpha3"
+	SchemaVersion         = "provision.dev/state/sqlite/v1alpha4"
+	legacySchemaVersion   = "provision.dev/state/sqlite/v1alpha3"
 	previousSchemaVersion = "provision.dev/state/sqlite/v1alpha2"
 	oldestSchemaVersion   = "provision.dev/state/sqlite/v1alpha1"
 )
@@ -145,7 +146,7 @@ func (b *sqliteBackend) initialize(ctx context.Context) error {
 	if err := tx.QueryRowContext(ctx, `SELECT schema_version FROM state_metadata WHERE singleton = 1`).Scan(&version); err != nil {
 		return fmt.Errorf("read State Backend schema for migration: %w", err)
 	}
-	if version != SchemaVersion && version != previousSchemaVersion && version != oldestSchemaVersion {
+	if version != SchemaVersion && version != legacySchemaVersion && version != previousSchemaVersion && version != oldestSchemaVersion {
 		return fmt.Errorf("State Backend schema %q is unsupported", version)
 	}
 	if version == previousSchemaVersion {
@@ -160,6 +161,26 @@ func (b *sqliteBackend) initialize(ctx context.Context) error {
 		}
 	}
 	for _, statement := range []string{
+		`CREATE TABLE IF NOT EXISTS request_events (
+            sequence INTEGER PRIMARY KEY AUTOINCREMENT,
+            request_id TEXT NOT NULL,
+            event_json BLOB NOT NULL
+        ) STRICT`,
+		`CREATE TABLE IF NOT EXISTS operation_requests (
+            id TEXT PRIMARY KEY,
+            requester TEXT NOT NULL,
+            submission_id TEXT NOT NULL,
+            capture_json BLOB NOT NULL,
+            plan_id TEXT NOT NULL DEFAULT '',
+            operation_id TEXT NOT NULL DEFAULT '',
+            operation_digest TEXT NOT NULL DEFAULT '',
+            UNIQUE (requester, submission_id)
+        ) STRICT`,
+		`CREATE TABLE IF NOT EXISTS request_approvals (
+            sequence INTEGER PRIMARY KEY AUTOINCREMENT,
+            request_id TEXT NOT NULL REFERENCES operation_requests(id),
+            approval_json BLOB NOT NULL
+        ) STRICT`,
 		`CREATE TABLE IF NOT EXISTS plans (
             id TEXT PRIMARY KEY,
             schema_version TEXT NOT NULL,
@@ -233,7 +254,7 @@ func (b *sqliteBackend) initialize(ctx context.Context) error {
 			return fmt.Errorf("initialize State Backend: %w", err)
 		}
 	}
-	if _, err := tx.ExecContext(ctx, `UPDATE state_metadata SET schema_version = ? WHERE singleton = 1 AND schema_version IN (?, ?)`, SchemaVersion, previousSchemaVersion, oldestSchemaVersion); err != nil {
+	if _, err := tx.ExecContext(ctx, `UPDATE state_metadata SET schema_version = ? WHERE singleton = 1 AND schema_version IN (?, ?, ?)`, SchemaVersion, legacySchemaVersion, previousSchemaVersion, oldestSchemaVersion); err != nil {
 		return fmt.Errorf("migrate State Backend schema: %w", err)
 	}
 	if err := tx.Commit(); err != nil {
@@ -254,6 +275,18 @@ func (b *sqliteBackend) validateSchema(ctx context.Context) error {
 }
 
 func (b *sqliteBackend) StoreCurrentPlan(ctx context.Context, plan planner.Plan, storedAt time.Time) error {
+	tx, err := b.db.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelSerializable})
+	if err != nil {
+		return fmt.Errorf("begin Plan storage: %w", err)
+	}
+	defer tx.Rollback()
+	if err := storeCurrentPlan(ctx, tx, plan, storedAt); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+func storeCurrentPlan(ctx context.Context, tx *sql.Tx, plan planner.Plan, storedAt time.Time) error {
 	if err := plan.VerifyIdentity(); err != nil {
 		return err
 	}
@@ -261,11 +294,6 @@ func (b *sqliteBackend) StoreCurrentPlan(ctx context.Context, plan planner.Plan,
 	if err != nil {
 		return fmt.Errorf("encode Plan: %w", err)
 	}
-	tx, err := b.db.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelSerializable})
-	if err != nil {
-		return fmt.Errorf("begin Plan storage: %w", err)
-	}
-	defer tx.Rollback()
 	if _, err := tx.ExecContext(ctx, `INSERT INTO plans(id, schema_version, application, environment, configuration_digest, observation_digest, plan_json, stored_at)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(id) DO NOTHING`,
 		plan.ID, plan.SchemaVersion, plan.Application, plan.Environment, plan.ConfigurationDigest, plan.ObservationDigest, encoded, formatTime(storedAt)); err != nil {
@@ -298,9 +326,6 @@ func (b *sqliteBackend) StoreCurrentPlan(ctx context.Context, plan planner.Plan,
         ON CONFLICT(application, environment) DO UPDATE SET plan_id = excluded.plan_id, updated_at = excluded.updated_at`,
 		plan.Application, plan.Environment, plan.ID, formatTime(storedAt)); err != nil {
 		return fmt.Errorf("advance Environment Plan head: %w", err)
-	}
-	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("commit Plan storage: %w", err)
 	}
 	return nil
 }
@@ -419,16 +444,9 @@ func (b *sqliteBackend) BeginOperation(ctx context.Context, request BeginOperati
 	if currentPlanID != request.PlanID {
 		return OperationAttempt{}, errors.New("Plan is superseded and cannot authorize execution")
 	}
-	var decision, approvalExpiry string
-	if err := tx.QueryRowContext(ctx, `SELECT decision, expires_at FROM approval_decisions WHERE plan_id = ? ORDER BY sequence DESC LIMIT 1`, request.PlanID).Scan(&decision, &approvalExpiry); err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return OperationAttempt{}, errors.New("Plan is unapproved and cannot authorize execution")
-		}
-		return OperationAttempt{}, fmt.Errorf("read execution approval: %w", err)
-	}
-	expiresAt, err := parseTime(approvalExpiry)
-	if err != nil || decision != string(DecisionApproved) || !expiresAt.After(request.StartedAt) {
-		return OperationAttempt{}, errors.New("Plan approval is not eligible for execution")
+	expiresAt, approvalSequence, err := executionApproval(ctx, tx, request, plan)
+	if err != nil {
+		return OperationAttempt{}, err
 	}
 	operation, ok := plannedOperation(plan, request.OperationID)
 	if !ok {
@@ -478,7 +496,11 @@ func (b *sqliteBackend) BeginOperation(ctx context.Context, request BeginOperati
 	}
 	if request.ResumeOfAttemptID != "" {
 		var latestAttemptID, latestKind, latestOutcome string
-		if err := tx.QueryRowContext(ctx, `SELECT attempt_id, kind, outcome FROM journal_events WHERE plan_id = ? AND operation_id = ? ORDER BY sequence DESC LIMIT 1`, request.PlanID, request.OperationID).
+		if err := tx.QueryRowContext(ctx, `SELECT j.attempt_id, j.kind, j.outcome FROM journal_events j
+            JOIN journal_events i ON i.attempt_id = j.attempt_id AND i.kind = 'intent'
+            WHERE j.plan_id = ? AND j.operation_id = ?
+              AND COALESCE(json_extract(i.observation_json, '$.requestId'), '') = ?
+            ORDER BY j.sequence DESC LIMIT 1`, request.PlanID, request.OperationID, request.RequestID).
 			Scan(&latestAttemptID, &latestKind, &latestOutcome); err != nil {
 			return OperationAttempt{}, errors.New("interrupted operation is not present in the journal")
 		}
@@ -507,8 +529,12 @@ func (b *sqliteBackend) BeginOperation(ctx context.Context, request BeginOperati
 	}
 	token := priorToken + 1
 	leaseExpiresAt := request.StartedAt.Add(request.LeaseDuration)
-	if expiresAt.Before(leaseExpiresAt) {
+	if request.RequestID == "" && expiresAt.Before(leaseExpiresAt) {
 		leaseExpiresAt = expiresAt
+	}
+	authorizationExpiresAt := leaseExpiresAt
+	if expiresAt.Before(authorizationExpiresAt) {
+		authorizationExpiresAt = expiresAt
 	}
 	attemptID := operationAttemptID(request.PlanID, request.OperationID, request.Holder, token)
 	if _, err := tx.ExecContext(ctx, `INSERT INTO execution_leases(application, environment, fencing_token, holder, plan_id, operation_id, attempt_id, acquired_at, expires_at, released_at)
@@ -530,10 +556,13 @@ func (b *sqliteBackend) BeginOperation(ctx context.Context, request BeginOperati
 		return OperationAttempt{}, err
 	}
 	intent, err := json.Marshal(struct {
+		RequestID         string         `json:"requestId,omitempty"`
+		ApprovalSequence  int64          `json:"approvalSequence,omitempty"`
+		SigningKeyID      string         `json:"signingKeyId,omitempty"`
 		OperationDigest   string         `json:"operationDigest"`
 		Target            planner.Target `json:"target"`
 		ResumeOfAttemptID string         `json:"resumeOfAttemptId,omitempty"`
-	}{operationDigest, plan.Target, request.ResumeOfAttemptID})
+	}{request.RequestID, approvalSequence, request.SigningKeyID, operationDigest, plan.Target, request.ResumeOfAttemptID})
 	if err != nil {
 		return OperationAttempt{}, fmt.Errorf("encode operation intent: %w", err)
 	}
@@ -546,6 +575,7 @@ func (b *sqliteBackend) BeginOperation(ctx context.Context, request BeginOperati
 		return OperationAttempt{}, fmt.Errorf("commit operation intent: %w", err)
 	}
 	return OperationAttempt{
+		RequestID: request.RequestID, AuthorizationExpiresAt: authorizationExpiresAt,
 		AttemptID:         attemptID,
 		ResumeOfAttemptID: request.ResumeOfAttemptID,
 		Holder:            request.Holder,
@@ -592,17 +622,29 @@ func (b *sqliteBackend) RenewExecutionLease(ctx context.Context, request RenewEx
 	if err := tx.QueryRowContext(ctx, `SELECT plan_id FROM environment_heads WHERE application = ? AND environment = ?`, application, environment).Scan(&currentPlanID); err != nil || currentPlanID != request.PlanID {
 		return time.Time{}, errors.New("operation Plan is no longer current")
 	}
-	var decision, approvalExpiry string
-	if err := tx.QueryRowContext(ctx, `SELECT decision, expires_at FROM approval_decisions WHERE plan_id = ? ORDER BY sequence DESC LIMIT 1`, request.PlanID).Scan(&decision, &approvalExpiry); err != nil {
-		return time.Time{}, errors.New("Plan approval is not eligible for lease renewal")
+	var intent []byte
+	if err := tx.QueryRowContext(ctx, `SELECT observation_json FROM journal_events WHERE attempt_id = ? AND kind = 'intent'`, request.AttemptID).Scan(&intent); err != nil {
+		return time.Time{}, err
 	}
-	approvedUntil, err := parseTime(approvalExpiry)
-	if err != nil || decision != string(DecisionApproved) || !approvedUntil.After(request.RenewedAt) {
-		return time.Time{}, errors.New("Plan approval is not eligible for lease renewal")
+	var binding struct {
+		RequestID string `json:"requestId"`
+	}
+	if err := json.Unmarshal(intent, &binding); err != nil {
+		return time.Time{}, err
 	}
 	renewedUntil := request.RenewedAt.Add(request.LeaseDuration)
-	if approvedUntil.Before(renewedUntil) {
-		renewedUntil = approvedUntil
+	if binding.RequestID == "" {
+		var decision, approvalExpiry string
+		if err := tx.QueryRowContext(ctx, `SELECT decision, expires_at FROM approval_decisions WHERE plan_id = ? ORDER BY sequence DESC LIMIT 1`, request.PlanID).Scan(&decision, &approvalExpiry); err != nil {
+			return time.Time{}, errors.New("Plan approval is not eligible for lease renewal")
+		}
+		approvedUntil, err := parseTime(approvalExpiry)
+		if err != nil || decision != string(DecisionApproved) || !approvedUntil.After(request.RenewedAt) {
+			return time.Time{}, errors.New("Plan approval is not eligible for lease renewal")
+		}
+		if approvedUntil.Before(renewedUntil) {
+			renewedUntil = approvedUntil
+		}
 	}
 	result, err := tx.ExecContext(ctx, `UPDATE execution_leases SET expires_at = ? WHERE application = ? AND environment = ? AND fencing_token = ? AND attempt_id = ? AND released_at IS NULL`,
 		formatTime(renewedUntil), application, environment, request.FencingToken, request.AttemptID)

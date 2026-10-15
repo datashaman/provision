@@ -2,6 +2,9 @@
 set -eu
 
 real_ssh="${PROVISION_REAL_SSH:-/usr/bin/ssh}"
+if [ "${PROVISION_FAULT_MODE:-}" = uncertain ] && [ -f "${PROVISION_FAULT_MARKER:-}" ]; then
+  case " $* " in *" observe-artifact "*) exit 55 ;; esac
+fi
 case " $* " in
   *" /usr/local/libexec/provision-host-executor execute "*)
     mode="${PROVISION_FAULT_MODE:-after}"
@@ -11,7 +14,7 @@ case " $* " in
       sleep 1
       exit 0
     fi
-    if [ "$mode" != after ]; then
+    if [ "$mode" != after ] && [ "$mode" != uncertain ]; then
       echo "unsupported PROVISION_FAULT_MODE: $mode" >&2
       exit 2
     fi
@@ -19,6 +22,7 @@ case " $* " in
     trap 'rm -f "$captured"' EXIT
     if "$real_ssh" "$@" >"$captured"; then
       : >"$PROVISION_FAULT_MARKER"
+      if [ "$mode" = uncertain ]; then exit 55; fi
       kill -KILL "$PPID"
       sleep 1
       exit 0

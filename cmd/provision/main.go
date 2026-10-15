@@ -32,6 +32,8 @@ func run(args []string) error {
 		return usage()
 	}
 	switch {
+	case args[0] == "request":
+		return runRequest(args[1:])
 	case args[0] == "host" && args[1] == "inspect":
 		return runHostInspect(args[2:])
 	case args[0] == "host" && args[1] == "bootstrap" && len(args) >= 3 && args[2] == "check":
@@ -58,7 +60,7 @@ func run(args []string) error {
 }
 
 func usage() error {
-	return errors.New("usage: provision host inspect ... | provision host bootstrap check ... | provision config validate ... | provision plan ... | provision authority keygen ... | provision deployment execute ... | provision deployment resume ... | provision deployment status ...")
+	return errors.New("usage: provision request ... | provision host inspect ... | provision host bootstrap check ... | provision config validate ... | provision plan ... | provision authority keygen ... | provision deployment execute ... | provision deployment resume ... | provision deployment status ...")
 }
 
 func runAuthorityKeygen(args []string) error {

@@ -216,6 +216,10 @@ _Avoid_: Reconciliation, rollout
 An immutable proposed operation bound to exact application and environment configuration revisions, observed state, capabilities, and artifact digests. A relevant change makes it stale and requires replanning.
 _Avoid_: Preview text, reusable script
 
+**Operation Request**:
+An attributable proposal to perform a permitted operation for a specified Application, Environment, and Revision, evaluated before a Plan is approved. A request carries no approval or execution authority.
+_Avoid_: Plan, approval, shell command
+
 **Drift**:
 A difference between an environment's recorded state and its observed state that must be reported with ownership and safety context before any authorized reconciliation.
 _Avoid_: Automatic repair, configuration change

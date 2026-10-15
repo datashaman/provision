@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net/url"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"provision/internal/implementation/hostdatabase"
 	"slices"
@@ -581,18 +582,30 @@ func parseDatabaseSecret(value string) (string, string, string, int, error) {
 	return username, password, database, port, nil
 }
 
-func containerPostgreSQLURL(value string) (string, error) {
-	username, password, database, _, err := parseDatabaseSecret(value)
+func databasePostgreSQLCommand(ctx context.Context, record bootstrapRecord, uid int, container, credentialURL, program string, args ...string) (*exec.Cmd, error) {
+	username, password, database, _, err := parseDatabaseSecret(credentialURL)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
-	translated := url.URL{
-		Scheme: "postgresql",
-		User:   url.UserPassword(username, password),
-		Host:   "127.0.0.1:5432",
-		Path:   "/" + database,
+	commandArgs := []string{"exec", "-i", container, "sh", "-c", `IFS= read -r PGPASSWORD || exit 1; export PGPASSWORD; exec "$@"`, "sh", program, "-h", "127.0.0.1", "-p", "5432", "-U", username, "-d", database, "-w"}
+	commandArgs = append(commandArgs, args...)
+	command := environmentCommand(ctx, record, uid, "podman", commandArgs...)
+	command.Stdin = strings.NewReader(password + "\n")
+	return command, nil
+}
+
+var databaseCommandOutput = func(command *exec.Cmd) ([]byte, error) { return command.CombinedOutput() }
+
+func runDatabasePostgreSQL(ctx context.Context, record bootstrapRecord, container, credentialURL, program string, args ...string) ([]byte, error) {
+	uid := accountUID(record.Account)
+	if uid <= 0 {
+		return nil, errors.New("Environment account is unavailable")
 	}
-	return translated.String(), nil
+	command, err := databasePostgreSQLCommand(ctx, record, uid, container, credentialURL, program, args...)
+	if err != nil {
+		return nil, err
+	}
+	return databaseCommandOutput(command)
 }
 
 func observeDatabaseOperation(ctx context.Context, planID string, planned planner.Operation, record bootstrapRecord, paths executionPaths) (host.OperationObservation, error) {
@@ -1274,11 +1287,7 @@ func applyDatabaseBackup(ctx context.Context, input planner.DatabaseOperationInp
 			return nil, errors.New("off-host Database backup requires exactly the Database and backup Secret References")
 		}
 		exportDump := func(ctx context.Context) ([]byte, error) {
-			containerURL, err := containerPostgreSQLURL(secret)
-			if err != nil {
-				return nil, err
-			}
-			dump, err := runAsEnvironment(ctx, record, "podman", "exec", source.Container, "pg_dump", containerURL, "-Fc", "--no-owner", "--no-privileges")
+			dump, err := runDatabasePostgreSQL(ctx, record, source.Container, secret, "pg_dump", "-Fc", "--no-owner", "--no-privileges")
 			if err != nil {
 				return nil, errors.New("export PostgreSQL custom-format backup from active generation")
 			}
@@ -1311,12 +1320,8 @@ func applyDatabaseBackup(ctx context.Context, input planner.DatabaseOperationInp
 	}
 	backupID := stableFilePart(claim.PlanID) + "-" + claim.OperationID
 	dumpPath := filepath.Join(backupDir, backupID+".dump")
-	containerURL, err := containerPostgreSQLURL(secret)
-	if err != nil {
-		return nil, err
-	}
 	backupStarted := time.Now().UTC().Format(time.RFC3339Nano)
-	dump, err := runAsEnvironment(ctx, record, "podman", "exec", source.Container, "pg_dump", containerURL, "-Fc", "--no-owner", "--no-privileges")
+	dump, err := runDatabasePostgreSQL(ctx, record, source.Container, secret, "pg_dump", "-Fc", "--no-owner", "--no-privileges")
 	if err != nil {
 		return nil, errors.New("export PostgreSQL custom-format backup from active generation")
 	}
@@ -1472,11 +1477,7 @@ func applyDatabaseRestoreVerification(ctx context.Context, planned planner.Opera
 	if _, err := runAsEnvironment(ctx, record, "podman", "cp", backupPath, candidate.Container+":"+containerDump); err != nil {
 		return nil, errors.New("copy PostgreSQL backup into restore candidate")
 	}
-	containerURL, err := containerPostgreSQLURL(secret)
-	if err != nil {
-		return nil, err
-	}
-	if _, err := runAsEnvironment(ctx, record, "podman", "exec", candidate.Container, "pg_restore", "--clean", "--if-exists", "--no-owner", "--no-privileges", "-d", containerURL, containerDump); err != nil {
+	if _, err := runDatabasePostgreSQL(ctx, record, candidate.Container, secret, "pg_restore", "--clean", "--if-exists", "--no-owner", "--no-privileges", containerDump); err != nil {
 		return nil, errors.New("restore PostgreSQL backup into isolated candidate")
 	}
 	verified, verifyErr := verifyDatabaseGeneration(ctx, candidate, record, paths, username, secret)
@@ -1567,12 +1568,8 @@ func uncertainDatabaseTransitionObservation(ctx context.Context, input planner.D
 }
 
 func fenceActiveDatabaseWrites(ctx context.Context, active host.DatabaseGenerationStatus, record bootstrapRecord, credentialURL string) (databaseWriteFenceProof, error) {
-	containerURL, err := containerPostgreSQLURL(credentialURL)
-	if err != nil {
-		return databaseWriteFenceProof{}, err
-	}
 	statement := "WITH terminated AS (SELECT pg_terminate_backend(pid) AS killed FROM pg_stat_activity WHERE datname = current_database() AND pid <> pg_backend_pid()) SELECT count(*) FILTER (WHERE killed) FROM terminated;"
-	output, err := runAsEnvironment(ctx, record, "podman", "exec", active.Container, "psql", containerURL, "-v", "ON_ERROR_STOP=1", "-At", "-c", "SET statement_timeout = '30s';", "-c", "ALTER SYSTEM SET default_transaction_read_only = on;", "-c", "SELECT pg_reload_conf();", "-c", statement)
+	output, err := runDatabasePostgreSQL(ctx, record, active.Container, credentialURL, "psql", "-v", "ON_ERROR_STOP=1", "-At", "-c", "SET statement_timeout = '30s';", "-c", "ALTER SYSTEM SET default_transaction_read_only = on;", "-c", "SELECT pg_reload_conf();", "-c", statement)
 	if err != nil {
 		return databaseWriteFenceProof{}, fmt.Errorf("apply bounded PostgreSQL write fence: %s", safeDatabaseCommandOutput(output, credentialURL))
 	}
@@ -1585,7 +1582,7 @@ func fenceActiveDatabaseWrites(ctx context.Context, active host.DatabaseGenerati
 	if parseErr != nil {
 		return databaseWriteFenceProof{}, errors.New("verify bounded PostgreSQL write fence session termination")
 	}
-	readOnly, err := runAsEnvironment(ctx, record, "podman", "exec", active.Container, "psql", containerURL, "-v", "ON_ERROR_STOP=1", "-Atc", "SHOW default_transaction_read_only;")
+	readOnly, err := runDatabasePostgreSQL(ctx, record, active.Container, credentialURL, "psql", "-v", "ON_ERROR_STOP=1", "-Atc", "SHOW default_transaction_read_only;")
 	if err != nil || strings.TrimSpace(string(readOnly)) != "on" {
 		return databaseWriteFenceProof{}, fmt.Errorf("verify PostgreSQL write fence read-only setting: %s", safeDatabaseCommandOutput(readOnly, credentialURL))
 	}
@@ -1859,10 +1856,6 @@ func observeDatabaseDeterministicRecords(ctx context.Context, input planner.Data
 	if input.Binding.DeterministicRecordNamespace == "" || len(input.Binding.DeterministicRecordIDs) == 0 {
 		return nil, nil
 	}
-	containerURL, err := containerPostgreSQLURL(credentialURL)
-	if err != nil {
-		return nil, err
-	}
 	literals := make([]string, 0, len(input.Binding.DeterministicRecordIDs))
 	for _, id := range input.Binding.DeterministicRecordIDs {
 		if !strings.HasPrefix(id, input.Binding.DeterministicRecordNamespace+"/") {
@@ -1871,7 +1864,7 @@ func observeDatabaseDeterministicRecords(ctx context.Context, input planner.Data
 		literals = append(literals, sqlLiteral(id))
 	}
 	query := fmt.Sprintf("SELECT id || E'\\t' || namespace FROM provision_deterministic_records WHERE namespace = %s AND id = ANY(ARRAY[%s]::text[]) ORDER BY id;", sqlLiteral(input.Binding.DeterministicRecordNamespace), strings.Join(literals, ","))
-	output, err := runAsEnvironment(ctx, record, "podman", "exec", input.Container, "psql", containerURL, "-v", "ON_ERROR_STOP=1", "-Atc", query)
+	output, err := runDatabasePostgreSQL(ctx, record, input.Container, credentialURL, "psql", "-v", "ON_ERROR_STOP=1", "-Atc", query)
 	if err != nil {
 		return nil, errors.New("query deterministic workload records")
 	}
@@ -1985,22 +1978,19 @@ func verifyDatabaseGeneration(ctx context.Context, input planner.DatabaseOperati
 	binding, bindingErr := runAsEnvironment(ctx, record, "podman", "port", input.Container, "5432/tcp")
 	credentialMount, credentialErr := runAsEnvironment(ctx, record, "podman", "inspect", "--format", "{{range .}}{{range .Mounts}}{{if eq .Destination \"/run/provision-credential/postgresql-url\"}}{{.RW}}{{end}}{{end}}{{end}}", input.Container)
 	dataMount, dataMountErr := runAsEnvironment(ctx, record, "podman", "inspect", "--format", postgresqlDataMountSourceTemplate(), input.Container)
-	psqlTarget, urlErr := databasePSQLTargetArgs(input, credentialURL, username)
-	versionArgs := append([]string{"exec", input.Container, "psql"}, psqlTarget...)
-	versionArgs = append(versionArgs, "-Atc", "SHOW server_version;")
-	identityArgs := append([]string{"exec", input.Container, "psql"}, psqlTarget...)
-	identityArgs = append(identityArgs, "-Atc", "SELECT current_database() || ':' || current_user;")
-	runPSQL := runPSQLWithRetry
-	if urlErr != nil {
-		runPSQL = func(ctx context.Context, record bootstrapRecord, args []string) ([]byte, error) {
-			return runAsEnvironment(ctx, record, "podman", args...)
-		}
+	runPSQL := func(query string) ([]byte, error) {
+		return runPSQLWithRetry(ctx, func() ([]byte, error) {
+			if credentialURL != "" {
+				return runDatabasePostgreSQL(ctx, record, input.Container, credentialURL, "psql", "-Atc", query)
+			}
+			return runAsEnvironment(ctx, record, "podman", "exec", input.Container, "psql", "-U", username, "-d", input.DatabaseName, "-Atc", query)
+		})
 	}
-	version, versionErr := runPSQL(ctx, record, versionArgs)
-	identity, identityErr := runPSQL(ctx, record, identityArgs)
+	version, versionErr := runPSQL("SHOW server_version;")
+	identity, identityErr := runPSQL("SELECT current_database() || ':' || current_user;")
 	observed.Checks.ServiceHealth = statusErr == nil && healthErr == nil && strings.TrimSpace(string(status)) == "active" && strings.TrimSpace(string(health)) == "healthy"
-	observed.Checks.SQLConnectivity = urlErr == nil && versionErr == nil && strings.HasPrefix(strings.TrimSpace(string(version)), input.PostgreSQLVersion)
-	observed.Checks.DatabaseIdentity = urlErr == nil && identityErr == nil && strings.TrimSpace(string(identity)) == input.DatabaseName+":"+username
+	observed.Checks.SQLConnectivity = versionErr == nil && strings.HasPrefix(strings.TrimSpace(string(version)), input.PostgreSQLVersion)
+	observed.Checks.DatabaseIdentity = identityErr == nil && strings.TrimSpace(string(identity)) == input.DatabaseName+":"+username
 	observed.Checks.GenerationIdentity = manifestErr == nil && strings.TrimSpace(string(manifest)) == input.ImageManifest && bindingErr == nil && strings.TrimSpace(string(binding)) == fmt.Sprintf("127.0.0.1:%d", input.Port) && dataMountErr == nil && postgresqlDataMountMatches(string(dataMount), input.DataPath)
 	observed.Checks.CredentialBoundary = credentialErr == nil && strings.TrimSpace(string(credentialMount)) == "false"
 	observed.Verified = observed.Checks.ServiceHealth && observed.Checks.SQLConnectivity && observed.Checks.DatabaseIdentity && observed.Checks.GenerationIdentity && observed.Checks.CredentialBoundary
@@ -2022,11 +2012,11 @@ func verifyDatabaseGeneration(ctx context.Context, input planner.DatabaseOperati
 
 // runPSQLWithRetry tolerates the official image's init-time server restart: the container can report
 // healthy while the temporary init server is going away, so the first SQL attempt may fail transiently.
-func runPSQLWithRetry(ctx context.Context, record bootstrapRecord, args []string) ([]byte, error) {
+func runPSQLWithRetry(ctx context.Context, run func() ([]byte, error)) ([]byte, error) {
 	var out []byte
 	var err error
 	for attempt := 0; attempt < 15; attempt++ {
-		if out, err = runAsEnvironment(ctx, record, "podman", args...); err == nil {
+		if out, err = run(); err == nil {
 			return out, nil
 		}
 		select {
@@ -2036,20 +2026,6 @@ func runPSQLWithRetry(ctx context.Context, record bootstrapRecord, args []string
 		}
 	}
 	return out, err
-}
-
-func databasePSQLTargetArgs(input planner.DatabaseOperationInput, credentialURL, username string) ([]string, error) {
-	if credentialURL != "" {
-		containerURL, err := containerPostgreSQLURL(credentialURL)
-		if err != nil {
-			return nil, err
-		}
-		return []string{containerURL}, nil
-	}
-	if username == "" || input.DatabaseName == "" {
-		return nil, errors.New("Database SQL observation requires either a credential URL or database identity")
-	}
-	return []string{"-U", username, "-d", input.DatabaseName}, nil
 }
 
 func databaseVerificationFailure(checks host.DatabaseVerificationChecks) (string, string) {

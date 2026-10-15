@@ -278,6 +278,22 @@ func (b *sqliteBackend) StoreCurrentPlan(ctx context.Context, plan planner.Plan,
 	if !bytes.Equal(stored, encoded) {
 		return errors.New("stored Plan identity has different canonical bytes")
 	}
+	var leaseExpiry string
+	err = tx.QueryRowContext(ctx, `SELECT expires_at FROM execution_leases
+        WHERE application = ? AND environment = ? AND plan_id != ? AND released_at IS NULL`,
+		plan.Application, plan.Environment, plan.ID).Scan(&leaseExpiry)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return fmt.Errorf("read execution lease before advancing Environment Plan head: %w", err)
+	}
+	if err == nil {
+		expiresAt, err := parseTime(leaseExpiry)
+		if err != nil {
+			return err
+		}
+		if expiresAt.After(storedAt) {
+			return errors.New("Environment has an active mutating operation; retry the changed Plan preview after the operation completes or its execution lease expires")
+		}
+	}
 	if _, err := tx.ExecContext(ctx, `INSERT INTO environment_heads(application, environment, plan_id, updated_at) VALUES (?, ?, ?, ?)
         ON CONFLICT(application, environment) DO UPDATE SET plan_id = excluded.plan_id, updated_at = excluded.updated_at`,
 		plan.Application, plan.Environment, plan.ID, formatTime(storedAt)); err != nil {

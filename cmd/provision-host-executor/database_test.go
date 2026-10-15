@@ -3,7 +3,10 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"io"
 	"os"
+	"os/exec"
 	"os/user"
 	"path/filepath"
 	"slices"
@@ -302,17 +305,102 @@ func TestDatabaseSecretBoundaryAndQuadletDoNotExposeResolvedValue(t *testing.T) 
 	if strings.Contains(quadlet, password) || !strings.Contains(quadlet, input.ImageReference) || !strings.Contains(quadlet, "LoadCredentialEncrypted=postgresql-url") || !strings.Contains(quadlet, "PublishPort=127.0.0.1:25432:5432") {
 		t.Fatalf("Quadlet omitted pinned identity or exposed a secret:\n%s", quadlet)
 	}
-	psqlTarget, err := databasePSQLTargetArgs(input, "", username)
-	if err != nil || !slices.Equal(psqlTarget, []string{"-U", username, "-d", input.DatabaseName}) {
-		t.Fatalf("secretless Database observation cannot use local psql identity: %#v %v", psqlTarget, err)
-	}
-	psqlTarget, err = databasePSQLTargetArgs(input, secret, username)
-	if err != nil || len(psqlTarget) != 1 || !strings.HasPrefix(psqlTarget[0], "postgresql://") {
-		t.Fatalf("Database execution did not use translated credential URL: %#v %v", psqlTarget, err)
-	}
 	diagnostic := safeDatabaseCommandOutput([]byte("ERROR: connection failed for postgresql://app:LongRandomPassword_1234@127.0.0.1:25432/app\nDETAIL: password LongRandomPassword_1234 rejected"), secret)
 	if strings.Contains(diagnostic, secret) || strings.Contains(diagnostic, password) || !strings.Contains(diagnostic, "[REDACTED_DATABASE_URL]") {
 		t.Fatalf("Database command diagnostic disclosed a secret: %s", diagnostic)
+	}
+}
+
+func TestDatabaseOneShotCommandsKeepCredentialsOutOfArguments(t *testing.T) {
+	secret := "postgresql://app:LongRandomPassword_1234@127.0.0.1:25432/app"
+	record := bootstrapRecord{Environment: "lab", Account: "provision-lab"}
+	for _, check := range []struct {
+		name, program string
+		args          []string
+	}{
+		{"verification", "psql", []string{"-Atc", "SHOW server_version;"}},
+		{"file backup", "pg_dump", []string{"-Fc", "--no-owner", "--no-privileges"}},
+		{"restore", "pg_restore", []string{"--clean", "--if-exists", "--no-owner", "--no-privileges", "/tmp/provision-restore.dump"}},
+		{"write fence", "psql", []string{"-v", "ON_ERROR_STOP=1", "-At", "-c", "ALTER SYSTEM SET default_transaction_read_only = on;"}},
+		{"transition records", "psql", []string{"-v", "ON_ERROR_STOP=1", "-Atc", "SELECT id FROM provision_deterministic_records;"}},
+	} {
+		t.Run(check.name, func(t *testing.T) {
+			cmd, err := databasePostgreSQLCommand(context.Background(), record, 102, "postgresql-container", secret, check.program, check.args...)
+			if err != nil {
+				t.Fatal(err)
+			}
+			args := strings.Join(cmd.Args, " ")
+			if strings.Contains(args, "LongRandomPassword_1234") || strings.Contains(args, "postgresql://") {
+				t.Fatalf("%s arguments disclose credential: %s", check.name, args)
+			}
+			if !strings.Contains(args, "podman exec -i postgresql-container") || !strings.Contains(args, "-h 127.0.0.1") || !strings.Contains(args, "-U app") || !strings.Contains(args, "-d app -w") {
+				t.Fatalf("%s lacks explicit authenticated target: %s", check.name, args)
+			}
+			stdin, err := io.ReadAll(cmd.Stdin)
+			if err != nil || string(stdin) != "LongRandomPassword_1234\n" {
+				t.Fatalf("%s did not receive resolved password on stdin: %v", check.name, err)
+			}
+		})
+	}
+}
+
+func TestDatabaseWriteFenceRunnerUsesResolvedPasswordWithoutArgumentExposure(t *testing.T) {
+	bin := t.TempDir()
+	if err := os.WriteFile(filepath.Join(bin, "id"), []byte("#!/bin/sh\necho 102\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+":"+os.Getenv("PATH"))
+	previous := databaseCommandOutput
+	t.Cleanup(func() { databaseCommandOutput = previous })
+	var captured [][]string
+	databaseCommandOutput = func(command *exec.Cmd) ([]byte, error) {
+		captured = append(captured, slices.Clone(command.Args))
+		stdin, err := io.ReadAll(command.Stdin)
+		if err != nil || string(stdin) != "LongRandomPassword_1234\n" {
+			return nil, errors.New("incorrect credential input")
+		}
+		if slices.Contains(command.Args, "SHOW default_transaction_read_only;") {
+			return []byte("on\n"), nil
+		}
+		return []byte("0\n"), nil
+	}
+	active := host.DatabaseGenerationStatus{Container: "postgresql-container"}
+	record := bootstrapRecord{Environment: "lab", Account: "provision-lab"}
+	good := "postgresql://app:LongRandomPassword_1234@127.0.0.1:25432/app"
+	if _, err := fenceActiveDatabaseWrites(context.Background(), active, record, good); err != nil {
+		t.Fatalf("write fence with valid credential failed: %v", err)
+	}
+	if len(captured) != 2 {
+		t.Fatalf("write fence issued %d commands, want 2", len(captured))
+	}
+	for _, args := range captured {
+		if joined := strings.Join(args, " "); strings.Contains(joined, "LongRandomPassword_1234") || strings.Contains(joined, "postgresql://") {
+			t.Fatalf("write fence sent password-bearing runner arguments: %s", joined)
+		}
+	}
+}
+
+func TestDatabaseOneShotCommandRejectsWrongPassword(t *testing.T) {
+	program := filepath.Join(t.TempDir(), "check-password")
+	if err := os.WriteFile(program, []byte("#!/bin/sh\n[ \"$PGPASSWORD\" = right_password_value ]\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	for _, test := range []struct {
+		name, password string
+		wantSuccess    bool
+	}{{"correct", "right_password_value", true}, {"wrong", "wrong_password_value", false}} {
+		t.Run(test.name, func(t *testing.T) {
+			constructed, err := databasePostgreSQLCommand(context.Background(), bootstrapRecord{Environment: "lab", Account: "provision-lab"}, 102, "postgresql-container", "postgresql://app:"+test.password+"@127.0.0.1:25432/app", program)
+			if err != nil {
+				t.Fatal(err)
+			}
+			shell := slices.Index(constructed.Args, "sh")
+			command := exec.Command("sh", constructed.Args[shell+1:]...)
+			command.Stdin = constructed.Stdin
+			if err := command.Run(); (err == nil) != test.wantSuccess {
+				t.Fatalf("password accepted = %t, want %t: %v", err == nil, test.wantSuccess, err)
+			}
+		})
 	}
 }
 

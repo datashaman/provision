@@ -56,7 +56,7 @@ The local engine, CLI, and future runner are implemented in Go. Go supports the 
 
 Each environment has an append-only execution journal and immutable state snapshots for efficient reads. A deep State Backend module hides persistence and exposes a small interface for loading the current snapshot, conditionally appending journal entries, acquiring or renewing a fenced lease, storing immutable Plans and evidence, and compare-and-swapping the active snapshot.
 
-The initial architecture includes two adapters because this seam has real variation: SQLite for personal or local environments and a DynamoDB-and-S3 adapter for shared AWS environments.
+The architecture defines two adapters because this seam has real variation: SQLite for personal or local environments and a DynamoDB-and-S3 adapter for shared AWS environments. Only SQLite is required for the first release; the shared AWS adapter is deferred under ADR 0080.
 
 ### Fenced execution leases
 

@@ -5,13 +5,16 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"io"
 	"os"
 	"os/exec"
 	"os/user"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"provision/internal/authority"
 	"provision/internal/config"
@@ -60,6 +63,8 @@ case "$fault" in
   unreachable) echo "ssh: connect to host localhost port 22: Connection refused" >&2; exit 255;;
   auth) echo "backup@localhost: Permission denied (publickey)." >&2; exit 255;;
   partial) case "$script" in *"cat >"*.dump.partial*) head -c 40 | sh -c "$script" >/dev/null 2>&1; exit 255;; esac;;
+  upload-unreachable) case "$script" in *"cat >"*.dump.partial*) exit 255;; esac;;
+  digest-mismatch) case "$script" in *"cat >"*.dump.partial*) sh -c "$script" >/dev/null; echo wrong-digest; exit 0;; esac;;
   lose-response) case "$script" in "mv "*.dump.partial*) sh -c "$script"; exit 255;; esac;;
 esac
 exec sh -c "$script"
@@ -93,10 +98,78 @@ func (f *offHostFixture) setFault(t *testing.T, fault string) {
 
 func (f *offHostFixture) backup(t *testing.T, dump string) (host.DatabaseBackupObservation, error) {
 	t.Helper()
-	return applyOffHostDatabaseBackup(context.Background(), f.input, f.claim, f.source, f.key, func(context.Context) ([]byte, error) {
+	return applyOffHostDatabaseBackup(context.Background(), f.input, f.claim, f.source, f.key, func(_ context.Context, destination io.Writer) error {
 		f.dumpCalled++
-		return []byte(dump), nil
+		_, err := io.WriteString(destination, dump)
+		return err
 	})
+}
+
+func TestOffHostBackupStreamsBeyondMemoryBudget(t *testing.T) {
+	f := newOffHostFixture(t)
+	chunk := make([]byte, 64<<10)
+	var before, after runtime.MemStats
+	runtime.ReadMemStats(&before)
+	backup, err := applyOffHostDatabaseBackup(context.Background(), f.input, f.claim, f.source, f.key, func(_ context.Context, destination io.Writer) error {
+		for range 512 {
+			if _, err := destination.Write(chunk); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+	runtime.ReadMemStats(&after)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if allocated := after.TotalAlloc - before.TotalAlloc; allocated > 8<<20 {
+		t.Fatalf("32 MiB backup allocated %d bytes; budget is 8 MiB", allocated)
+	}
+	if backup.ArtifactDigest != "sha256:83ee47245398adee79bd9c0a8bc57b821e92aba10f5f9ade8a5d1fae4d8c4302" {
+		t.Fatalf("unexpected digest: %s", backup.ArtifactDigest)
+	}
+}
+
+func TestOffHostBackupUploadFailureCancelsBlockedExport(t *testing.T) {
+	f := newOffHostFixture(t)
+	f.setFault(t, "upload-unreachable")
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_, err := applyOffHostDatabaseBackup(ctx, f.input, f.claim, f.source, f.key, func(ctx context.Context, _ io.Writer) error {
+		<-ctx.Done()
+		return ctx.Err()
+	})
+	if categoryOf(t, err) != "backup-destination-unreachable" || ctx.Err() != nil {
+		t.Fatalf("upload failure did not promptly cancel export: %v, parent context: %v", err, ctx.Err())
+	}
+}
+
+func TestOffHostBackupExportFailureAndDigestMismatchNeverCommit(t *testing.T) {
+	for _, fault := range []string{"export-failure", "digest-mismatch"} {
+		t.Run(fault, func(t *testing.T) {
+			f := newOffHostFixture(t)
+			f.setFault(t, fault)
+			exportErr := errors.New("pg_dump failed")
+			_, err := applyOffHostDatabaseBackup(context.Background(), f.input, f.claim, f.source, f.key, func(_ context.Context, destination io.Writer) error {
+				if _, err := io.WriteString(destination, "dump bytes"); err != nil {
+					return err
+				}
+				if fault == "export-failure" {
+					return exportErr
+				}
+				return nil
+			})
+			if fault == "export-failure" && !errors.Is(err, exportErr) {
+				t.Fatalf("export failure = %v", err)
+			}
+			if fault == "digest-mismatch" && categoryOf(t, err) != "backup-destination-digest-mismatch" {
+				t.Fatalf("digest mismatch = %v", err)
+			}
+			if entries, err := os.ReadDir(f.remoteDir()); err != nil || len(entries) != 0 {
+				t.Fatalf("failed backup left destination state: %v, %v", entries, err)
+			}
+		})
+	}
 }
 
 func (f *offHostFixture) remoteDir() string { return filepath.Join(f.destRoot, f.input.LogicalID) }

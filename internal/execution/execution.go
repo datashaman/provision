@@ -88,6 +88,30 @@ func (e Engine) Resume(ctx context.Context, request ResumeRequest) (operation.Re
 	if err != nil {
 		return operation.Result{}, err
 	}
+	if request.RequestID != "" {
+		attempts := map[string]bool{}
+		for _, event := range events {
+			if event.Kind != state.JournalIntent {
+				continue
+			}
+			var binding struct {
+				RequestID string `json:"requestId"`
+			}
+			if err := json.Unmarshal(event.Observation, &binding); err != nil {
+				return operation.Result{}, err
+			}
+			if binding.RequestID == request.RequestID {
+				attempts[event.AttemptID] = true
+			}
+		}
+		filtered := make([]state.JournalEvent, 0, len(events))
+		for _, event := range events {
+			if attempts[event.AttemptID] {
+				filtered = append(filtered, event)
+			}
+		}
+		events = filtered
+	}
 	operationID, interruptedAttemptID, err := interruptedOperation(snapshot.Plan, events)
 	if err != nil {
 		return operation.Result{}, err

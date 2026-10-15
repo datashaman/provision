@@ -185,3 +185,61 @@ func TestMediatedInFlightLeaseCanRenewAfterApprovalExpiry(t *testing.T) {
 		t.Fatalf("in-flight renewal after approval expiry=%+v %v", result, err)
 	}
 }
+
+func TestMediatedRecoveryCannotCrossRequestsSharingOnePlan(t *testing.T) {
+	now := time.Now().UTC()
+	handler := &handlerFake{observations: []HandlerObservation{{State: ObservationPending}, {State: ObservationUnknown}}, apply: func(operation.Envelope) (operation.Result, error) {
+		return operation.Result{}, errors.New("lost response")
+	}}
+	engine, backend, plan, a := mediatedEngine(t, &now, handler)
+	if err := backend.RecordRequestApproval(context.Background(), a); err != nil {
+		t.Fatal(err)
+	}
+	request := Request{RequestID: a.RequestID, PlanID: plan.ID, OperationID: "op-01", Holder: "a", LeaseDuration: time.Minute}
+	if _, err := engine.Execute(context.Background(), request); err == nil {
+		t.Fatal("expected uncertain A")
+	}
+	captureA, err := backend.LoadRequest(context.Background(), a.RequestID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	captureB := captureA.Capture
+	captureB.ID = "request-two"
+	captureB.SubmissionID = "two"
+	captureB.Submission = []byte(`{"id":"two"}`)
+	if _, err := backend.CaptureRequest(context.Background(), captureB); err != nil {
+		t.Fatal(err)
+	}
+	if err := backend.StoreRequestPlan(context.Background(), captureB.ID, plan, "op-01", now); err != nil {
+		t.Fatal(err)
+	}
+	b := a
+	b.RequestID = captureB.ID
+	if err := backend.RecordRequestApproval(context.Background(), b); err != nil {
+		t.Fatal(err)
+	}
+	handler.observations = []HandlerObservation{{State: ObservationSatisfied, Evidence: json.RawMessage(`{"status":"already-present"}`)}}
+	if _, err := engine.Resume(context.Background(), ResumeRequest{RequestID: b.RequestID, PlanID: plan.ID, Holder: "b-resume", LeaseDuration: time.Minute}); err == nil {
+		t.Fatal("B resumed A's uncertain attempt")
+	}
+	// The persistence boundary also rejects a direct attempt to borrow A's resume provenance.
+	events, err := backend.LoadJournal(context.Background(), plan.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := backend.BeginOperation(context.Background(), state.BeginOperationRequest{RequestID: b.RequestID, SigningKeyID: engine.Signer.ID(), PlanID: plan.ID, OperationID: "op-01", Holder: "b-direct-resume", ResumeOfAttemptID: events[0].AttemptID, StartedAt: now, LeaseDuration: time.Minute}); err == nil {
+		t.Fatal("backend accepted cross-request resume provenance")
+	}
+	handler.observations = []HandlerObservation{{State: ObservationSatisfied, Evidence: json.RawMessage(`{"status":"already-present"}`)}}
+	if _, err := engine.Execute(context.Background(), Request{RequestID: b.RequestID, PlanID: plan.ID, OperationID: "op-01", Holder: "b", LeaseDuration: time.Minute}); err != nil {
+		t.Fatal(err)
+	}
+	handler.observations = []HandlerObservation{{State: ObservationSatisfied, Evidence: json.RawMessage(`{"status":"already-present"}`)}}
+	if _, err := engine.Resume(context.Background(), ResumeRequest{RequestID: a.RequestID, PlanID: plan.ID, Holder: "a-resume", LeaseDuration: time.Minute}); err != nil {
+		t.Fatalf("B's success hid A's resumable attempt: %v", err)
+	}
+	events, err = backend.LoadJournal(context.Background(), plan.ID)
+	if err != nil || len(events) != 6 || !strings.Contains(string(events[4].Observation), events[0].AttemptID) {
+		t.Fatalf("A recovery provenance=%+v %v", events, err)
+	}
+}

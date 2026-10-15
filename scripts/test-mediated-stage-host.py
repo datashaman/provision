@@ -320,13 +320,20 @@ fault_env = {'PATH': '/opt/provision/scripts/remote-ssh-fault-bin:/usr/local/bin
 execute(interrupted, expected='nonzero', extra_env=fault_env)
 assert load(request('status', '--request', interrupted))['status'] == 'uncertain'
 execute(interrupted, expected='nonzero')
+# Distinct requests can share the deterministic Plan, but never another request's attempt.
+second = submit('independent-stage')
+second_snapshot = plan(second)
+assert second_snapshot['planId'] == interrupted_snapshot['planId']
+approve(second, second_snapshot)
+execute(second, expected='nonzero', command='resume')
+assert load(execute(second))['status'] == 'succeeded'
 resumed = load(execute(interrupted, command='resume'))
 assert resumed['status'] == 'succeeded' and len(resumed['attempts']) == 2
 journal = load(run(operator, [binary, 'deployment', 'status', '--plan', interrupted_snapshot['planId'], '--state', state]))
 ours = [e for e in journal['events'] if e['attemptId'] in {x['attemptId'] for x in resumed['attempts']}]
 assert ours[-2]['observation']['resumeOfAttemptId'] == resumed['attempts'][0]['attemptId']
 assert all(e['operationId'] == 'op-01' for e in ours)
-check('lost response and observation preserve fencing and resume only the bound operation')
+check('lost response preserves fencing; shared-Plan requests cannot borrow or hide recovery attempts')
 
 # No further mutation under expired approval, including a retry of uncertain work.
 reset_artifact()

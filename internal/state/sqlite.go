@@ -496,7 +496,11 @@ func (b *sqliteBackend) BeginOperation(ctx context.Context, request BeginOperati
 	}
 	if request.ResumeOfAttemptID != "" {
 		var latestAttemptID, latestKind, latestOutcome string
-		if err := tx.QueryRowContext(ctx, `SELECT attempt_id, kind, outcome FROM journal_events WHERE plan_id = ? AND operation_id = ? ORDER BY sequence DESC LIMIT 1`, request.PlanID, request.OperationID).
+		if err := tx.QueryRowContext(ctx, `SELECT j.attempt_id, j.kind, j.outcome FROM journal_events j
+            JOIN journal_events i ON i.attempt_id = j.attempt_id AND i.kind = 'intent'
+            WHERE j.plan_id = ? AND j.operation_id = ?
+              AND COALESCE(json_extract(i.observation_json, '$.requestId'), '') = ?
+            ORDER BY j.sequence DESC LIMIT 1`, request.PlanID, request.OperationID, request.RequestID).
 			Scan(&latestAttemptID, &latestKind, &latestOutcome); err != nil {
 			return OperationAttempt{}, errors.New("interrupted operation is not present in the journal")
 		}

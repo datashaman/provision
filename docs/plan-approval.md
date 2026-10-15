@@ -2,7 +2,11 @@
 
 The initial local State Backend is a versioned SQLite database behind Provision's State Backend interface. It stores each canonical Plan unchanged, including its configuration and observation digests, selected capability evidence, exact operation inputs, approval requirements, and sensitive-value references. Approval decisions are append-only records with an actor, decision time, and expiry. Approval policy is evaluated outside the SQLite adapter.
 
-Persisting a preview makes it the current Plan head for its Environment. This immediately supersedes an older Plan, whether or not the new Plan is approved. Approval always recompiles the supplied configuration and re-observes the Host Target before opening the State Backend. If the fresh Plan identity differs from the requested digest, approval fails without changing the database. Approval also fails if that exact Plan was not persisted by preview or is no longer the current head.
+Persisting a preview makes it the current Plan head for its Environment. This immediately supersedes an idle older Plan, whether or not the new Plan is approved. While the Environment has an unexpired, unreleased execution lease, persisting a different Plan is refused atomically: neither the new Plan nor a head change is saved. The running Plan remains current so its attempt can renew its lease and record an authoritative outcome. Persisting the same Plan and planning for other Environments remain available.
+
+If a changed preview is refused, let the operation finish, or inspect and resume an interrupted operation before replacing its Plan. Then rerun `plan preview --file ROOT.yaml --state PATH` to obtain a fresh Plan from current observations. An expired execution lease no longer blocks replacement; expiry alone is not evidence that the Host operation succeeded or failed. For a read-only preview during execution, omit `--state`.
+
+This defers head advancement under [ADR 0021](adr/0021-bind-plans-to-observed-state.md); it does not make a stale Plan eligible for new work. Approval always recompiles the supplied configuration and re-observes the Host Target before opening the State Backend. If the fresh Plan identity differs from the requested digest, approval fails without changing the database. Approval also fails if that exact Plan was not persisted by preview or is no longer the current head.
 
 ## Approve the previewed Plan
 
@@ -31,6 +35,6 @@ go run ./cmd/provision plan status \
   --state .provision/state.db
 ```
 
-Status opens an existing backend and applies any supported schema migration before reading it. It reports the immutable Plan, approval actor and times, decision, and eligibility. A persisted preview begins as `unapproved`. An approval is eligible only while it is approved, unexpired, and still the Environment's current Plan head. Persisting a different preview for that Environment marks the older Plan `superseded` without deleting either its Plan bytes or approval history.
+Status opens an existing backend and applies any supported schema migration before reading it. It reports the immutable Plan, approval actor and times, decision, and eligibility. A persisted preview begins as `unapproved`. An approval is eligible only while it is approved, unexpired, and still the Environment's current Plan head. Successfully persisting a different preview for that Environment marks the older Plan `superseded` without deleting either its Plan bytes or approval history. A refused preview leaves status unchanged.
 
 Eligibility is necessary but is not itself host execution authorization. Execution acquires a fenced execution lease for the Environment mutation, journals its intent, and sends a separate short-lived signed authorization for one exact operation to the restricted host executor. This is distinct from the optional team-member **Environment Lease** in the product model. See [Authorized release preparation](release-preparation.md).

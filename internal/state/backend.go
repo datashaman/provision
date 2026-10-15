@@ -12,6 +12,7 @@ import (
 // approval records. Policy is evaluated by the approval module, not by an
 // individual storage adapter.
 type Backend interface {
+	// StoreCurrentPlan rejects a different Plan while the Environment has an active execution lease at the supplied time.
 	StoreCurrentPlan(context.Context, planner.Plan, time.Time) error
 	RecordApproval(context.Context, string, ApprovalRecord) error
 	LoadPlanSnapshot(context.Context, string) (PlanSnapshot, error)

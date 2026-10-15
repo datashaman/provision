@@ -27,6 +27,46 @@ func TestSQLiteBackendContract(t *testing.T) {
 	})
 }
 
+func TestSQLiteBackendAllowsPlanReplacementAtExecutionLeaseExpiry(t *testing.T) {
+	backend, err := OpenSQLite(t.TempDir() + "/state.db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer backend.Close()
+	ctx := context.Background()
+	now := time.Date(2026, 10, 15, 8, 0, 0, 0, time.UTC)
+	first := contractPlan(t, "application-a", "environment-a", "revision-a")
+	second := contractPlan(t, first.Application, first.Environment, "revision-b")
+	if err := backend.StoreCurrentPlan(ctx, first, now); err != nil {
+		t.Fatal(err)
+	}
+	if err := backend.RecordApproval(ctx, first.ID, ApprovalRecord{
+		Actor: "contract-actor", Decision: DecisionApproved, DecidedAt: now, ExpiresAt: now.Add(time.Hour),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	attempt, err := backend.BeginOperation(ctx, BeginOperationRequest{
+		PlanID: first.ID, OperationID: "op-01", Holder: "holder", StartedAt: now, LeaseDuration: time.Minute,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := backend.StoreCurrentPlan(ctx, second, attempt.LeaseExpiresAt.Add(-time.Nanosecond)); err == nil {
+		t.Fatal("changed Plan replaced a Plan with an unexpired execution lease")
+	}
+	if err := backend.StoreCurrentPlan(ctx, second, attempt.LeaseExpiresAt); err != nil {
+		t.Fatalf("expired execution lease blocked Plan replacement: %v", err)
+	}
+	snapshot, err := backend.LoadPlanSnapshot(ctx, first.ID)
+	if err != nil || snapshot.CurrentPlanID != second.ID {
+		t.Fatalf("expired execution lease prevented supersession: %+v, %v", snapshot, err)
+	}
+	journal, err := backend.LoadJournal(ctx, first.ID)
+	if err != nil || len(journal) != 1 || journal[0].Kind != JournalIntent || journal[0].AttemptID != attempt.AttemptID {
+		t.Fatalf("replacement lost the interrupted attempt's journal: %+v, %v", journal, err)
+	}
+}
+
 func TestSQLiteBackendMigratesPreviousSchemaAtomically(t *testing.T) {
 	path := t.TempDir() + "/state.db"
 	file, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
@@ -428,12 +468,36 @@ func runBackendContract(t *testing.T, factory backendContractFactory) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if err := backend.StoreCurrentPlan(ctx, second, now.Add(2*time.Minute+15*time.Second)); err == nil || !strings.Contains(err.Error(), "active mutating operation") {
+		t.Fatalf("changed Plan superseded an in-flight operation: %v", err)
+	}
+	current, err := backend.LoadPlanSnapshot(ctx, first.ID)
+	if err != nil || current.CurrentPlanID != first.ID {
+		t.Fatalf("refused preview changed the current Plan: %+v, %v", current, err)
+	}
+	if _, err := backend.LoadPlanSnapshot(ctx, second.ID); err == nil {
+		t.Fatal("refused preview persisted a new Plan")
+	}
+	if err := backend.StoreCurrentPlan(ctx, first, now.Add(2*time.Minute+15*time.Second)); err != nil {
+		t.Fatalf("unchanged preview was refused during execution: %v", err)
+	}
+	for _, independent := range []planner.Plan{
+		otherApplication,
+		contractPlan(t, first.Application, "other-environment", "revision-a"),
+	} {
+		if err := backend.StoreCurrentPlan(ctx, independent, now.Add(2*time.Minute+15*time.Second)); err != nil {
+			t.Fatalf("preview for an independent Environment was refused: %v", err)
+		}
+	}
 	renewedUntil, err := backend.RenewExecutionLease(ctx, RenewExecutionLeaseRequest{
 		AttemptID: firstAttempt.AttemptID, Holder: firstAttempt.Holder, PlanID: first.ID, OperationID: "op-01",
 		FencingToken: firstAttempt.FencingToken, RenewedAt: now.Add(2*time.Minute + 30*time.Second), LeaseDuration: time.Minute,
 	})
 	if err != nil || !renewedUntil.Equal(now.Add(3*time.Minute+30*time.Second)) {
 		t.Fatalf("renewed lease expires at %v, %v", renewedUntil, err)
+	}
+	if err := backend.StoreCurrentPlan(ctx, second, now.Add(3*time.Minute+15*time.Second)); err == nil || !strings.Contains(err.Error(), "active mutating operation") {
+		t.Fatalf("changed Plan ignored the renewed execution lease: %v", err)
 	}
 	if _, err := backend.BeginOperation(ctx, BeginOperationRequest{PlanID: first.ID, OperationID: "op-01", Holder: "holder-b", StartedAt: now.Add(3 * time.Minute), LeaseDuration: time.Minute}); err == nil || !strings.Contains(err.Error(), "active mutating operation") {
 		t.Fatalf("renewed execution lease did not fence a concurrent operation: %v", err)
@@ -471,7 +535,7 @@ func runBackendContract(t *testing.T, factory backendContractFactory) {
 	if err != nil || len(rejected) != 1 || rejected[0].SubmittedOutcome != ExecutionSucceeded || !strings.Contains(string(rejected[0].SubmittedObservation), `"status":"staged"`) || !strings.Contains(rejected[0].Reason, "stale") {
 		t.Fatalf("rejected stale result = %+v, %v", rejected, err)
 	}
-	if err := backend.StoreCurrentPlan(ctx, second, now.Add(6*time.Minute)); err != nil {
+	if err := backend.StoreCurrentPlan(ctx, second, now.Add(4*time.Minute+2*time.Second)); err != nil {
 		t.Fatal(err)
 	}
 	superseded, err := backend.LoadPlanSnapshot(ctx, first.ID)

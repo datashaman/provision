@@ -1,5 +1,7 @@
 # Authorized release preparation
 
+This guide describes the existing single-operator Host Deployment workflow. The product's narrower first-release gate is independently approved agent `stageArtifact`, documented in the [first-release checklist](first-release-checklist.md). The broader operations below retain their own support evidence and do not become authorized by a mediated staging approval.
+
 Provision can execute the first eight operations of an approved Host Plan on either the current machine or a bootstrapped remote machine over SSH. `stageArtifact` downloads the Artifact URL already recorded in the Plan, verifies its SHA-256 digest, and stores it at `/var/lib/provision/artifacts/sha256/<digest>`. Dependency-gated operations then install that exact native bundle as an immutable candidate Generation, start a separate hardened systemd unit on a loopback-only port, evaluate the declared liveness, readiness, and revision-bound candidate-verification checks, atomically route the stable Endpoint to the verified candidate through Caddy, evaluate the same Health Contract through that stable Endpoint, complete its bounded ordinary-HTTP drain, and declare the exact stopped previous Generation restartable through the Environment's rollback-window deadline.
 
 Local and remote execution use the same Plan-bound authorization, fencing, journal, operation envelope, root-owned executor, and structured result. SSH is only the transport boundary; it does not create a second execution model or grant shell-shaped deployment authority.

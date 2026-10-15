@@ -20,7 +20,7 @@ Provisioning supporting services is in scope when necessary to deploy the applic
 
 Provision supports both application-defined builds and artifacts built elsewhere. Deployment always consumes an immutable revision manifest so the same revision can be promoted between environments without rebuilding.
 
-The initial target set is local and remote Linux hosts plus AWS. The common product model remains independent of AWS terminology, but Provision claims portability only for implementations that exist and satisfy the declared capability contract rather than promising immediate multi-cloud parity.
+The broader target roadmap is local and remote Linux hosts plus AWS; [ADR 0080](adr/0080-scope-first-release-to-mediated-artifact-staging.md) limits the first useful release to independently approved remote Host Artifact staging. The common product model remains independent of AWS terminology, but Provision claims portability only for implementations that exist and satisfy the declared capability contract rather than promising immediate multi-cloud parity.
 
 The intended organizational scale is one application team managing tens of components and environments. The domain model does not encode arbitrary numeric limits, but the initial product does not claim hyperscale cluster governance or enterprise-wide multi-tenant control-plane behavior.
 
@@ -121,7 +121,7 @@ Portable component fields form the common model. Provider- or implementation-spe
 
 The initial product ships a curated set of implementations with explicit capabilities. It does not promise a public third-party implementation interface. Application-specific executable behavior belongs in bounded Actions, while an internal implementation boundary preserves the option to add providers later without changing portable intent.
 
-Every implementation publishes a capability contract covering the portable requirements and operational guarantees it can satisfy. Unsupported required behavior fails validation. The initial release includes at least one required-blue-green-capable implementation path for every first-class component role, while implementations with unavoidable limitations expose preferred or replace behavior rather than silently degrading.
+Every implementation publishes a capability contract covering the portable requirements and operational guarantees it can satisfy. Unsupported required behavior fails validation. A required-blue-green-capable implementation path for every first-class component role remains a broader deployment goal, deferred from the first-release gate by [ADR 0080](adr/0080-scope-first-release-to-mediated-artifact-staging.md). Implementations with unavoidable limitations expose preferred or replace behavior rather than silently degrading.
 
 Reusable implementation selections may be packaged as optional configuration fragments. They are not a separate domain entity, and the resolved environment remains authoritative.
 
@@ -238,9 +238,15 @@ Each successful refresh produces a data snapshot record containing source refere
 
 Refreshes prefer staged loading followed by a switch. If an implementation cannot provide that behavior, the operation requires either a recoverable backup or explicit approval of a destructive mode. A partial load is a failed refresh and must never be presented as the active successful snapshot.
 
-## Required deployment scenarios
+## First useful release
 
-The initial useful release must execute and verify all of these scenarios, not merely express them:
+[ADR 0080](adr/0080-scope-first-release-to-mediated-artifact-staging.md) supersedes ADR 0032's seven-scenario initial-release gate. The first useful release mediates one native HTTP `stageArtifact` Operation Request from an isolated requester account through independent human approval of the exact captured request, Plan, and operation to a separate remote Host Target. The restricted executor verifies short-lived typed authorization and the Artifact digest; success is cache population with matching request-linked journal, sanitized receipt, and independent Host observations. Scope, immutable capture, staleness, expiry, fencing, replay protection, and observation-led recovery remain required under [ADR 0079](adr/0079-mediate-agent-requests-through-independent-authority.md).
+
+The [first-release checklist](first-release-checklist.md) identifies the executable proof, exact qualified Ubuntu controller/Host combination, limitations, and remaining publication work. It does not claim installation, activation, executable safety, or full application deployment. Existing single-operator capabilities remain supported within their separate evidence boundaries.
+
+## Deployment scenario roadmap
+
+These full application deployment scenarios must execute and be verified before being claimed as supported. They are deferred from the first-release gate:
 
 1. The current Linux machine using systemd with a local database and key-value store.
 2. Another Linux machine on the local network or VPN, accessed remotely, using systemd with local data services.
@@ -250,11 +256,11 @@ The initial useful release must execute and verify all of these scenarios, not m
 6. Lambda for workloads compatible with event-driven serverless execution.
 7. Hybrid environments where different components use different execution options.
 
-Acceptance must include a non-Laravel application exercising HTTP deployment, a queue-consuming worker, a task, and a schedule through the same core interfaces. A Laravel example may be tested too, but cannot be the sole proof of those roles or a prerequisite for using them.
+Acceptance of the broader deployment scenarios must include a non-Laravel application exercising HTTP deployment, a queue-consuming worker, a task, and a schedule through the same core interfaces. A Laravel example may be tested too, but cannot be the sole proof of those roles or a prerequisite for using them.
 
 A host target is any user-controlled Linux systemd machine, whether local to the Provision process or reached remotely. The machine running Provision may use another operating system and control a remote host, but it is itself a host target only when it satisfies the Linux systemd capability contract.
 
-A host-only environment must be able to operate without AWS-managed dependencies. The initial implementation set therefore includes at least one curated host-local path for database, key-value store, queue, object store, schedule execution, and endpoint routing in addition to systemd execution for HTTP, realtime, Worker, and Task components. Exact products and supported versions are recorded in the technical architecture.
+A host-only environment must be able to operate without AWS-managed dependencies. The broader host-only implementation set therefore requires at least one curated host-local path for database, key-value store, queue, object store, schedule execution, and endpoint routing in addition to systemd execution for HTTP, realtime, Worker, and Task components. Exact products and supported versions are recorded in the technical architecture.
 
 The AWS baseline covers managed relational database, managed key-value store, queue, object store, scheduling, certificates, application DNS records, container execution, and event-driven functions. Exact AWS service selections are recorded in the technical architecture; supported versions follow its tested capability catalog.
 
@@ -380,7 +386,7 @@ Useful runtime metadata may include the environment name, lifecycle, application
 - Day-two operations use the same plan, permission, audit, and recovery model as deployment.
 - Cost and quota information is exposed when available without claiming guaranteed bills or unreserved capacity.
 - Interactive shell access remains an external break-glass mechanism rather than a core product bypass.
-- Initial implementations target local and remote Linux hosts plus AWS without claiming multi-cloud parity.
+- The broader deployment roadmap targets local and remote Linux hosts plus AWS without claiming multi-cloud parity.
 - Provision remains application-oriented: fixed component vocabulary, application-scoped resources, external foundations, and no silent reconciliation by default.
 - Provision's core is framework- and language-neutral; no Laravel- or PHP-specific command, file layout, or runtime is required to deploy an application.
 - The initial implementation set is curated rather than a public third-party extension contract.
@@ -388,12 +394,12 @@ Useful runtime metadata may include the environment name, lifecycle, application
 - Local and remote-host workflows do not require a mandatory hosted account or always-online vendor control plane.
 - The initial scale promise is an application team with tens of components and environments, not hyperscale platform governance.
 - Declarative configuration owns intended behavior; recorded state owns observed identity and operational history.
-- All seven local, remote-host, EC2, managed-AWS, ECS/Fargate, Lambda, and hybrid scenarios are initial-release acceptance requirements.
+- The initial useful release requires the independently approved remote Host `stageArtifact` workflow and proof in ADR 0080; the seven full deployment scenarios are deferred.
 - A host target means a current or remote Linux systemd machine; the controlling machine may use another operating system.
 - Host-only environments have curated local supporting-service paths and do not require AWS-managed dependencies.
 - The AWS baseline covers the managed service categories required by the first-class component model.
 - Realtime supports persistent host or ECS servers and managed-fronted Lambda handlers with explicit capability differences.
-- Every implementation exposes a capability contract, and every component role has at least one required-blue-green-capable initial path.
+- Every implementation exposes a capability contract; a required-blue-green-capable path for every component role remains a broader deployment goal, not an initial-release requirement.
 - External ownership is available for every component role but must still satisfy environment binding and evidence requirements.
 
 ## Not yet decided

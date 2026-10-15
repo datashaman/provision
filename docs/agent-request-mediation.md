@@ -138,6 +138,5 @@ only after this proof passes, and update the approval guide with real commands.
 This follow-up does not require a resident service, network API, hosted
 coordinator, new identity provider, automated approval policy, general-purpose
 shell access, additional Host operations, or new execution adapters. It does
-not change the first-release gate in issue #126 or claim that approving an
-Artifact establishes the safety of its executable contents. Keep the existing
+not itself decide the first-release gate; [ADR 0080](adr/0080-scope-first-release-to-mediated-artifact-staging.md) records that separate product decision for issue #126. Approving an Artifact does not establish the safety of its executable contents. Keep the existing
 single-operator workflow working and describe its distinct trust boundary.

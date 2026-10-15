@@ -25,8 +25,16 @@ destination:
   0700 scratch directory under the executor's (root) temp dir and are removed afterwards. Real
   `known_hosts` is never touched, and no credential is presented to a host
   that does not match the pin.
-- **Upload.** Stream to `<id>.dump.partial`, compare the remote `sha256sum` with
-  the local digest, then rename to `<id>.dump`. Linux destinations only.
+- **Upload.** Stream `pg_dump` stdout through an OS pipe directly to SSH and
+  `<id>.dump.partial`, hashing bytes as they pass. Compare the remote `sha256sum`
+  with the local digest, then rename to `<id>.dump`. An export failure never
+  commits the partial dump; an early SSH exit closes the pipe and cancels the
+  export process group, with bounded stdout draining. Linux destinations only.
+- **Local backups.** `file://` also streams `pg_dump` stdout to a partial file,
+  computes and checks its digest before rename, then writes and reads back
+  evidence. Retry checks recorded digests, adopts a final file without evidence
+  using its mtime as the recovery point, and replaces unfinished partials.
+  Existing evidence without a digest remains readable.
 - **Evidence.** `<id>.json` is written beside the dump after the rename and read
   back. `DatabaseBackupObservation` gains `artifactDigest`, `destinationHost`
   and `hostKeyFingerprint`; `Verify` requires all three for `off-host-ssh` and
@@ -57,5 +65,8 @@ destination:
   Secret Reference (the backup key) on `backupDatabase` and
   `verifyDatabaseRestore`; the validator now accepts exactly the declared pair.
 - Adopting a final-name upload and the restore digest check trust the destination's own digest; there is no independent anchor beyond the pinned host identity.
-- The dump is buffered in memory during upload; very large Databases need streaming first.
+- Neither backup path buffers the dump in executor memory. Generated-data tests
+  (#125) transfer 32 MiB on each path within an 8 MiB Go allocation budget and
+  cover digest failures and interrupted commits. These tests do not qualify live
+  large-Database capacity or recovery time; the live proof above remains narrower.
 - Host-key rotation requires a new pin in config and therefore a new Plan.

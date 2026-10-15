@@ -21,7 +21,7 @@ import (
 	"provision/internal/planner"
 )
 
-// Off-host ssh:// Database backup transport (ADR 0078). ponytail: the dump is buffered in memory; stream pg_dump to ssh if Databases outgrow RAM. It shells out to the system ssh with a
+// Off-host ssh:// Database backup transport (ADR 0078). It shells out to the system ssh with a
 // temp known_hosts holding only the key whose fingerprint matches the Plan's pin.
 
 type offHostError struct {
@@ -150,7 +150,7 @@ func transportLoss(err error) error {
 	return err
 }
 
-func offHostEvidence(input planner.DatabaseOperationInput, claim authority.Claim, source host.DatabaseGenerationStatus, backup host.DatabaseBackupObservation) ([]byte, error) {
+func encodeDatabaseBackupEvidence(input planner.DatabaseOperationInput, claim authority.Claim, source host.DatabaseGenerationStatus, backup host.DatabaseBackupObservation) ([]byte, error) {
 	return json.Marshal(map[string]any{
 		"schemaVersion": databaseBackupSchema, "planId": claim.PlanID, "operationId": claim.OperationID, "operationDigest": claim.OperationDigest,
 		"logicalId": input.LogicalID, "sourceGeneration": source.ID, "backup": backup,
@@ -158,7 +158,7 @@ func offHostEvidence(input planner.DatabaseOperationInput, claim authority.Claim
 }
 
 // applyOffHostDatabaseBackup observes before acting (ADR 0047): recorded evidence, then a finished upload, then upload.
-func applyOffHostDatabaseBackup(ctx context.Context, input planner.DatabaseOperationInput, claim authority.Claim, source host.DatabaseGenerationStatus, privateKey string, exportDump func(context.Context) ([]byte, error)) (host.DatabaseBackupObservation, error) {
+func applyOffHostDatabaseBackup(ctx context.Context, input planner.DatabaseOperationInput, claim authority.Claim, source host.DatabaseGenerationStatus, privateKey string, exportDump func(context.Context, io.Writer) error) (host.DatabaseBackupObservation, error) {
 	session, err := openOffHostSession(ctx, input, privateKey)
 	if err != nil {
 		return host.DatabaseBackupObservation{}, err
@@ -202,17 +202,32 @@ func applyOffHostDatabaseBackup(ctx context.Context, input planner.DatabaseOpera
 	}
 
 	started := time.Now().UTC()
-	data, err := exportDump(ctx)
+	hash := sha256.New()
+	// Pass the pipe fd directly to ssh so an early exit cannot wait on a blocked stdin copier.
+	reader, writer, err := os.Pipe()
 	if err != nil {
-		return backup, err
+		return backup, offHostFailure("local", "create backup transport pipe")
 	}
-	sum := sha256.Sum256(data)
-	local := hex.EncodeToString(sum[:])
-	uploaded, err := session.output(ctx, bytes.NewReader(data), "umask 077 && mkdir -p "+shellQuote(session.dir)+" && rm -f "+shellQuote(partial)+" && cat > "+shellQuote(partial)+" && sha256sum "+shellQuote(partial)+" | cut -d' ' -f1")
-	if err != nil || uploaded != local {
+	exportCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	exported := make(chan error, 1)
+	go func() {
+		err := exportDump(exportCtx, io.MultiWriter(writer, hash))
+		_ = writer.Close()
+		exported <- err
+	}()
+	uploaded, err := session.output(ctx, reader, "umask 077 && mkdir -p "+shellQuote(session.dir)+" && rm -f "+shellQuote(partial)+" && cat > "+shellQuote(partial)+" && sha256sum "+shellQuote(partial)+" | cut -d' ' -f1")
+	_ = reader.Close()
+	cancel()
+	exportErr := <-exported
+	local := hex.EncodeToString(hash.Sum(nil))
+	if err != nil || exportErr != nil || uploaded != local {
 		_ = session.run(ctx, nil, io.Discard, "rm -f "+shellQuote(partial))
 		if err == nil {
-			err = offHostFailure("digest-mismatch", "uploaded backup digest differs from the local dump")
+			err = exportErr
+			if err == nil {
+				err = offHostFailure("digest-mismatch", "uploaded backup digest differs from the local dump")
+			}
 		}
 		return backup, err
 	}
@@ -234,7 +249,7 @@ func remoteDigest(ctx context.Context, session *offHostSession, file string) (st
 
 // writeOffHostEvidence writes <id>.json beside the dump, renames it into place, and reads it back.
 func writeOffHostEvidence(ctx context.Context, session *offHostSession, input planner.DatabaseOperationInput, claim authority.Claim, source host.DatabaseGenerationStatus, backup host.DatabaseBackupObservation, evidence string) error {
-	data, err := offHostEvidence(input, claim, source, backup)
+	data, err := encodeDatabaseBackupEvidence(input, claim, source, backup)
 	if err != nil {
 		return err
 	}

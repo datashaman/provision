@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/url"
 	"os"
 	"os/exec"
@@ -14,6 +15,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"provision/internal/authority"
@@ -608,6 +610,21 @@ func runDatabasePostgreSQL(ctx context.Context, record bootstrapRecord, containe
 	return databaseCommandOutput(command)
 }
 
+func runDatabaseBackupCommand(command *exec.Cmd, destination io.Writer) error {
+	command.Stdout = destination
+	// Kill the runuser/podman process group so descendants cannot hold the stdout copier open.
+	command.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	command.Cancel = func() error {
+		err := syscall.Kill(-command.Process.Pid, syscall.SIGKILL)
+		if errors.Is(err, syscall.ESRCH) {
+			return os.ErrProcessDone
+		}
+		return err
+	}
+	command.WaitDelay = 5 * time.Second
+	return command.Run()
+}
+
 func observeDatabaseOperation(ctx context.Context, planID string, planned planner.Operation, record bootstrapRecord, paths executionPaths) (host.OperationObservation, error) {
 	if err := validateDatabaseOperation(planned, record, paths); err != nil {
 		return host.OperationObservation{}, err
@@ -657,6 +674,17 @@ func observeDatabaseBackupOperation(ctx context.Context, planID string, planned 
 		observed.Reason = ""
 		observed.RecoveryAction = ""
 		state = "satisfied"
+		if backup.ArtifactDigest != "" {
+			digest, err := databaseBackupFileDigest(backup.Path)
+			if err != nil || digest != backup.ArtifactDigest {
+				observed.Status = "unknown"
+				observed.Verified = false
+				observed.FailureCategory = "observation"
+				observed.Reason = "recorded Database backup artifact no longer matches its digest"
+				observed.RecoveryAction = "inspect the backup destination and restore the recorded artifact before resuming"
+				state = "unknown"
+			}
+		}
 	} else {
 		observed.Status = "pending"
 		observed.Verified = false
@@ -1279,19 +1307,23 @@ func applyDatabaseBackup(ctx context.Context, input planner.DatabaseOperationInp
 		encoded, _ := json.Marshal(observed)
 		return encoded, errors.New("Database backup requires an exact active managed generation")
 	}
-	if backup, ok := readDatabaseBackupEvidence(input, claim.PlanID, claim.OperationID, claim.OperationDigest); ok {
-		return verifiedDatabaseBackupObservation(observed, source, input, backup)
+	exportDump := func(ctx context.Context, destination io.Writer) error {
+		uid := accountUID(record.Account)
+		if uid <= 0 {
+			return errors.New("Environment account is unavailable")
+		}
+		command, err := databasePostgreSQLCommand(ctx, record, uid, source.Container, secret, "pg_dump", "-Fc", "--no-owner", "--no-privileges")
+		if err != nil {
+			return err
+		}
+		if err := runDatabaseBackupCommand(command, destination); err != nil {
+			return errors.New("export PostgreSQL custom-format backup from active generation")
+		}
+		return nil
 	}
 	if databaseBackupDestinationClass(input.Backup.Destination) == "off-host-ssh" {
 		if len(sensitiveValues) != 2 {
 			return nil, errors.New("off-host Database backup requires exactly the Database and backup Secret References")
-		}
-		exportDump := func(ctx context.Context) ([]byte, error) {
-			dump, err := runDatabasePostgreSQL(ctx, record, source.Container, secret, "pg_dump", "-Fc", "--no-owner", "--no-privileges")
-			if err != nil {
-				return nil, errors.New("export PostgreSQL custom-format backup from active generation")
-			}
-			return dump, nil
 		}
 		backup, err := applyOffHostDatabaseBackup(ctx, input, claim, source, sensitiveValues[input.Backup.CredentialReference], exportDump)
 		if err != nil {
@@ -1318,38 +1350,9 @@ func applyDatabaseBackup(ctx context.Context, input planner.DatabaseOperationInp
 	if err := ensureDirectory(backupDir, 0750, uid, gid); err != nil {
 		return nil, err
 	}
-	backupID := stableFilePart(claim.PlanID) + "-" + claim.OperationID
-	dumpPath := filepath.Join(backupDir, backupID+".dump")
-	backupStarted := time.Now().UTC().Format(time.RFC3339Nano)
-	dump, err := runDatabasePostgreSQL(ctx, record, source.Container, secret, "pg_dump", "-Fc", "--no-owner", "--no-privileges")
-	if err != nil {
-		return nil, errors.New("export PostgreSQL custom-format backup from active generation")
-	}
-	if err := installExactFile(dumpPath, dump, 0440, uid, gid); err != nil {
-		return nil, errors.New("write PostgreSQL backup outside active generation")
-	}
-	backup := host.DatabaseBackupObservation{
-		SchemaVersion:         databaseBackupSchema,
-		BackupID:              backupID,
-		SourceGeneration:      source.ID,
-		DestinationClass:      databaseBackupDestinationClass(input.Backup.Destination),
-		DestinationReference:  input.Backup.Destination,
-		Path:                  dumpPath,
-		AchievedRecoveryPoint: backupStarted,
-		Format:                "pg_dump-custom",
-		OutsideGeneration:     true,
-	}
-	recordData := map[string]any{
-		"schemaVersion": databaseBackupSchema,
-		"planId":        claim.PlanID, "operationId": claim.OperationID, "operationDigest": claim.OperationDigest,
-		"logicalId": input.LogicalID, "sourceGeneration": source.ID, "backup": backup,
-	}
-	evidencePath, err := databaseBackupEvidencePath(input, claim.PlanID, claim.OperationID)
+	backup, err := applyLocalDatabaseBackup(ctx, input, claim, source, backupDir, uid, gid, exportDump)
 	if err != nil {
 		return nil, err
-	}
-	if err := writeJSONAtomic(evidencePath, recordData, 0440); err != nil {
-		return nil, errors.New("record PostgreSQL backup evidence")
 	}
 	return verifiedDatabaseBackupObservation(observed, source, input, backup)
 }
